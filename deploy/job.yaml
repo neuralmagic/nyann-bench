@@ -48,33 +48,19 @@ spec:
             limits:
               cpu: "4"
               memory: "8Gi"
-          # No --output-dir: records buffer in memory, summary JSON goes to stdout.
-          # Collect with: kubectl logs -l app=nyann-poker
           args:
             - generate
             - --target
             - ${TARGET}
             - --model
             - ${MODEL}
-            - --mode
-            - ${MODE}
-            - --concurrency
-            - "${CONCURRENCY}"
-            - --rate
-            - "${RATE}"
-            - --max-inflight
-            - "${MAX_INFLIGHT}"
-            - --rampup
-            - ${RAMPUP}s
-            - --duration
-            - ${DURATION}s
-            - --dataset
-            - ${DATASET}
-            - --isl
-            - "${ISL}"
-            - --osl
-            - "${OSL}"
-            - --turns
-            - "${TURNS}"
-            - --think-time
-            - ${THINK_TIME}
+            - --config
+            - /etc/nyann-poker/config.json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nyann-poker
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: nyann-poker-config

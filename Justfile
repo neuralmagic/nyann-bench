@@ -42,11 +42,7 @@ smoke-test:
     echo "Running load generator..."
     go run ./cmd/nyann_poker/ generate \
         --target http://localhost:9999/v1 \
-        --concurrency 4 \
-        --rampup 2s \
-        --duration 10s \
-        --turns 3 \
-        --think-time 100ms \
+        --config '{"load":{"concurrency":4,"rampup":"2s","duration":"10s"},"workload":{"type":"faker","isl":32,"osl":10,"turns":3}}' \
         --output-dir /tmp/nyann_poker_smoke
     kill $SERVER_PID 2>/dev/null || true
     echo "Results:"
@@ -56,23 +52,21 @@ smoke-test:
     echo "Smoke test passed."
 
 # Deploy load generation Job to Kubernetes
-deploy TARGET MODEL CONCURRENCY='10' ISL='128' OSL='256' TURNS='1' N_WORKERS='4' RAMPUP='60' DURATION='660' NAMESPACE='vllm' ARCH='arm64':
-    kubectl -n {{NAMESPACE}} delete job nyann-poker --ignore-not-found=true \
-    && env \
+deploy TARGET MODEL CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n {{NAMESPACE}} delete job nyann-poker --ignore-not-found=true
+    kubectl -n {{NAMESPACE}} delete configmap nyann-poker-config --ignore-not-found=true
+
+    # Create ConfigMap from config file
+    kubectl -n {{NAMESPACE}} create configmap nyann-poker-config \
+      --from-file=config.json={{CONFIG}}
+
+    # Apply Job
+    env \
       N_WORKERS={{N_WORKERS}} \
       TARGET={{TARGET}} \
       MODEL={{MODEL}} \
-      MODE=concurrent \
-      CONCURRENCY={{CONCURRENCY}} \
-      RATE=10 \
-      MAX_INFLIGHT=0 \
-      RAMPUP={{RAMPUP}} \
-      DURATION={{DURATION}} \
-      DATASET=faker \
-      ISL={{ISL}} \
-      OSL={{OSL}} \
-      TURNS={{TURNS}} \
-      THINK_TIME=0s \
       IMAGE_TAG=latest \
       ARCH={{ARCH}} \
       envsubst < deploy/job.yaml | kubectl -n {{NAMESPACE}} apply -f -

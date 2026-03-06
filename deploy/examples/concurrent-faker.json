@@ -1,0 +1,14 @@
+{
+  "load": {
+    "mode": "concurrent",
+    "concurrency": 2048,
+    "rampup": "60s",
+    "duration": "10m"
+  },
+  "workload": {
+    "type": "faker",
+    "isl": 128,
+    "osl": 1000,
+    "turns": 3
+  }
+}

@@ -116,7 +116,6 @@ func TestGeneratorMultiTurn(t *testing.T) {
 		Duration:    1 * time.Second,
 		Dataset:     dataset.NewSynthetic(32, 10, 3), // 3 turns
 		Recorder:    rec,
-		ThinkTime:   10 * time.Millisecond,
 	}
 
 	_, err = gen.Run(context.Background())

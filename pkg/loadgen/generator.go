@@ -42,7 +42,6 @@ type Generator struct {
 	Duration    time.Duration
 	Dataset     dataset.Dataset
 	Recorder    *recorder.Recorder
-	ThinkTime   time.Duration
 }
 
 func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
@@ -210,14 +209,6 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	for turnIdx, messages := range conv.Turns {
 		if ctx.Err() != nil {
 			return
-		}
-
-		if turnIdx > 0 && g.ThinkTime > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(g.ThinkTime):
-			}
 		}
 
 		req := &client.Request{
