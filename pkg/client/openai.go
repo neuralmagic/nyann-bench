@@ -89,6 +89,32 @@ func New(baseURL string) *Client {
 	}
 }
 
+// DetectModel queries /v1/models and returns the first model ID.
+func (c *Client) DetectModel(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/models", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("querying %s/models: %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("parsing /v1/models response: %w", err)
+	}
+	if len(result.Data) == 0 {
+		return "", fmt.Errorf("no models found at %s/models", c.BaseURL)
+	}
+	return result.Data[0].ID, nil
+}
+
 // ChatStream sends a streaming chat completion request and returns a Result
 // with token-level timing.
 func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {

@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/neuralmagic/nyann_poker/pkg/analysis"
+	"github.com/neuralmagic/nyann_poker/pkg/client"
 	"github.com/neuralmagic/nyann_poker/pkg/config"
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
@@ -59,6 +60,17 @@ Workload types:
 						workerID = v
 					}
 				}
+			}
+
+			// Auto-detect model if not specified
+			if model == "" {
+				c := client.New(target)
+				detected, err := c.DetectModel(ctx)
+				if err != nil {
+					return fmt.Errorf("auto-detecting model (use --model to specify): %w", err)
+				}
+				model = detected
+				fmt.Fprintf(os.Stderr, "Detected model: %s\n", model)
 			}
 
 			// Parse config
