@@ -10,9 +10,13 @@ test:
 test-verbose:
     go test ./... -v -count=1
 
-# Cross-compile for linux/amd64 (for K8s)
-build-linux:
+# Cross-compile for linux/amd64
+build-linux-amd64:
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o nyann_poker-linux-amd64 ./cmd/nyann_poker/
+
+# Cross-compile for linux/arm64 (GB200, Graviton, etc.)
+build-linux-arm64:
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o nyann_poker-linux-arm64 ./cmd/nyann_poker/
 
 # Build container image
 container-build tag="latest":
@@ -52,5 +56,5 @@ smoke-test:
     echo "Smoke test passed."
 
 clean:
-    rm -f nyann_poker nyann_poker-linux-amd64
+    rm -f nyann_poker nyann_poker-linux-amd64 nyann_poker-linux-arm64
     rm -rf /tmp/nyann_poker_*
