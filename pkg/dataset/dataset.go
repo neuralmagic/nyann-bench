@@ -2,11 +2,14 @@ package dataset
 
 import "github.com/neuralmagic/nyann_poker/pkg/client"
 
-// Dataset provides requests for the load generator.
-// NextConversation returns a slice of message lists — one per turn.
-// Single-turn datasets return a slice of length 1.
+// Conversation is a multi-turn conversation with a max_tokens hint per turn.
+type Conversation struct {
+	Turns     [][]client.Message // Messages for each turn (cumulative history)
+	MaxTokens int                // Requested max output tokens per turn (0 = no limit)
+}
+
+// Dataset provides conversations for the load generator.
 type Dataset interface {
-	// NextConversation returns the messages for each turn of a conversation.
-	// Turn i includes all messages from turns 0..i (context carry-forward).
-	NextConversation() [][]client.Message
+	// NextConversation returns a conversation (one or more turns).
+	NextConversation() Conversation
 }

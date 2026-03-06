@@ -11,7 +11,7 @@ import (
 // Synthetic generates synthetic conversations with configurable ISL, OSL, and turn count.
 type Synthetic struct {
 	ISL   int // Input sequence length (tokens per user message)
-	OSL   int // Output sequence length (requested via max_tokens, but also affects prompt padding)
+	OSL   int // Output sequence length (requested via max_tokens)
 	Turns int // Number of turns per conversation
 }
 
@@ -22,7 +22,7 @@ func NewSynthetic(isl, osl, turns int) *Synthetic {
 	return &Synthetic{ISL: isl, OSL: osl, Turns: turns}
 }
 
-func (s *Synthetic) NextConversation() [][]client.Message {
+func (s *Synthetic) NextConversation() Conversation {
 	turns := make([][]client.Message, s.Turns)
 
 	var history []client.Message
@@ -47,7 +47,7 @@ func (s *Synthetic) NextConversation() [][]client.Message {
 		}
 	}
 
-	return turns
+	return Conversation{Turns: turns, MaxTokens: s.OSL}
 }
 
 // padToTokens pads a string with random words to approximate the target token count.
