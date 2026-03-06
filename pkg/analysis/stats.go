@@ -29,8 +29,10 @@ type Summary struct {
 	ITLMs   LatencyStats `json:"itl_ms"`
 	E2EMs   LatencyStats `json:"e2e_latency_ms"`
 
-	Conversations int `json:"conversations"`
+	Conversations int          `json:"conversations"`
 	TurnsPerConv  LatencyStats `json:"turns_per_conversation"`
+
+	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
 }
 
 // LatencyStats holds percentile statistics for a latency metric.

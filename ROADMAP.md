@@ -68,6 +68,7 @@ Full benchmarking platform with historical tracking, CI integration, regression 
 
 ## More ideas from Tyler:
  - Auto detection of steady state beginning and end so we can choose our benchmarking range (end of ramp-up, beginning of wind-down).
+ - **t-digest for distributed percentile computation** — Each worker maintains a streaming t-digest (`github.com/caio/go-tdigest`) for ITL and TTFT during the run. At completion, emit serialized t-digests in the summary JSON. The analyze command merges t-digests across workers to compute exact-ish percentiles without shipping raw values. No pre-defined histogram buckets needed. Solves: (1) you can't merge percentiles across workers, (2) fixed histogram buckets lose resolution, (3) shipping millions of raw ITL floats through kubectl logs is impractical.
 
 ---
 

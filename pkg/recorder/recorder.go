@@ -25,13 +25,16 @@ type Record struct {
 	Error          string    `json:"error,omitempty"`
 }
 
-// Recorder writes per-request records to a JSONL file. Thread-safe.
+// Recorder writes per-request records. Thread-safe.
+// Supports file-based (JSONL) and in-memory modes.
 type Recorder struct {
-	mu   sync.Mutex
-	file *os.File
-	enc  *json.Encoder
+	mu      sync.Mutex
+	file    *os.File
+	enc     *json.Encoder
+	records []Record // in-memory buffer (always populated)
 }
 
+// New creates a file-based recorder that also buffers in memory.
 func New(dir string, workerID int) (*Recorder, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -44,14 +47,33 @@ func New(dir string, workerID int) (*Recorder, error) {
 	return &Recorder{file: f, enc: json.NewEncoder(f)}, nil
 }
 
+// NewMemory creates an in-memory recorder with no file output.
+func NewMemory() *Recorder {
+	return &Recorder{}
+}
+
 func (r *Recorder) Write(rec *Record) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.enc.Encode(rec)
+	r.records = append(r.records, *rec)
+	if r.enc != nil {
+		return r.enc.Encode(rec)
+	}
+	return nil
+}
+
+// Records returns all buffered records.
+func (r *Recorder) Records() []Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.records
 }
 
 func (r *Recorder) Close() error {
-	return r.file.Close()
+	if r.file != nil {
+		return r.file.Close()
+	}
+	return nil
 }
 
 // Timestamps holds phase timestamps for a single worker.

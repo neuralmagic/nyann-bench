@@ -55,6 +55,41 @@ smoke-test:
     echo ""
     echo "Smoke test passed."
 
+# Deploy load generation Job to Kubernetes
+deploy TARGET MODEL CONCURRENCY='10' ISL='128' OSL='256' TURNS='1' N_WORKERS='4' RAMPUP='60' DURATION='660' NAMESPACE='vllm' ARCH='arm64':
+    kubectl -n {{NAMESPACE}} delete job nyann-poker --ignore-not-found=true \
+    && env \
+      N_WORKERS={{N_WORKERS}} \
+      TARGET={{TARGET}} \
+      MODEL={{MODEL}} \
+      MODE=concurrent \
+      CONCURRENCY={{CONCURRENCY}} \
+      RATE=10 \
+      MAX_INFLIGHT=0 \
+      RAMPUP={{RAMPUP}} \
+      DURATION={{DURATION}} \
+      DATASET=faker \
+      ISL={{ISL}} \
+      OSL={{OSL}} \
+      TURNS={{TURNS}} \
+      THINK_TIME=0s \
+      IMAGE_TAG=latest \
+      ARCH={{ARCH}} \
+      envsubst < deploy/job.yaml | kubectl -n {{NAMESPACE}} apply -f -
+
+# Collect JSON summaries from completed Job pods (stdout)
+collect NAMESPACE='vllm':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for POD in $(kubectl -n {{NAMESPACE}} get pods -l app=nyann-poker -o jsonpath='{.items[*].metadata.name}'); do
+      echo "--- $POD ---"
+      kubectl -n {{NAMESPACE}} logs "$POD" -c nyann-poker
+    done
+
+# Tail logs from running Job
+logs NAMESPACE='vllm':
+    kubectl -n {{NAMESPACE}} logs -l app=nyann-poker -c nyann-poker --tail=50 -f
+
 clean:
     rm -f nyann_poker nyann_poker-linux-amd64 nyann_poker-linux-arm64
     rm -rf /tmp/nyann_poker_*

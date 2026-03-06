@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -48,6 +50,15 @@ Modes:
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
+			// Auto-detect worker ID from K8s indexed Job
+			if workerID == 0 {
+				if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
+					if v, err := strconv.Atoi(idx); err == nil {
+						workerID = v
+					}
+				}
+			}
+
 			var ds dataset.Dataset
 			switch datasetType {
 			case "synthetic":
@@ -67,9 +78,15 @@ Modes:
 				return fmt.Errorf("unknown dataset type: %s (options: synthetic, faker, corpus)", datasetType)
 			}
 
-			rec, err := recorder.New(outputDir, workerID)
-			if err != nil {
-				return fmt.Errorf("creating recorder: %w", err)
+			var rec *recorder.Recorder
+			if outputDir != "" {
+				var err error
+				rec, err = recorder.New(outputDir, workerID)
+				if err != nil {
+					return fmt.Errorf("creating recorder: %w", err)
+				}
+			} else {
+				rec = recorder.NewMemory()
 			}
 
 			gen := &loadgen.Generator{
@@ -91,18 +108,31 @@ Modes:
 				return err
 			}
 
-			tsPath := fmt.Sprintf("%s/timestamps_%d.json", outputDir, workerID)
-			if err := timestamps.Write(tsPath); err != nil {
-				return fmt.Errorf("writing timestamps: %w", err)
+			// Write timestamps and JSONL to disk if output-dir is set
+			if outputDir != "" {
+				tsPath := fmt.Sprintf("%s/timestamps_%d.json", outputDir, workerID)
+				if err := timestamps.Write(tsPath); err != nil {
+					return fmt.Errorf("writing timestamps: %w", err)
+				}
 			}
 
-			// Print end-of-run summary
+			// Compute and print summary
 			rec.Close()
-			records, err := analysis.LoadRecords(outputDir)
-			if err == nil {
+			records := rec.Records()
+			if len(records) > 0 {
 				summary := analysis.Compute(records, 0, 0)
+				summary.Timestamps = timestamps
+
+				// Human-readable to stderr
 				fmt.Fprint(os.Stderr, "\n")
 				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
+
+				// Machine-readable JSON to stdout
+				jsonOut, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshalling summary: %w", err)
+				}
+				fmt.Println(string(jsonOut))
 			}
 
 			return nil
@@ -117,7 +147,7 @@ Modes:
 	cmd.Flags().IntVar(&maxInFlight, "max-inflight", 0, "Max concurrent requests (constant/poisson mode, 0=unlimited)")
 	cmd.Flags().DurationVar(&rampup, "rampup", 0, "Rampup duration (stagger streams or ramp rate)")
 	cmd.Flags().DurationVar(&duration, "duration", 60*time.Second, "Total benchmark duration")
-	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "Directory for output files")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&datasetType, "dataset", "synthetic", "Dataset type (synthetic, faker, corpus)")
 	cmd.Flags().StringVar(&corpusPath, "corpus-path", "", "Path to text file or directory (corpus dataset)")
