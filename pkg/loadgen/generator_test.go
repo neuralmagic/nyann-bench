@@ -187,13 +187,20 @@ func TestGeneratorRampup(t *testing.T) {
 	}
 
 	// Streams should start at different times
-	var times []float64
-	for _, t := range firstByStream {
-		times = append(times, t)
+	var minT, maxT float64
+	first := true
+	for _, st := range firstByStream {
+		if first || st < minT {
+			minT = st
+		}
+		if first || st > maxT {
+			maxT = st
+		}
+		first = false
 	}
-	spread := times[len(times)-1] - times[0]
+	spread := maxT - minT
 	if spread < 0.05 { // At least 50ms spread with 200ms rampup
-		t.Errorf("streams not staggered enough: spread=%fms", spread*1000)
+		t.Errorf("streams not staggered enough: spread=%.1fms", spread*1000)
 	}
 }
 
