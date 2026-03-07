@@ -98,8 +98,9 @@ prep-corpus SOURCE CORPUS_DIR NAMESPACE='vllm':
     kubectl -n {{NAMESPACE}} delete job corpus-prep --ignore-not-found=true
     CORPUS_DIR={{CORPUS_DIR}} SOURCE_URL="$URL" SOURCE_NAME={{SOURCE}} \
       envsubst < deploy/corpus-prep.yaml | kubectl -n {{NAMESPACE}} apply -f -
-    echo "Watching job... (ctrl-c when done)"
-    kubectl -n {{NAMESPACE}} logs -f job/corpus-prep
+    echo "Waiting for job to complete..."
+    kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=600s job/corpus-prep \
+      && kubectl -n {{NAMESPACE}} logs job/corpus-prep
 
 # Collect JSON summaries from completed Job pods (stdout)
 collect NAMESPACE='vllm':
