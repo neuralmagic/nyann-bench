@@ -53,7 +53,7 @@ smoke-test:
 
 # Deploy load generation Job to Kubernetes
 # CONFIG can be a file path or inline JSON string
-deploy TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='base' IMAGE_TAG='latest':
+deploy TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='base' IMAGE_TAG='latest' LOG_LEVEL='info':
     #!/usr/bin/env bash
     set -euo pipefail
     kubectl -n {{NAMESPACE}} delete job nyann-poker --ignore-not-found=true
@@ -78,6 +78,7 @@ deploy TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='base' 
     export TARGET={{TARGET}}
     export IMAGE_TAG={{IMAGE_TAG}}
     export ARCH={{ARCH}}
+    export LOG_LEVEL={{LOG_LEVEL}}
     kubectl kustomize "$OVERLAY_DIR" | envsubst | kubectl -n {{NAMESPACE}} apply -f -
 
 # Download a corpus and convert to flat text on Lustre

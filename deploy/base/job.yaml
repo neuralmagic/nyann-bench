@@ -53,6 +53,8 @@ spec:
               containerPort: 9090
               protocol: TCP
           args:
+            - --log-level
+            - ${LOG_LEVEL}
             - generate
             - --target
             - ${TARGET}
