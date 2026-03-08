@@ -9,10 +9,11 @@ import (
 )
 
 // Config defines a complete benchmark run.
-// Use either "load" for a single stage, or "stages" for a multi-stage sweep.
+// Use "load" for a single stage, "stages" for explicit steps, or "sweep" for a smooth ramp.
 type Config struct {
 	Load     Load     `json:"load"`
 	Stages   []Stage  `json:"stages,omitempty"`
+	Sweep    *Sweep   `json:"sweep,omitempty"`
 	Workload Workload `json:"workload"`
 }
 
@@ -20,6 +21,14 @@ type Config struct {
 type Stage struct {
 	Concurrency int      `json:"concurrency"`
 	Duration    Duration `json:"duration"`
+}
+
+// Sweep defines a smooth concurrency ramp from Min to Max over Steps stages.
+type Sweep struct {
+	Min          int      `json:"min"`
+	Max          int      `json:"max"`
+	Steps        int      `json:"steps"`
+	StepDuration Duration `json:"step_duration"`
 }
 
 // Load defines how requests are scheduled.
@@ -112,9 +121,11 @@ func (d Duration) Duration() time.Duration {
 }
 
 // EffectiveStages returns the stages to run.
-// If Stages is set, returns those directly.
-// Otherwise, returns a single stage from the Load config.
+// Priority: sweep > stages > single load config.
 func (c *Config) EffectiveStages() []Stage {
+	if c.Sweep != nil {
+		return SweepStages(c.Sweep.Min, c.Sweep.Max, c.Sweep.Steps, c.Sweep.StepDuration)
+	}
 	if len(c.Stages) > 0 {
 		return c.Stages
 	}

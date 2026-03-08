@@ -1,0 +1,13 @@
+{
+  "sweep": {
+    "min": 4,
+    "max": 2048,
+    "steps": 20,
+    "step_duration": "60s"
+  },
+  "workload": {
+    "type": "gsm8k",
+    "gsm8k_path": "/mnt/lustre/tms/gsm8k_test.jsonl",
+    "osl": 2048
+  }
+}
