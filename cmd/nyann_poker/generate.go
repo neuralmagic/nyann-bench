@@ -79,19 +79,37 @@ Workload types:
 				return fmt.Errorf("config: %w", err)
 			}
 
+			// Calibrate chars-per-token ratio
+			w := cfg.Workload
+			charsPerToken := w.CharsPerToken
+			if charsPerToken <= 0 {
+				c := client.New(target)
+				// Use a sample text for calibration
+				sample := "The quick brown fox jumps over the lazy dog. This is a sample of natural English text used to calibrate the tokenizer ratio for accurate input sequence length targeting."
+				calibrated, err := c.CalibrateTokenRatio(ctx, sample, model)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: tokenizer calibration failed (%v), using default 4.0 chars/token\n", err)
+					charsPerToken = 4.0
+				} else {
+					charsPerToken = calibrated
+					fmt.Fprintf(os.Stderr, "Calibrated chars/token: %.2f\n", charsPerToken)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Using configured chars/token: %.2f\n", charsPerToken)
+			}
+
 			// Build dataset
 			var ds dataset.Dataset
-			w := cfg.Workload
 			switch w.Type {
 			case "synthetic":
-				ds = dataset.NewSynthetic(w.ISL, w.OSL, w.Turns)
+				ds = dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
 			case "faker":
-				ds = dataset.NewFaker(w.ISL, w.OSL, w.Turns)
+				ds = dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
 			case "corpus":
 				if w.CorpusPath == "" {
 					return fmt.Errorf("workload.corpus_path is required for corpus type")
 				}
-				ds, err = dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns)
+				ds, err = dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
 				if err != nil {
 					return err
 				}

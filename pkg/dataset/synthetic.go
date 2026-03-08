@@ -10,16 +10,17 @@ import (
 
 // Synthetic generates synthetic conversations with configurable ISL, OSL, and turn count.
 type Synthetic struct {
-	ISL   int // Input sequence length (tokens per user message)
-	OSL   int // Output sequence length (requested via max_tokens)
-	Turns int // Number of turns per conversation
+	ISL           int
+	OSL           int
+	Turns         int
+	CharsPerToken float64
 }
 
-func NewSynthetic(isl, osl, turns int) *Synthetic {
+func NewSynthetic(isl, osl, turns int, charsPerToken float64) *Synthetic {
 	if turns < 1 {
 		turns = 1
 	}
-	return &Synthetic{ISL: isl, OSL: osl, Turns: turns}
+	return &Synthetic{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
 func (s *Synthetic) NextConversation() Conversation {
@@ -29,20 +30,18 @@ func (s *Synthetic) NextConversation() Conversation {
 	for t := 0; t < s.Turns; t++ {
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), s.ISL),
+			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), s.ISL, s.CharsPerToken),
 		}
 		history = append(history, userMsg)
 
-		// Copy history for this turn's message list
 		turnMsgs := make([]client.Message, len(history))
 		copy(turnMsgs, history)
 		turns[t] = turnMsgs
 
-		// Add a placeholder assistant response for subsequent turns' context
 		if t < s.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: padToTokens("This is a simulated assistant response.", s.OSL),
+				Content: padToTokens("This is a simulated assistant response.", s.OSL, s.CharsPerToken),
 			})
 		}
 	}
@@ -51,9 +50,8 @@ func (s *Synthetic) NextConversation() Conversation {
 }
 
 // padToTokens pads a string with random words to approximate the target token count.
-// Rough heuristic: 1 token ≈ 4 characters.
-func padToTokens(base string, targetTokens int) string {
-	targetChars := targetTokens * 4
+func padToTokens(base string, targetTokens int, charsPerToken float64) string {
+	targetChars := int(float64(targetTokens) * charsPerToken)
 	if len(base) >= targetChars {
 		return base[:targetChars]
 	}

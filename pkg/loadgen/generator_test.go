@@ -62,7 +62,7 @@ func TestGeneratorBasic(t *testing.T) {
 		Concurrency: 2,
 		Rampup:      0,
 		Duration:    500 * time.Millisecond,
-		Dataset:     dataset.NewSynthetic(32, 10, 1),
+		Dataset:     dataset.NewSynthetic(32, 10, 1, 4.0),
 		Recorder:    rec,
 	}
 
@@ -114,7 +114,7 @@ func TestGeneratorMultiTurn(t *testing.T) {
 		Model:       "test-model",
 		Concurrency: 1,
 		Duration:    1 * time.Second,
-		Dataset:     dataset.NewSynthetic(32, 10, 3), // 3 turns
+		Dataset:     dataset.NewSynthetic(32, 10, 3, 4.0), // 3 turns
 		Recorder:    rec,
 	}
 
@@ -155,7 +155,7 @@ func TestGeneratorRampup(t *testing.T) {
 		Concurrency: 4,
 		Rampup:      200 * time.Millisecond,
 		Duration:    800 * time.Millisecond,
-		Dataset:     dataset.NewSynthetic(16, 5, 1),
+		Dataset:     dataset.NewSynthetic(16, 5, 1, 4.0),
 		Recorder:    rec,
 	}
 

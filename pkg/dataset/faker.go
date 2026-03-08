@@ -11,17 +11,18 @@ import (
 
 // Faker generates conversations using gofakeit for realistic, diverse text.
 type Faker struct {
-	ISL   int
-	OSL   int
-	Turns int
-	seq   atomic.Uint64
+	ISL           int
+	OSL           int
+	Turns         int
+	CharsPerToken float64
+	seq           atomic.Uint64
 }
 
-func NewFaker(isl, osl, turns int) *Faker {
+func NewFaker(isl, osl, turns int, charsPerToken float64) *Faker {
 	if turns < 1 {
 		turns = 1
 	}
-	return &Faker{ISL: isl, OSL: osl, Turns: turns}
+	return &Faker{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
 func (f *Faker) NextConversation() Conversation {
@@ -35,7 +36,7 @@ func (f *Faker) NextConversation() Conversation {
 		prompt := f.generatePrompt(faker, t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padWithFaker(faker, prompt, f.ISL),
+			Content: padWithFaker(faker, prompt, f.ISL, f.CharsPerToken),
 		}
 		history = append(history, userMsg)
 
@@ -46,7 +47,7 @@ func (f *Faker) NextConversation() Conversation {
 		if t < f.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: padWithFaker(faker, "Here is my response.", f.OSL),
+				Content: padWithFaker(faker, "Here is my response.", f.OSL, f.CharsPerToken),
 			})
 		}
 	}
@@ -95,8 +96,8 @@ func (f *Faker) generatePrompt(faker *gofakeit.Faker, turn int) string {
 }
 
 // padWithFaker pads text to target token count using gofakeit paragraphs.
-func padWithFaker(faker *gofakeit.Faker, base string, targetTokens int) string {
-	targetChars := targetTokens * 4
+func padWithFaker(faker *gofakeit.Faker, base string, targetTokens int, charsPerToken float64) string {
+	targetChars := int(float64(targetTokens) * charsPerToken)
 	if len(base) >= targetChars {
 		return base[:targetChars]
 	}

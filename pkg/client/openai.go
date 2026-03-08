@@ -115,6 +115,58 @@ func (c *Client) DetectModel(ctx context.Context) (string, error) {
 	return result.Data[0].ID, nil
 }
 
+// CalibrateTokenRatio sends a sample text to /tokenize and returns the
+// measured chars-per-token ratio. Falls back to 4.0 if the endpoint is unavailable.
+func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model string) (float64, error) {
+	if len(sample) < 100 {
+		return 4.0, nil
+	}
+	// Use a ~2000 char sample for calibration
+	if len(sample) > 2000 {
+		sample = sample[:2000]
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":  model,
+		"prompt": sample,
+	})
+	if err != nil {
+		return 4.0, err
+	}
+
+	// Try /tokenize (vLLM endpoint, not under /v1)
+	baseURL := strings.TrimSuffix(c.BaseURL, "/v1")
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/tokenize", bytes.NewReader(body))
+	if err != nil {
+		return 4.0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("calling /tokenize: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("/tokenize returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("parsing /tokenize response: %w", err)
+	}
+
+	if result.Count == 0 {
+		return 0, fmt.Errorf("/tokenize returned 0 tokens")
+	}
+
+	ratio := float64(len(sample)) / float64(result.Count)
+	return ratio, nil
+}
+
 // ChatStream sends a streaming chat completion request and returns a Result
 // with token-level timing.
 func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {

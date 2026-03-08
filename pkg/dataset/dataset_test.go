@@ -10,7 +10,7 @@ import (
 )
 
 func TestSyntheticBasic(t *testing.T) {
-	ds := dataset.NewSynthetic(128, 256, 2)
+	ds := dataset.NewSynthetic(128, 256, 2, 4.0)
 	conv := ds.NextConversation()
 
 	if len(conv.Turns) != 2 {
@@ -30,7 +30,7 @@ func TestSyntheticBasic(t *testing.T) {
 }
 
 func TestFakerBasic(t *testing.T) {
-	ds := dataset.NewFaker(128, 256, 2)
+	ds := dataset.NewFaker(128, 256, 2, 4.0)
 	conv := ds.NextConversation()
 
 	if len(conv.Turns) != 2 {
@@ -50,7 +50,7 @@ func TestFakerBasic(t *testing.T) {
 func TestFakerDeterministic(t *testing.T) {
 	// Two separate Faker instances should produce different conversations
 	// because they use atomic sequence numbers
-	ds := dataset.NewFaker(64, 64, 1)
+	ds := dataset.NewFaker(64, 64, 1, 4.0)
 	c1 := ds.NextConversation()
 	c2 := ds.NextConversation()
 
@@ -69,7 +69,7 @@ func TestCorpusFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(path, 32, 16, 1)
+	ds, err := dataset.NewCorpus(path, 32, 16, 1, 4.0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestCorpusFromDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(dir, 32, 16, 1)
+	ds, err := dataset.NewCorpus(dir, 32, 16, 1, 4.0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestCorpusSlidingWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(path, 16, 8, 1) // 16 tokens = 64 chars per chunk
+	ds, err := dataset.NewCorpus(path, 16, 8, 1, 4.0) // 16 tokens * 4 chars = 64 chars per chunk
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestCorpusEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := dataset.NewCorpus(path, 32, 16, 1)
+	_, err := dataset.NewCorpus(path, 32, 16, 1, 4.0)
 	if err == nil {
 		t.Error("expected error for empty corpus")
 	}

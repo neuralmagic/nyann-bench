@@ -26,11 +26,12 @@ type Load struct {
 
 // Workload defines the dataset and request parameters.
 type Workload struct {
-	Type       string `json:"type"`                  // synthetic, faker, corpus
-	ISL        int    `json:"isl"`                   // input sequence length (tokens)
-	OSL        int    `json:"osl"`                   // output sequence length (tokens)
-	Turns      int    `json:"turns"`                 // turns per conversation
-	CorpusPath string `json:"corpus_path,omitempty"` // path to corpus file/directory
+	Type          string  `json:"type"`                    // synthetic, faker, corpus
+	ISL           int     `json:"isl"`                     // input sequence length (tokens)
+	OSL           int     `json:"osl"`                     // output sequence length (tokens)
+	Turns         int     `json:"turns"`                   // turns per conversation
+	CorpusPath    string  `json:"corpus_path,omitempty"`   // path to corpus file/directory
+	CharsPerToken float64 `json:"chars_per_token"`         // override auto-calibrated ratio (0 = auto)
 }
 
 // Parse reads a config from a JSON string or file path.
