@@ -298,17 +298,41 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 		}
 	}
 
-	convID := 0
+	// Prefetch the next conversation while the current request is in-flight.
+	// This overlaps dataset preparation with network I/O to minimize gaps.
+	type pending struct {
+		conv   dataset.Conversation
+		convID string
+	}
+	prefetch := make(chan pending, 1)
+	nextID := 0
+
+	fill := func() {
+		conv := g.Dataset.NextConversation()
+		id := fmt.Sprintf("w%d-c%d", streamID, nextID)
+		nextID++
+		prefetch <- pending{conv: conv, convID: id}
+	}
+
+	// Seed the prefetch buffer
+	go fill()
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		conversation := g.Dataset.NextConversation()
-		conversationID := fmt.Sprintf("w%d-c%d", streamID, convID)
-		convID++
+		var p pending
+		select {
+		case p = <-prefetch:
+		case <-ctx.Done():
+			return
+		}
 
-		g.runConversation(ctx, c, streamID, conversationID, conversation)
+		// Start prefetching the next conversation while this request runs
+		go fill()
+
+		g.runConversation(ctx, c, streamID, p.convID, p.conv)
 	}
 }
 
@@ -324,11 +348,17 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 
 	result := c.CompletionStream(ctx, req)
 
+	// Record and eval asynchronously so the stream can fire the next request immediately.
+	g.recordResult(result, streamID, convID, 0, conv)
+}
+
+// recordResult handles eval, metrics, and recording for a completed request.
+func (g *Generator) recordResult(result *client.Result, streamID int, convID string, turn int, conv dataset.Conversation) {
 	rec := &recorder.Record{
-		RequestID:      fmt.Sprintf("%s-t0", convID),
+		RequestID:      fmt.Sprintf("%s-t%d", convID, turn),
 		StreamID:       streamID,
 		ConversationID: convID,
-		Turn:           0,
+		Turn:           turn,
 		StartTime:      recorder.TimeToFloat(result.RequestStart),
 		EndTime:        recorder.TimeToFloat(result.EndTime),
 		TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
@@ -424,82 +454,11 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 
 		result := c.ChatStream(ctx, req)
 
-		rec := &recorder.Record{
-			RequestID:      fmt.Sprintf("%s-t%d", convID, turnIdx),
-			StreamID:       streamID,
-			ConversationID: convID,
-			Turn:           turnIdx,
-			StartTime:      recorder.TimeToFloat(result.RequestStart),
-			EndTime:        recorder.TimeToFloat(result.EndTime),
-			TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
-			OutputTokens:   result.OutputTokens(),
-		}
-
 		if result.Err != nil {
-			rec.Status = "error"
-			rec.Error = result.Err.Error()
-			if g.Metrics != nil {
-				g.Metrics.RequestsTotal.WithLabelValues("error").Inc()
-			}
-			if err := g.Recorder.Write(rec); err != nil {
-				slog.Error("Recorder write error", "error", err)
-			}
+			g.recordResult(result, streamID, convID, turnIdx, conv)
 			return
 		}
 
-		rec.Status = "ok"
-		rec.TTFT = result.TTFT().Seconds() * 1000
-
-		itls := result.ITLs()
-		rec.ITLs = make([]float64, len(itls))
-		for i, d := range itls {
-			rec.ITLs[i] = d.Seconds() * 1000
-		}
-
-		if result.Usage != nil {
-			rec.PromptTokens = result.Usage.PromptTokens
-			rec.OutputTokens = result.Usage.CompletionTokens
-		}
-
-		// Evaluate response if expected answer is set
-		if conv.ExpectedAnswer != "" {
-			extracted := eval.ExtractAnswer(result.Content)
-			correct := eval.CheckCorrect(conv.ExpectedAnswer, extracted)
-			rec.EvalExpected = conv.ExpectedAnswer
-			rec.EvalExtracted = extracted
-			rec.EvalCorrect = &correct
-			if !correct {
-				snippet := result.Content
-				if len(snippet) > 200 {
-					snippet = snippet[:200] + "..."
-				}
-				slog.Debug("Eval miss",
-					"conv", convID,
-					"expected", conv.ExpectedAnswer,
-					"extracted", extracted,
-					"response", snippet)
-			}
-			if g.Metrics != nil {
-				g.Metrics.RecordEval(correct)
-			}
-		}
-
-		// Emit Prometheus metrics
-		if g.Metrics != nil {
-			g.Metrics.RequestsTotal.WithLabelValues("ok").Inc()
-			if rec.TTFT > 0 {
-				g.Metrics.TTFTSeconds.Observe(rec.TTFT / 1000)
-			}
-			for _, itl := range rec.ITLs {
-				g.Metrics.ITLSeconds.Observe(itl / 1000)
-			}
-			g.Metrics.E2ESeconds.Observe(rec.TotalLatencyMs / 1000)
-			g.Metrics.OutputTokens.Observe(float64(rec.OutputTokens))
-			g.Metrics.PromptTokens.Observe(float64(rec.PromptTokens))
-		}
-
-		if err := g.Recorder.Write(rec); err != nil {
-			slog.Error("Recorder write error", "error", err)
-		}
+		g.recordResult(result, streamID, convID, turnIdx, conv)
 	}
 }
