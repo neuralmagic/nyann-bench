@@ -1,12 +1,11 @@
 {
   "stages": [
-    {"concurrency": 1, "duration": "120s"},
-    {"concurrency": 10, "duration": "120s"},
-    {"concurrency": 50, "duration": "120s"},
-    {"concurrency": 200, "duration": "120s"},
-    {"concurrency": 500, "duration": "120s"},
-    {"concurrency": 1024, "duration": "120s"},
-    {"concurrency": 2048, "duration": "120s"}
+    {"concurrency": 4, "duration": "30s"},
+    {"concurrency": 16, "duration": "30s"},
+    {"concurrency": 64, "duration": "30s"},
+    {"concurrency": 256, "duration": "30s"},
+    {"concurrency": 1024, "duration": "30s",
+    {"concurrency": 2048, "duration": "30s"}
   ],
   "workload": {
     "type": "gsm8k",
