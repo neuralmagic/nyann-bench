@@ -15,6 +15,8 @@ type Metrics struct {
 	EvalIncorrect   prometheus.Counter
 	EvalNoAnswer    prometheus.Counter
 	Accuracy        prometheus.Gauge
+	Concurrency     prometheus.Gauge
+	Stage           prometheus.Gauge
 	TTFTSeconds     prometheus.Histogram
 	ITLSeconds      prometheus.Histogram
 	E2ESeconds      prometheus.Histogram
@@ -65,6 +67,16 @@ func New(reg *prometheus.Registry, workloadName string) *Metrics {
 			Help:        "Running accuracy (correct / total evaluated)",
 			ConstLabels: constLabels,
 		}),
+		Concurrency: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name:        "nyann_concurrency",
+			Help:        "Current concurrency level",
+			ConstLabels: constLabels,
+		}),
+		Stage: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name:        "nyann_stage",
+			Help:        "Current stage index (0-based)",
+			ConstLabels: constLabels,
+		}),
 
 		TTFTSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:        "nyann_ttft_seconds",
@@ -101,6 +113,7 @@ func New(reg *prometheus.Registry, workloadName string) *Metrics {
 	reg.MustRegister(
 		m.RequestsTotal,
 		m.EvalTotal, m.EvalCorrect, m.EvalIncorrect, m.EvalNoAnswer, m.Accuracy,
+		m.Concurrency, m.Stage,
 		m.TTFTSeconds, m.ITLSeconds, m.E2ESeconds,
 		m.OutputTokens, m.PromptTokens,
 	)

@@ -1,0 +1,16 @@
+{
+  "stages": [
+    {"concurrency": 1, "duration": "120s"},
+    {"concurrency": 10, "duration": "120s"},
+    {"concurrency": 50, "duration": "120s"},
+    {"concurrency": 200, "duration": "120s"},
+    {"concurrency": 500, "duration": "120s"},
+    {"concurrency": 1024, "duration": "120s"},
+    {"concurrency": 2048, "duration": "120s"}
+  ],
+  "workload": {
+    "type": "gsm8k",
+    "gsm8k_path": "/mnt/lustre/tms/gsm8k_test.jsonl",
+    "osl": 2048
+  }
+}

@@ -9,9 +9,17 @@ import (
 )
 
 // Config defines a complete benchmark run.
+// Use either "load" for a single stage, or "stages" for a multi-stage sweep.
 type Config struct {
 	Load     Load     `json:"load"`
+	Stages   []Stage  `json:"stages,omitempty"`
 	Workload Workload `json:"workload"`
+}
+
+// Stage defines one step in a multi-stage sweep.
+type Stage struct {
+	Concurrency int      `json:"concurrency"`
+	Duration    Duration `json:"duration"`
 }
 
 // Load defines how requests are scheduled.
@@ -101,4 +109,33 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
+}
+
+// EffectiveStages returns the stages to run.
+// If Stages is set, returns those directly.
+// Otherwise, returns a single stage from the Load config.
+func (c *Config) EffectiveStages() []Stage {
+	if len(c.Stages) > 0 {
+		return c.Stages
+	}
+	return []Stage{{
+		Concurrency: c.Load.Concurrency,
+		Duration:    c.Load.Duration,
+	}}
+}
+
+// SweepStages generates N evenly-spaced concurrency stages from min to max.
+func SweepStages(minC, maxC, steps int, stageDuration Duration) []Stage {
+	if steps < 2 {
+		return []Stage{{Concurrency: maxC, Duration: stageDuration}}
+	}
+	stages := make([]Stage, steps)
+	for i := 0; i < steps; i++ {
+		c := minC + (maxC-minC)*i/(steps-1)
+		if c < 1 {
+			c = 1
+		}
+		stages[i] = Stage{Concurrency: c, Duration: stageDuration}
+	}
+	return stages
 }

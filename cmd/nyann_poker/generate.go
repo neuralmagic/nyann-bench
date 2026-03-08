@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -162,24 +163,49 @@ Workload types:
 				}()
 			}
 
-			// Build and run generator
-			gen := &loadgen.Generator{
-				Target:      target,
-				Model:       model,
-				Mode:        loadgen.Mode(cfg.Load.Mode),
-				Concurrency: cfg.Load.Concurrency,
-				Rate:        cfg.Load.Rate,
-				MaxInFlight: cfg.Load.MaxInFlight,
-				Rampup:      cfg.Load.Rampup.Duration(),
-				Duration:    cfg.Load.Duration.Duration(),
-				Dataset:     ds,
-				Recorder:    rec,
-				Metrics:     m,
+			// Run stages
+			stages := cfg.EffectiveStages()
+			startTime := time.Now()
+
+			for i, stage := range stages {
+				if ctx.Err() != nil {
+					break
+				}
+
+				fmt.Fprintf(os.Stderr, "Stage %d/%d: concurrency=%d duration=%s\n",
+					i+1, len(stages), stage.Concurrency, stage.Duration.Duration())
+
+				if m != nil {
+					m.Stage.Set(float64(i))
+					m.Concurrency.Set(float64(stage.Concurrency))
+				}
+
+				gen := &loadgen.Generator{
+					Target:      target,
+					Model:       model,
+					Mode:        loadgen.Mode(cfg.Load.Mode),
+					Concurrency: stage.Concurrency,
+					Rate:        cfg.Load.Rate,
+					MaxInFlight: cfg.Load.MaxInFlight,
+					Rampup:      cfg.Load.Rampup.Duration(),
+					Duration:    stage.Duration.Duration(),
+					Dataset:     ds,
+					Recorder:    rec,
+					Metrics:     m,
+				}
+
+				if _, err := gen.Run(ctx); err != nil {
+					return err
+				}
 			}
 
-			timestamps, err := gen.Run(ctx)
-			if err != nil {
-				return err
+			endTime := time.Now()
+			timestamps := &recorder.Timestamps{
+				StartTime:     recorder.TimeToFloat(startTime),
+				RampupEndTime: recorder.TimeToFloat(startTime.Add(cfg.Load.Rampup.Duration())),
+				EndTime:       recorder.TimeToFloat(endTime),
+				RampupSeconds: cfg.Load.Rampup.Duration().Seconds(),
+				TotalSeconds:  endTime.Sub(startTime).Seconds(),
 			}
 
 			// Write files to disk if output-dir is set
