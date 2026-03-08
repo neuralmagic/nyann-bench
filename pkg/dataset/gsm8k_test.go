@@ -3,6 +3,7 @@ package dataset_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
@@ -19,30 +20,30 @@ func TestGSM8KFromJSONL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewGSM8K(path, 512)
+	ds, err := dataset.NewGSM8K(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	conv := ds.NextConversation()
-	if len(conv.Turns) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(conv.Turns))
+	if conv.Prompt == "" {
+		t.Fatal("expected non-empty Prompt for completions API")
 	}
-	if conv.MaxTokens != 512 {
-		t.Errorf("expected MaxTokens=512, got %d", conv.MaxTokens)
+	if len(conv.Turns) != 0 {
+		t.Errorf("expected no Turns for completions mode, got %d", len(conv.Turns))
+	}
+	if conv.MaxTokens != 0 {
+		t.Errorf("expected MaxTokens=0 (no limit), got %d", conv.MaxTokens)
 	}
 	if conv.ExpectedAnswer != "12" {
 		t.Errorf("expected answer '12', got %q", conv.ExpectedAnswer)
 	}
-	// Should have system + user messages
-	if len(conv.Turns[0]) != 2 {
-		t.Errorf("expected 2 messages (system+user), got %d", len(conv.Turns[0]))
+	// 0-shot: should just be "Question: ...\nAnswer:"
+	if !strings.HasPrefix(conv.Prompt, "Question: If there are 3 cars") {
+		t.Errorf("unexpected prompt start: %s", conv.Prompt[:50])
 	}
-	if conv.Turns[0][0].Role != "system" {
-		t.Errorf("expected system message first, got %s", conv.Turns[0][0].Role)
-	}
-	if conv.Turns[0][1].Content != "If there are 3 cars and each has 4 wheels, how many wheels total?" {
-		t.Errorf("unexpected question content: %s", conv.Turns[0][1].Content)
+	if !strings.HasSuffix(conv.Prompt, "\nAnswer:") {
+		t.Errorf("expected prompt to end with 'Answer:', got: ...%s", conv.Prompt[len(conv.Prompt)-20:])
 	}
 }
 
@@ -55,7 +56,7 @@ func TestGSM8KFromJSONArray(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewGSM8K(path, 256)
+	ds, err := dataset.NewGSM8K(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func TestGSM8KWrapsAround(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewGSM8K(path, 256)
+	ds, err := dataset.NewGSM8K(path, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +105,66 @@ func TestGSM8KEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := dataset.NewGSM8K(path, 256)
+	_, err := dataset.NewGSM8K(path, "", 0)
 	if err == nil {
 		t.Error("expected error for empty file")
+	}
+}
+
+func TestGSM8KFewShot(t *testing.T) {
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "test.jsonl")
+	trainPath := filepath.Join(dir, "train.jsonl")
+
+	testData := `{"question":"What is 10+5?","answer":"10 + 5 = 15\n#### 15"}`
+	trainData := `{"question":"What is 1+1?","answer":"1 + 1 = 2\n#### 2"}
+{"question":"What is 2+2?","answer":"2 + 2 = 4\n#### 4"}
+{"question":"What is 3+3?","answer":"3 + 3 = 6\n#### 6"}
+`
+	os.WriteFile(testPath, []byte(testData), 0644)
+	os.WriteFile(trainPath, []byte(trainData), 0644)
+
+	ds, err := dataset.NewGSM8K(testPath, trainPath, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conv := ds.NextConversation()
+	if conv.Prompt == "" {
+		t.Fatal("expected non-empty Prompt")
+	}
+
+	// Should contain few-shot examples before the test question
+	if !strings.Contains(conv.Prompt, "Question: What is 10+5?") {
+		t.Error("prompt should contain test question")
+	}
+	if !strings.HasSuffix(conv.Prompt, "\nAnswer:") {
+		t.Errorf("prompt should end with 'Answer:', got: ...%s", conv.Prompt[len(conv.Prompt)-20:])
+	}
+
+	// Count "Question:" occurrences — should be 3 (2 few-shot + 1 test)
+	count := strings.Count(conv.Prompt, "Question:")
+	if count != 3 {
+		t.Errorf("expected 3 'Question:' occurrences (2 few-shot + 1 test), got %d", count)
+	}
+
+	// Few-shot answers should appear in the prompt
+	if !strings.Contains(conv.Prompt, "Answer:") {
+		t.Error("prompt should contain 'Answer:' from few-shot examples")
+	}
+
+	if conv.ExpectedAnswer != "15" {
+		t.Errorf("expected answer '15', got %q", conv.ExpectedAnswer)
+	}
+}
+
+func TestGSM8KFewShotRequiresTrainPath(t *testing.T) {
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "test.jsonl")
+	os.WriteFile(testPath, []byte(`{"question":"Q","answer":"#### 1"}`), 0644)
+
+	_, err := dataset.NewGSM8K(testPath, "", 5)
+	if err == nil {
+		t.Error("expected error when num_fewshot > 0 without train path")
 	}
 }

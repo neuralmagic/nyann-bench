@@ -417,6 +417,54 @@ func TestGeneratorEvalNoAnswer(t *testing.T) {
 	}
 }
 
+func TestGeneratorCompletionsEval(t *testing.T) {
+	// Test that the completions API path works with eval
+	addr := startMockServerWithContent(t, "Let me solve this step by step.\n6 * 7 = 42\n#### 42")
+	outDir := t.TempDir()
+
+	rec, err := recorder.New(outDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+
+	ds := &completionEvalDataset{answer: "42"}
+
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    2 * time.Second,
+		Dataset:     ds,
+		Recorder:    rec,
+	}
+
+	_, err = gen.Run(context.Background())
+	if err != nil {
+		t.Fatalf("generator run failed: %v", err)
+	}
+
+	rec.Close()
+	records := readRecords(t, filepath.Join(outDir, "requests_0.jsonl"))
+
+	found := false
+	for _, r := range records {
+		if r.Status != "ok" || r.EvalCorrect == nil {
+			continue
+		}
+		found = true
+		if !*r.EvalCorrect {
+			t.Error("expected correct eval")
+		}
+		if r.EvalExtracted != "42" {
+			t.Errorf("expected EvalExtracted='42', got %q", r.EvalExtracted)
+		}
+	}
+	if !found {
+		t.Fatal("no eval records found")
+	}
+}
+
 // evalDataset is a test dataset that returns single-turn conversations with ExpectedAnswer.
 type evalDataset struct {
 	answer string
@@ -430,6 +478,18 @@ func (d *evalDataset) NextConversation() dataset.Conversation {
 			},
 		},
 		MaxTokens:      100,
+		ExpectedAnswer: d.answer,
+	}
+}
+
+// completionEvalDataset returns conversations that use the completions API path.
+type completionEvalDataset struct {
+	answer string
+}
+
+func (d *completionEvalDataset) NextConversation() dataset.Conversation {
+	return dataset.Conversation{
+		Prompt:         "Question: What is 6 * 7?\nAnswer:",
 		ExpectedAnswer: d.answer,
 	}
 }

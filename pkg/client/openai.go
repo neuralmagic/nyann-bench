@@ -24,6 +24,13 @@ type Request struct {
 	MaxTokens int       `json:"max_tokens,omitempty"`
 }
 
+type CompletionRequest struct {
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	Stream    bool   `json:"stream"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
 type TokenEvent struct {
 	Content  string
 	Time     time.Time
@@ -240,6 +247,93 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 			}
 			result.TokenTimes = append(result.TokenTimes, now)
 			content.WriteString(chunk.Choices[0].Delta.Content)
+		}
+
+		if chunk.Usage != nil {
+			result.Usage = chunk.Usage
+		}
+	}
+
+	result.Content = content.String()
+	result.EndTime = time.Now()
+
+	if err := scanner.Err(); err != nil {
+		result.Err = fmt.Errorf("reading stream: %w", err)
+	}
+
+	return result
+}
+
+// CompletionStream sends a streaming completion request to /v1/completions
+// and returns a Result with token-level timing.
+func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *Result {
+	req.Stream = true
+	result := &Result{RequestStart: time.Now()}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		result.Err = fmt.Errorf("marshaling request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.BaseURL+"/completions", bytes.NewReader(body))
+	if err != nil {
+		result.Err = fmt.Errorf("creating request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		result.Err = fmt.Errorf("sending request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		result.Err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		result.EndTime = time.Now()
+		return result
+	}
+
+	var content strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		now := time.Now()
+
+		var chunk struct {
+			Choices []struct {
+				Text         string  `json:"text"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *Usage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Text != "" {
+			if result.FirstToken.IsZero() {
+				result.FirstToken = now
+			}
+			result.TokenTimes = append(result.TokenTimes, now)
+			content.WriteString(chunk.Choices[0].Text)
 		}
 
 		if chunk.Usage != nil {

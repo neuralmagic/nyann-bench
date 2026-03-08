@@ -24,9 +24,17 @@ type chatRequest struct {
 	MaxTokens int             `json:"max_tokens,omitempty"`
 }
 
+type completionRequest struct {
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	Stream    bool   `json:"stream"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
 func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -66,6 +74,128 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleStreaming(w, model, outputTokens)
+}
+
+func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
+	var req completionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	outputTokens := s.OutputTokens
+	if req.MaxTokens > 0 {
+		outputTokens = req.MaxTokens
+	}
+
+	model := req.Model
+	if model == "" {
+		model = s.Model
+	}
+
+	if !req.Stream {
+		s.handleCompletionNonStreaming(w, model, outputTokens)
+		return
+	}
+	s.handleCompletionStreaming(w, model, outputTokens)
+}
+
+func (s *Server) handleCompletionNonStreaming(w http.ResponseWriter, model string, outputTokens int) {
+	time.Sleep(s.TTFT + s.ITL*time.Duration(outputTokens-1))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"id":      fmt.Sprintf("cmpl-%d", rand.Int63()),
+		"object":  "text_completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"text":          s.completionContent(outputTokens),
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{
+			"completion_tokens": outputTokens,
+			"total_tokens":      outputTokens,
+		},
+	})
+}
+
+func (s *Server) handleCompletionStreaming(w http.ResponseWriter, model string, outputTokens int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	id := fmt.Sprintf("cmpl-%d", rand.Int63())
+
+	time.Sleep(s.TTFT)
+
+	chunks := make([]string, outputTokens)
+	content := s.completionContent(outputTokens)
+	runes := []rune(content)
+	chunkSize := (len(runes) + outputTokens - 1) / outputTokens
+	for i := 0; i < outputTokens; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if start >= len(runes) {
+			chunks[i] = ""
+		} else {
+			if end > len(runes) {
+				end = len(runes)
+			}
+			chunks[i] = string(runes[start:end])
+		}
+	}
+
+	for i := 0; i < outputTokens; i++ {
+		if i > 0 {
+			time.Sleep(s.ITL)
+		}
+
+		writeSSE(w, flusher, map[string]any{
+			"id":      id,
+			"object":  "text_completion",
+			"created": time.Now().Unix(),
+			"model":   model,
+			"choices": []map[string]any{{
+				"index": 0,
+				"text":  chunks[i],
+			}},
+		})
+	}
+
+	// Final chunk with usage
+	writeSSE(w, flusher, map[string]any{
+		"id":      id,
+		"object":  "text_completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"text":          "",
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{
+			"completion_tokens": outputTokens,
+			"total_tokens":      outputTokens,
+		},
+	})
+
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func (s *Server) completionContent(outputTokens int) string {
+	if s.ResponseContent != "" {
+		return s.ResponseContent
+	}
+	return filler(outputTokens)
 }
 
 func (s *Server) handleNonStreaming(w http.ResponseWriter, model string, outputTokens int) {

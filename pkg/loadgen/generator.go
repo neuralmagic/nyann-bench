@@ -208,7 +208,91 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 	}
 }
 
+func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {
+	req := &client.CompletionRequest{
+		Model:     g.Model,
+		Prompt:    conv.Prompt,
+		Stream:    true,
+		MaxTokens: conv.MaxTokens,
+	}
+
+	result := c.CompletionStream(ctx, req)
+
+	rec := &recorder.Record{
+		RequestID:      fmt.Sprintf("%s-t0", convID),
+		StreamID:       streamID,
+		ConversationID: convID,
+		Turn:           0,
+		StartTime:      recorder.TimeToFloat(result.RequestStart),
+		EndTime:        recorder.TimeToFloat(result.EndTime),
+		TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
+		OutputTokens:   result.OutputTokens(),
+	}
+
+	if result.Err != nil {
+		rec.Status = "error"
+		rec.Error = result.Err.Error()
+		if g.Metrics != nil {
+			g.Metrics.RequestsTotal.WithLabelValues("error").Inc()
+		}
+		if err := g.Recorder.Write(rec); err != nil {
+			fmt.Fprintf(os.Stderr, "recorder write error: %v\n", err)
+		}
+		return
+	}
+
+	rec.Status = "ok"
+	rec.TTFT = result.TTFT().Seconds() * 1000
+
+	itls := result.ITLs()
+	rec.ITLs = make([]float64, len(itls))
+	for i, d := range itls {
+		rec.ITLs[i] = d.Seconds() * 1000
+	}
+
+	if result.Usage != nil {
+		rec.PromptTokens = result.Usage.PromptTokens
+		rec.OutputTokens = result.Usage.CompletionTokens
+	}
+
+	// Evaluate response if expected answer is set
+	if conv.ExpectedAnswer != "" {
+		extracted := eval.ExtractAnswer(result.Content)
+		correct := eval.CheckCorrect(conv.ExpectedAnswer, extracted)
+		rec.EvalExpected = conv.ExpectedAnswer
+		rec.EvalExtracted = extracted
+		rec.EvalCorrect = &correct
+		if g.Metrics != nil {
+			g.Metrics.RecordEval(correct, extracted != "")
+		}
+	}
+
+	// Emit Prometheus metrics
+	if g.Metrics != nil {
+		g.Metrics.RequestsTotal.WithLabelValues("ok").Inc()
+		if rec.TTFT > 0 {
+			g.Metrics.TTFTSeconds.Observe(rec.TTFT / 1000)
+		}
+		for _, itl := range rec.ITLs {
+			g.Metrics.ITLSeconds.Observe(itl / 1000)
+		}
+		g.Metrics.E2ESeconds.Observe(rec.TotalLatencyMs / 1000)
+		g.Metrics.OutputTokens.Observe(float64(rec.OutputTokens))
+		g.Metrics.PromptTokens.Observe(float64(rec.PromptTokens))
+	}
+
+	if err := g.Recorder.Write(rec); err != nil {
+		fmt.Fprintf(os.Stderr, "recorder write error: %v\n", err)
+	}
+}
+
 func (g *Generator) runConversation(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {
+	// Completions API path (e.g., GSM8K with few-shot)
+	if conv.Prompt != "" {
+		g.runCompletion(ctx, c, streamID, convID, conv)
+		return
+	}
+
 	for turnIdx, messages := range conv.Turns {
 		if ctx.Err() != nil {
 			return

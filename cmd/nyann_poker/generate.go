@@ -124,7 +124,13 @@ Workload types:
 				if w.GSM8KPath == "" {
 					return fmt.Errorf("workload.gsm8k_path is required for gsm8k type")
 				}
-				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.OSL)
+				if w.OSL != 0 {
+					return fmt.Errorf("workload.osl must not be set for gsm8k (model must generate freely to produce the answer)")
+				}
+				if w.NumFewShot > 0 && w.GSM8KTrainPath == "" {
+					return fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
+				}
+				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, w.NumFewShot)
 				if err != nil {
 					return err
 				}
