@@ -13,7 +13,6 @@ type Metrics struct {
 	EvalTotal       prometheus.Counter
 	EvalCorrect     prometheus.Counter
 	EvalIncorrect   prometheus.Counter
-	EvalNoAnswer    prometheus.Counter
 	Accuracy        prometheus.Gauge
 	Concurrency     prometheus.Gauge
 	Stage           prometheus.Gauge
@@ -55,11 +54,6 @@ func New(reg *prometheus.Registry, workloadName string) *Metrics {
 		EvalIncorrect: prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        "nyann_eval_incorrect",
 			Help:        "Incorrectly answered responses",
-			ConstLabels: constLabels,
-		}),
-		EvalNoAnswer: prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        "nyann_eval_no_answer",
-			Help:        "Responses where no answer could be extracted",
 			ConstLabels: constLabels,
 		}),
 		Accuracy: prometheus.NewGauge(prometheus.GaugeOpts{
@@ -112,7 +106,7 @@ func New(reg *prometheus.Registry, workloadName string) *Metrics {
 
 	reg.MustRegister(
 		m.RequestsTotal,
-		m.EvalTotal, m.EvalCorrect, m.EvalIncorrect, m.EvalNoAnswer, m.Accuracy,
+		m.EvalTotal, m.EvalCorrect, m.EvalIncorrect, m.Accuracy,
 		m.Concurrency, m.Stage,
 		m.TTFTSeconds, m.ITLSeconds, m.E2ESeconds,
 		m.OutputTokens, m.PromptTokens,
@@ -122,12 +116,10 @@ func New(reg *prometheus.Registry, workloadName string) *Metrics {
 }
 
 // RecordEval updates eval counters and accuracy gauge.
-func (m *Metrics) RecordEval(correct bool, hasAnswer bool) {
+func (m *Metrics) RecordEval(correct bool) {
 	m.EvalTotal.Inc()
 	m.totalCount++
-	if !hasAnswer {
-		m.EvalNoAnswer.Inc()
-	} else if correct {
+	if correct {
 		m.EvalCorrect.Inc()
 		m.correctCount++
 	} else {

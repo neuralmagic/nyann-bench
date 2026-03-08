@@ -369,8 +369,8 @@ func TestGeneratorEvalIncorrect(t *testing.T) {
 	}
 }
 
-func TestGeneratorEvalNoAnswer(t *testing.T) {
-	// Mock server returns default "tok tok tok..." — no number to extract
+func TestGeneratorEvalIncorrectWhenNoAnswer(t *testing.T) {
+	// Mock server returns default "tok tok tok..." — no number to extract, scored as incorrect
 	addr := startMockServer(t)
 	outDir := t.TempDir()
 
@@ -407,9 +407,6 @@ func TestGeneratorEvalNoAnswer(t *testing.T) {
 		found = true
 		if *r.EvalCorrect {
 			t.Error("expected incorrect eval (no answer extractable)")
-		}
-		if r.EvalExtracted != "" {
-			t.Errorf("expected empty EvalExtracted, got %q", r.EvalExtracted)
 		}
 	}
 	if !found {

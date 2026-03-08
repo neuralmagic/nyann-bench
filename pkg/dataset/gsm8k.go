@@ -75,6 +75,7 @@ func (g *GSM8K) NextConversation() Conversation {
 	return Conversation{
 		Prompt:         prompt,
 		MaxTokens:      0, // no limit — model must finish its chain-of-thought
+		Stop:           []string{"Question:", "\n\nQuestion"},
 		ExpectedAnswer: eval.ExtractExpected(item.Answer),
 	}
 }

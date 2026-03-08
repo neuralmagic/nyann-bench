@@ -21,6 +21,7 @@ func TestExtractAnswer(t *testing.T) {
 		{"hash with trailing text", "#### 42 dollars", "42"},
 		{"empty", "", ""},
 		{"no numbers", "I don't know the answer.", ""},
+		{"deepseek r1 style", " First, find how many clips she sold in May: 48 ÷ 2 = 24.\nThen, add the clips sold in April and May: 48 + 24 = 72.\nSo, Natalia sold 72 clips altogether in April and May.", "72"},
 	}
 
 	for _, tt := range tests {

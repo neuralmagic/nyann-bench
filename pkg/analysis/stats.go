@@ -36,7 +36,6 @@ type Summary struct {
 	EvalTotal     int     `json:"eval_total,omitempty"`
 	EvalCorrect   int     `json:"eval_correct,omitempty"`
 	EvalIncorrect int     `json:"eval_incorrect,omitempty"`
-	EvalNoAnswer  int     `json:"eval_no_answer,omitempty"`
 	EvalAccuracy  float64 `json:"eval_accuracy,omitempty"`
 
 	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
@@ -204,8 +203,6 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 			s.EvalTotal++
 			if *r.EvalCorrect {
 				s.EvalCorrect++
-			} else if r.EvalExtracted == "" {
-				s.EvalNoAnswer++
 			} else {
 				s.EvalIncorrect++
 			}
@@ -274,8 +271,8 @@ func FormatSummary(s *Summary) string {
 		s.E2EMs.Mean, s.E2EMs.P50, s.E2EMs.P90, s.E2EMs.P99, s.E2EMs.Min, s.E2EMs.Max)
 	if s.EvalTotal > 0 {
 		fmt.Fprintf(&b, "\n")
-		fmt.Fprintf(&b, "Eval:           %d total, %d correct, %d incorrect, %d no-answer\n",
-			s.EvalTotal, s.EvalCorrect, s.EvalIncorrect, s.EvalNoAnswer)
+		fmt.Fprintf(&b, "Eval:           %d total, %d correct, %d incorrect\n",
+			s.EvalTotal, s.EvalCorrect, s.EvalIncorrect)
 		fmt.Fprintf(&b, "Accuracy:       %.1f%%\n", s.EvalAccuracy*100)
 	}
 	return b.String()

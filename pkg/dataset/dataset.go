@@ -7,6 +7,7 @@ type Conversation struct {
 	Turns          [][]client.Message // Messages for each turn (cumulative history)
 	Prompt         string             // If non-empty, use completions API instead of chat (single-turn only)
 	MaxTokens      int                // Requested max output tokens per turn (0 = no limit)
+	Stop           []string           // Stop sequences for completions API
 	ExpectedAnswer string             // If non-empty, evaluate the model's response against this
 }
 

@@ -89,11 +89,8 @@ prep-corpus SOURCE CORPUS_DIR NAMESPACE='vllm':
       sharegpt)
         URL="https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json"
         ;;
-      gsm8k)
-        URL="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
-        ;;
       *)
-        echo "Unknown source: {{SOURCE}} (options: sharegpt, gsm8k)" >&2
+        echo "Unknown source: {{SOURCE}} (options: sharegpt)" >&2
         exit 1
         ;;
     esac
@@ -103,6 +100,60 @@ prep-corpus SOURCE CORPUS_DIR NAMESPACE='vllm':
     echo "Waiting for job to complete..."
     kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=600s job/corpus-prep \
       && kubectl -n {{NAMESPACE}} logs job/corpus-prep
+
+# Download GSM8K test and train JSONL files for the gsm8k dataset type
+prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TEST_URL="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
+    TRAIN_URL="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl"
+    kubectl -n {{NAMESPACE}} delete job gsm8k-prep --ignore-not-found=true
+    kubectl -n {{NAMESPACE}} apply -f - <<EOF
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: gsm8k-prep
+      labels:
+        app: nyann-poker
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.present
+                        operator: Exists
+          containers:
+            - name: download
+              image: curlimages/curl:8.5.0
+              securityContext:
+                runAsUser: 0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  mkdir -p {{OUTPUT_DIR}}
+                  echo "Downloading GSM8K test split..."
+                  curl -fL -o {{OUTPUT_DIR}}/gsm8k_test.jsonl "${TEST_URL}"
+                  echo "Downloading GSM8K train split..."
+                  curl -fL -o {{OUTPUT_DIR}}/gsm8k_train.jsonl "${TRAIN_URL}"
+                  echo "Done."
+                  ls -lh {{OUTPUT_DIR}}/gsm8k_*.jsonl
+                  wc -l {{OUTPUT_DIR}}/gsm8k_*.jsonl
+              volumeMounts:
+                - mountPath: /mnt/lustre
+                  name: lustre
+          volumes:
+            - name: lustre
+              persistentVolumeClaim:
+                claimName: lustre-pvc-vllm
+    EOF
+    echo "Waiting for job to complete..."
+    kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=120s job/gsm8k-prep \
+      && kubectl -n {{NAMESPACE}} logs job/gsm8k-prep
 
 # Collect JSON summaries from completed Job pods (stdout)
 collect NAMESPACE='vllm':

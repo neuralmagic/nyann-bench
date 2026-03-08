@@ -214,6 +214,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Prompt:    conv.Prompt,
 		Stream:    true,
 		MaxTokens: conv.MaxTokens,
+		Stop:      conv.Stop,
 	}
 
 	result := c.CompletionStream(ctx, req)
@@ -263,7 +264,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		rec.EvalExtracted = extracted
 		rec.EvalCorrect = &correct
 		if g.Metrics != nil {
-			g.Metrics.RecordEval(correct, extracted != "")
+			g.Metrics.RecordEval(correct)
 		}
 	}
 
@@ -352,7 +353,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			rec.EvalExtracted = extracted
 			rec.EvalCorrect = &correct
 			if g.Metrics != nil {
-				g.Metrics.RecordEval(correct, extracted != "")
+				g.Metrics.RecordEval(correct)
 			}
 		}
 
