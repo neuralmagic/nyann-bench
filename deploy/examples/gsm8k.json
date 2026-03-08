@@ -1,0 +1,11 @@
+{
+  "load": {
+    "concurrency": 2048,
+    "duration": "600s"
+  },
+  "workload": {
+    "type": "gsm8k",
+    "gsm8k_path": "/mnt/lustre/tms/gsm8k_test.jsonl",
+    "osl": 2048
+  }
+}

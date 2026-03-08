@@ -9,11 +9,12 @@ import (
 )
 
 type Server struct {
-	Addr         string
-	TTFT         time.Duration
-	ITL          time.Duration
-	OutputTokens int
-	Model        string
+	Addr            string
+	TTFT            time.Duration
+	ITL             time.Duration
+	OutputTokens    int
+	Model           string
+	ResponseContent string // If set, stream this as the response content instead of "tok " filler
 }
 
 type chatRequest struct {
@@ -104,6 +105,30 @@ func (s *Server) handleStreaming(w http.ResponseWriter, model string, outputToke
 	// Simulate TTFT
 	time.Sleep(s.TTFT)
 
+	// Build token chunks
+	chunks := make([]string, outputTokens)
+	if s.ResponseContent != "" {
+		// Split response content across chunks
+		runes := []rune(s.ResponseContent)
+		chunkSize := (len(runes) + outputTokens - 1) / outputTokens
+		for i := 0; i < outputTokens; i++ {
+			start := i * chunkSize
+			end := start + chunkSize
+			if start >= len(runes) {
+				chunks[i] = ""
+			} else {
+				if end > len(runes) {
+					end = len(runes)
+				}
+				chunks[i] = string(runes[start:end])
+			}
+		}
+	} else {
+		for i := range chunks {
+			chunks[i] = "tok "
+		}
+	}
+
 	for i := 0; i < outputTokens; i++ {
 		if i > 0 {
 			time.Sleep(s.ITL)
@@ -116,7 +141,7 @@ func (s *Server) handleStreaming(w http.ResponseWriter, model string, outputToke
 			"model":   model,
 			"choices": []map[string]any{{
 				"index": 0,
-				"delta": map[string]string{"content": "tok "},
+				"delta": map[string]string{"content": chunks[i]},
 			}},
 		})
 	}

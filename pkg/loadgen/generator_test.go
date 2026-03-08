@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/neuralmagic/nyann_poker/pkg/client"
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
 	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
@@ -231,6 +232,205 @@ func TestTimestampsWrite(t *testing.T) {
 
 	if loaded.StartTime != 1000.0 || loaded.RampupEndTime != 1060.0 || loaded.EndTime != 1660.0 {
 		t.Errorf("timestamps mismatch: %+v", loaded)
+	}
+}
+
+func startMockServerWithContent(t *testing.T, content string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+
+	srv := &mockserver.Server{
+		Addr:            addr,
+		TTFT:            5 * time.Millisecond,
+		ITL:             1 * time.Millisecond,
+		OutputTokens:    10,
+		Model:           "test-model",
+		ResponseContent: content,
+	}
+	go srv.ListenAndServe()
+
+	for i := 0; i < 50; i++ {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return addr
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("server did not start")
+	return ""
+}
+
+func TestGeneratorEvalCorrect(t *testing.T) {
+	// Mock server returns a response containing "#### 42"
+	addr := startMockServerWithContent(t, "Let me solve this step by step.\n3 * 14 = 42\n#### 42")
+	outDir := t.TempDir()
+
+	rec, err := recorder.New(outDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+
+	// Create a dataset that sets ExpectedAnswer
+	ds := &evalDataset{
+		answer: "42",
+	}
+
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    2 * time.Second,
+		Dataset:     ds,
+		Recorder:    rec,
+	}
+
+	_, err = gen.Run(context.Background())
+	if err != nil {
+		t.Fatalf("generator run failed: %v", err)
+	}
+
+	rec.Close()
+	records := readRecords(t, filepath.Join(outDir, "requests_0.jsonl"))
+	if len(records) == 0 {
+		t.Fatal("expected at least one record")
+	}
+
+	for _, r := range records {
+		if r.Status != "ok" {
+			continue
+		}
+		if r.EvalCorrect == nil {
+			t.Fatal("expected EvalCorrect to be set")
+		}
+		if !*r.EvalCorrect {
+			t.Errorf("expected correct eval: expected=%q extracted=%q", r.EvalExpected, r.EvalExtracted)
+		}
+		if r.EvalExpected != "42" {
+			t.Errorf("expected EvalExpected=42, got %q", r.EvalExpected)
+		}
+		if r.EvalExtracted != "42" {
+			t.Errorf("expected EvalExtracted=42, got %q", r.EvalExtracted)
+		}
+	}
+}
+
+func TestGeneratorEvalIncorrect(t *testing.T) {
+	// Mock server returns "#### 99" but expected answer is "42"
+	addr := startMockServerWithContent(t, "The answer is #### 99")
+	outDir := t.TempDir()
+
+	rec, err := recorder.New(outDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+
+	ds := &evalDataset{answer: "42"}
+
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    2 * time.Second,
+		Dataset:     ds,
+		Recorder:    rec,
+	}
+
+	_, err = gen.Run(context.Background())
+	if err != nil {
+		t.Fatalf("generator run failed: %v", err)
+	}
+
+	rec.Close()
+	records := readRecords(t, filepath.Join(outDir, "requests_0.jsonl"))
+
+	found := false
+	for _, r := range records {
+		if r.Status != "ok" || r.EvalCorrect == nil {
+			continue
+		}
+		found = true
+		if *r.EvalCorrect {
+			t.Error("expected incorrect eval")
+		}
+		if r.EvalExtracted != "99" {
+			t.Errorf("expected EvalExtracted=99, got %q", r.EvalExtracted)
+		}
+	}
+	if !found {
+		t.Fatal("no eval records found")
+	}
+}
+
+func TestGeneratorEvalNoAnswer(t *testing.T) {
+	// Mock server returns default "tok tok tok..." — no number to extract
+	addr := startMockServer(t)
+	outDir := t.TempDir()
+
+	rec, err := recorder.New(outDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+
+	ds := &evalDataset{answer: "42"}
+
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    2 * time.Second,
+		Dataset:     ds,
+		Recorder:    rec,
+	}
+
+	_, err = gen.Run(context.Background())
+	if err != nil {
+		t.Fatalf("generator run failed: %v", err)
+	}
+
+	rec.Close()
+	records := readRecords(t, filepath.Join(outDir, "requests_0.jsonl"))
+
+	found := false
+	for _, r := range records {
+		if r.Status != "ok" || r.EvalCorrect == nil {
+			continue
+		}
+		found = true
+		if *r.EvalCorrect {
+			t.Error("expected incorrect eval (no answer extractable)")
+		}
+		if r.EvalExtracted != "" {
+			t.Errorf("expected empty EvalExtracted, got %q", r.EvalExtracted)
+		}
+	}
+	if !found {
+		t.Fatal("no eval records found")
+	}
+}
+
+// evalDataset is a test dataset that returns single-turn conversations with ExpectedAnswer.
+type evalDataset struct {
+	answer string
+}
+
+func (d *evalDataset) NextConversation() dataset.Conversation {
+	return dataset.Conversation{
+		Turns: [][]client.Message{
+			{
+				{Role: "user", Content: "What is 6 * 7?"},
+			},
+		},
+		MaxTokens:      100,
+		ExpectedAnswer: d.answer,
 	}
 }
 
