@@ -23,6 +23,11 @@ type Record struct {
 	TotalLatencyMs float64   `json:"latency_ms"`
 	Status         string    `json:"status"` // "ok" or "error"
 	Error          string    `json:"error,omitempty"`
+
+	// Eval fields (populated when dataset provides ExpectedAnswer)
+	EvalExpected  string `json:"eval_expected,omitempty"`
+	EvalExtracted string `json:"eval_extracted,omitempty"`
+	EvalCorrect   *bool  `json:"eval_correct,omitempty"`
 }
 
 // Recorder writes per-request records. Thread-safe.

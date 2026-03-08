@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,7 +71,7 @@ Combine multiple corpora:
 				return fmt.Errorf("writing output: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "Wrote %d chars (~%d tokens) to %s\n", len(text), len(text)/4, output)
+			slog.Info("Wrote corpus", "chars", len(text), "tokens_approx", len(text)/4, "path", output)
 			return nil
 		},
 	}

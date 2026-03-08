@@ -32,6 +32,12 @@ type Summary struct {
 	Conversations int          `json:"conversations"`
 	TurnsPerConv  LatencyStats `json:"turns_per_conversation"`
 
+	// Eval stats (populated when dataset provides expected answers)
+	EvalTotal     int     `json:"eval_total,omitempty"`
+	EvalCorrect   int     `json:"eval_correct,omitempty"`
+	EvalIncorrect int     `json:"eval_incorrect,omitempty"`
+	EvalAccuracy  float64 `json:"eval_accuracy,omitempty"`
+
 	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
 }
 
@@ -191,6 +197,21 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 	}
 	s.TurnsPerConv = computeLatencyStats(turnsPerConv)
 
+	// Eval stats
+	for _, r := range records {
+		if r.EvalCorrect != nil {
+			s.EvalTotal++
+			if *r.EvalCorrect {
+				s.EvalCorrect++
+			} else {
+				s.EvalIncorrect++
+			}
+		}
+	}
+	if s.EvalTotal > 0 {
+		s.EvalAccuracy = float64(s.EvalCorrect) / float64(s.EvalTotal)
+	}
+
 	return s
 }
 
@@ -248,5 +269,11 @@ func FormatSummary(s *Summary) string {
 		s.ITLMs.Mean, s.ITLMs.P50, s.ITLMs.P90, s.ITLMs.P99, s.ITLMs.Min, s.ITLMs.Max)
 	fmt.Fprintf(&b, "E2E  (ms):      mean=%.1f  p50=%.1f  p90=%.1f  p99=%.1f  min=%.1f  max=%.1f\n",
 		s.E2EMs.Mean, s.E2EMs.P50, s.E2EMs.P90, s.E2EMs.P99, s.E2EMs.Min, s.E2EMs.Max)
+	if s.EvalTotal > 0 {
+		fmt.Fprintf(&b, "\n")
+		fmt.Fprintf(&b, "Eval:           %d total, %d correct, %d incorrect\n",
+			s.EvalTotal, s.EvalCorrect, s.EvalIncorrect)
+		fmt.Fprintf(&b, "Accuracy:       %.1f%%\n", s.EvalAccuracy*100)
+	}
 	return b.String()
 }

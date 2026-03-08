@@ -11,11 +11,13 @@ go test ./... -count=1
 
 ## Project structure
 
-- `cmd/bench/` — CLI entry point (subcommands: generate, mock-server, analyze)
+- `cmd/nyann_poker/` — CLI entry point (subcommands: generate, mock-server, analyze, corpus)
 - `pkg/mockserver/` — OpenAI-compatible mock inference server for testing
 - `pkg/client/` — Streaming OpenAI chat completions client with token-level timing
 - `pkg/loadgen/` — Goroutine pool load generator with rampup and multi-turn support
-- `pkg/dataset/` — Dataset interfaces and implementations (synthetic, etc.)
+- `pkg/dataset/` — Dataset interfaces and implementations (synthetic, faker, corpus, gsm8k)
+- `pkg/eval/` — Answer extraction and correctness checking for streaming eval
+- `pkg/metrics/` — Prometheus metrics (request latencies, eval accuracy)
 - `pkg/recorder/` — Per-request JSONL recording and timestamps JSON output
 
 ## Testing

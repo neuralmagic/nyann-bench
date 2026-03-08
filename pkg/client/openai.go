@@ -24,6 +24,15 @@ type Request struct {
 	MaxTokens int       `json:"max_tokens,omitempty"`
 }
 
+type CompletionRequest struct {
+	Model       string    `json:"model"`
+	Prompt      string    `json:"prompt"`
+	Stream      bool      `json:"stream"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Stop        []string  `json:"stop,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
+}
+
 type TokenEvent struct {
 	Content  string
 	Time     time.Time
@@ -115,6 +124,58 @@ func (c *Client) DetectModel(ctx context.Context) (string, error) {
 	return result.Data[0].ID, nil
 }
 
+// CalibrateTokenRatio sends a sample text to /tokenize and returns the
+// measured chars-per-token ratio. Falls back to 4.0 if the endpoint is unavailable.
+func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model string) (float64, error) {
+	if len(sample) < 100 {
+		return 4.0, nil
+	}
+	// Use a ~2000 char sample for calibration
+	if len(sample) > 2000 {
+		sample = sample[:2000]
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":  model,
+		"prompt": sample,
+	})
+	if err != nil {
+		return 4.0, err
+	}
+
+	// Try /tokenize (vLLM endpoint, not under /v1)
+	baseURL := strings.TrimSuffix(c.BaseURL, "/v1")
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/tokenize", bytes.NewReader(body))
+	if err != nil {
+		return 4.0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("calling /tokenize: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("/tokenize returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("parsing /tokenize response: %w", err)
+	}
+
+	if result.Count == 0 {
+		return 0, fmt.Errorf("/tokenize returned 0 tokens")
+	}
+
+	ratio := float64(len(sample)) / float64(result.Count)
+	return ratio, nil
+}
+
 // ChatStream sends a streaming chat completion request and returns a Result
 // with token-level timing.
 func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
@@ -188,6 +249,93 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 			}
 			result.TokenTimes = append(result.TokenTimes, now)
 			content.WriteString(chunk.Choices[0].Delta.Content)
+		}
+
+		if chunk.Usage != nil {
+			result.Usage = chunk.Usage
+		}
+	}
+
+	result.Content = content.String()
+	result.EndTime = time.Now()
+
+	if err := scanner.Err(); err != nil {
+		result.Err = fmt.Errorf("reading stream: %w", err)
+	}
+
+	return result
+}
+
+// CompletionStream sends a streaming completion request to /v1/completions
+// and returns a Result with token-level timing.
+func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *Result {
+	req.Stream = true
+	result := &Result{RequestStart: time.Now()}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		result.Err = fmt.Errorf("marshaling request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.BaseURL+"/completions", bytes.NewReader(body))
+	if err != nil {
+		result.Err = fmt.Errorf("creating request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		result.Err = fmt.Errorf("sending request: %w", err)
+		result.EndTime = time.Now()
+		return result
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		result.Err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		result.EndTime = time.Now()
+		return result
+	}
+
+	var content strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		now := time.Now()
+
+		var chunk struct {
+			Choices []struct {
+				Text         string  `json:"text"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *Usage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Text != "" {
+			if result.FirstToken.IsZero() {
+				result.FirstToken = now
+			}
+			result.TokenTimes = append(result.TokenTimes, now)
+			content.WriteString(chunk.Choices[0].Text)
 		}
 
 		if chunk.Usage != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/neuralmagic/nyann_poker/pkg/analysis"
@@ -31,10 +32,12 @@ func analyzeCmd() *cobra.Command {
 			if err == nil {
 				startTime = tsStart + warmupBuffer
 				endTime = tsEnd
-				fmt.Fprintf(os.Stderr, "Measurement window: %.0fs (%.0fs after rampup + %.0fs warmup buffer)\n",
-					endTime-startTime, tsEnd-tsStart, warmupBuffer)
+				slog.Info("Measurement window",
+					"window_s", endTime-startTime,
+					"after_rampup_s", tsEnd-tsStart,
+					"warmup_buffer_s", warmupBuffer)
 			} else {
-				fmt.Fprintf(os.Stderr, "No timestamps found, using all records\n")
+				slog.Info("No timestamps found, using all records")
 			}
 
 			summary := analysis.Compute(records, startTime, endTime)

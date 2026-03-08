@@ -13,16 +13,17 @@ import (
 
 // Corpus generates conversations by sliding a window over real text files.
 type Corpus struct {
-	ISL   int
-	OSL   int
-	Turns int
+	ISL           int
+	OSL           int
+	Turns         int
+	CharsPerToken float64
 
 	text   string // concatenated corpus text
 	mu     sync.RWMutex
 	offset atomic.Uint64
 }
 
-func NewCorpus(corpusPath string, isl, osl, turns int) (*Corpus, error) {
+func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64) (*Corpus, error) {
 	if turns < 1 {
 		turns = 1
 	}
@@ -36,7 +37,7 @@ func NewCorpus(corpusPath string, isl, osl, turns int) (*Corpus, error) {
 		return nil, fmt.Errorf("corpus at %s is empty", corpusPath)
 	}
 
-	return &Corpus{ISL: isl, OSL: osl, Turns: turns, text: text}, nil
+	return &Corpus{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken, text: text}, nil
 }
 
 func (c *Corpus) NextConversation() Conversation {
@@ -69,7 +70,7 @@ func (c *Corpus) NextConversation() Conversation {
 // nextChunk returns approximately targetTokens worth of text from the corpus,
 // advancing the shared offset. Wraps around when reaching the end.
 func (c *Corpus) nextChunk(targetTokens int) string {
-	targetChars := targetTokens * 4
+	targetChars := int(float64(targetTokens) * c.CharsPerToken)
 	textLen := uint64(len(c.text))
 
 	// Atomically claim a range of the corpus

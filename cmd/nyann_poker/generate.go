@@ -4,27 +4,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/neuralmagic/nyann_poker/pkg/analysis"
 	"github.com/neuralmagic/nyann_poker/pkg/client"
 	"github.com/neuralmagic/nyann_poker/pkg/config"
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
+	"github.com/neuralmagic/nyann_poker/pkg/metrics"
 	"github.com/neuralmagic/nyann_poker/pkg/recorder"
 	"github.com/spf13/cobra"
 )
 
 func generateCmd() *cobra.Command {
 	var (
-		target    string
-		model     string
-		cfgInput  string
-		outputDir string
-		workerID  int
+		target     string
+		model      string
+		cfgInput   string
+		outputDir  string
+		workerID   int
+		metricsAddr string
 	)
 
 	cmd := &cobra.Command{
@@ -48,7 +55,8 @@ Load modes:
 Workload types:
   synthetic   Random word padding
   faker       Diverse generated prose (gofakeit)
-  corpus      Sliding window over real text files (--corpus-path in config)`,
+  corpus      Sliding window over real text files (--corpus-path in config)
+  gsm8k       GSM8K math problems with streaming eval (--gsm8k-path in config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
@@ -70,7 +78,7 @@ Workload types:
 					return fmt.Errorf("auto-detecting model (use --model to specify): %w", err)
 				}
 				model = detected
-				fmt.Fprintf(os.Stderr, "Detected model: %s\n", model)
+				slog.Info("Detected model", "model", model)
 			}
 
 			// Parse config
@@ -79,24 +87,60 @@ Workload types:
 				return fmt.Errorf("config: %w", err)
 			}
 
+			// Calibrate chars-per-token ratio
+			w := cfg.Workload
+			charsPerToken := w.CharsPerToken
+			if charsPerToken <= 0 {
+				c := client.New(target)
+				// Use a sample text for calibration
+				sample := "The quick brown fox jumps over the lazy dog. This is a sample of natural English text used to calibrate the tokenizer ratio for accurate input sequence length targeting."
+				calibrated, err := c.CalibrateTokenRatio(ctx, sample, model)
+				if err != nil {
+					slog.Warn("Tokenizer calibration failed, using default", "error", err, "default", 4.0)
+					charsPerToken = 4.0
+				} else {
+					charsPerToken = calibrated
+					slog.Info("Calibrated chars/token", "ratio", charsPerToken)
+				}
+			} else {
+				slog.Info("Using configured chars/token", "ratio", charsPerToken)
+			}
+
 			// Build dataset
 			var ds dataset.Dataset
-			w := cfg.Workload
 			switch w.Type {
 			case "synthetic":
-				ds = dataset.NewSynthetic(w.ISL, w.OSL, w.Turns)
+				ds = dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
 			case "faker":
-				ds = dataset.NewFaker(w.ISL, w.OSL, w.Turns)
+				ds = dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
 			case "corpus":
 				if w.CorpusPath == "" {
 					return fmt.Errorf("workload.corpus_path is required for corpus type")
 				}
-				ds, err = dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns)
+				ds, err = dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
+				if err != nil {
+					return err
+				}
+			case "gsm8k":
+				if w.GSM8KPath == "" {
+					return fmt.Errorf("workload.gsm8k_path is required for gsm8k type")
+				}
+				// Clear default OSL — GSM8K must generate freely
+				w.OSL = 0
+				// Default to 5-shot (matching lm_eval) if not explicitly set
+				numFewShot := 5
+				if w.NumFewShot != nil {
+					numFewShot = *w.NumFewShot
+				}
+				if numFewShot > 0 && w.GSM8KTrainPath == "" {
+					return fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
+				}
+				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
 				if err != nil {
 					return err
 				}
 			default:
-				return fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus)", w.Type)
+				return fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k)", w.Type)
 			}
 
 			// Build recorder
@@ -110,23 +154,71 @@ Workload types:
 				rec = recorder.NewMemory()
 			}
 
-			// Build and run generator
-			gen := &loadgen.Generator{
-				Target:      target,
-				Model:       model,
-				Mode:        loadgen.Mode(cfg.Load.Mode),
-				Concurrency: cfg.Load.Concurrency,
-				Rate:        cfg.Load.Rate,
-				MaxInFlight: cfg.Load.MaxInFlight,
-				Rampup:      cfg.Load.Rampup.Duration(),
-				Duration:    cfg.Load.Duration.Duration(),
-				Dataset:     ds,
-				Recorder:    rec,
+			// Start Prometheus metrics server
+			var m *metrics.Metrics
+			if metricsAddr != "" {
+				reg := prometheus.NewRegistry()
+				workloadName := w.Name
+				if workloadName == "" {
+					workloadName = w.Type
+				}
+				m = metrics.New(reg, workloadName, w.Type == "gsm8k")
+				mux := http.NewServeMux()
+				mux.Handle("/metrics", metrics.Handler(reg))
+				srv := &http.Server{Addr: metricsAddr, Handler: mux}
+				go func() {
+					slog.Info("Metrics server listening", "addr", metricsAddr)
+					if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+						slog.Error("Metrics server error", "error", err)
+					}
+				}()
 			}
 
-			timestamps, err := gen.Run(ctx)
-			if err != nil {
-				return err
+			// Run stages
+			stages := cfg.EffectiveStages()
+			startTime := time.Now()
+
+			for i, stage := range stages {
+				if ctx.Err() != nil {
+					break
+				}
+
+				slog.Info("Stage started",
+					"stage", fmt.Sprintf("%d/%d", i+1, len(stages)),
+					"concurrency", stage.Concurrency,
+					"duration", stage.Duration.Duration())
+
+				if m != nil {
+					m.Stage.Set(float64(i))
+					m.Concurrency.Set(float64(stage.Concurrency))
+				}
+
+				gen := &loadgen.Generator{
+					Target:      target,
+					Model:       model,
+					Mode:        loadgen.Mode(cfg.Load.Mode),
+					Concurrency: stage.Concurrency,
+					Rate:        cfg.Load.Rate,
+					MaxInFlight: cfg.Load.MaxInFlight,
+					Rampup:      cfg.Load.Rampup.Duration(),
+					Duration:    stage.Duration.Duration(),
+					Dataset:     ds,
+					Recorder:    rec,
+					Metrics:     m,
+				}
+
+				if _, err := gen.Run(ctx); err != nil {
+					return err
+				}
+			}
+
+			endTime := time.Now()
+			timestamps := &recorder.Timestamps{
+				StartTime:     recorder.TimeToFloat(startTime),
+				RampupEndTime: recorder.TimeToFloat(startTime.Add(cfg.Load.Rampup.Duration())),
+				EndTime:       recorder.TimeToFloat(endTime),
+				RampupSeconds: cfg.Load.Rampup.Duration().Seconds(),
+				TotalSeconds:  endTime.Sub(startTime).Seconds(),
 			}
 
 			// Write files to disk if output-dir is set
@@ -165,6 +257,7 @@ Workload types:
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file path or inline JSON)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
+	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 
 	return cmd
 }
