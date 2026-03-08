@@ -1,0 +1,14 @@
+{
+  "sweep": {
+    "min": 64,
+    "max": 32768,
+    "steps": 20,
+    "step_duration": "60s"
+  },
+  "workload": {
+    "type": "faker",
+    "isl": 512,
+    "osl": 256,
+    "turns": 1
+  }
+}
