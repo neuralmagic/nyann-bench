@@ -1,6 +1,6 @@
 {
   "load": {
-    "concurrency": 2048,
+    "concurrency": 512,
     "duration": "600s"
   },
   "workload": {

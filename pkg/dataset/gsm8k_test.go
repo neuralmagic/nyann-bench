@@ -32,8 +32,8 @@ func TestGSM8KFromJSONL(t *testing.T) {
 	if len(conv.Turns) != 0 {
 		t.Errorf("expected no Turns for completions mode, got %d", len(conv.Turns))
 	}
-	if conv.MaxTokens != 0 {
-		t.Errorf("expected MaxTokens=0 (no limit), got %d", conv.MaxTokens)
+	if conv.MaxTokens != 256 {
+		t.Errorf("expected MaxTokens=256 (lm_eval default), got %d", conv.MaxTokens)
 	}
 	if conv.ExpectedAnswer != "12" {
 		t.Errorf("expected answer '12', got %q", conv.ExpectedAnswer)

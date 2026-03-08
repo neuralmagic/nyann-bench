@@ -127,10 +127,15 @@ Workload types:
 				}
 				// Clear default OSL — GSM8K must generate freely
 				w.OSL = 0
-				if w.NumFewShot > 0 && w.GSM8KTrainPath == "" {
+				// Default to 5-shot (matching lm_eval) if not explicitly set
+				numFewShot := 5
+				if w.NumFewShot != nil {
+					numFewShot = *w.NumFewShot
+				}
+				if numFewShot > 0 && w.GSM8KTrainPath == "" {
 					return fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
 				}
-				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, w.NumFewShot)
+				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
 				if err != nil {
 					return err
 				}
