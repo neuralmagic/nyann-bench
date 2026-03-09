@@ -1,0 +1,14 @@
+{
+  "load": {
+    "concurrency": 512,
+    "duration": "10m"
+  },
+  "workload": {
+    "type": "corpus",
+    "corpus_path": "/mnt/lustre/tms/corpus/sharegpt.txt",
+    "isl": 500,
+    "osl": 1500,
+    "turns": 1,
+    "cache_salt": "dGVuYW50LWFsaWNlLXByb2R1Y3Rpb24tMjAyNg"
+  }
+}
