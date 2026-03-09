@@ -3,14 +3,19 @@ package loadgen_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/neuralmagic/nyann_poker/pkg/client"
+	"github.com/neuralmagic/nyann_poker/pkg/config"
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
 	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
@@ -546,6 +551,182 @@ func TestRunStagesPoolResize(t *testing.T) {
 	// A torn-down pool would show gaps of 100ms+ as all streams finish then restart.
 	if maxGap > 0.2 {
 		t.Errorf("max gap between requests was %.3fs, expected < 0.2s (pool may have torn down between stages)", maxGap)
+	}
+}
+
+func TestCacheSaltAppearsInRequest(t *testing.T) {
+	// Start a tiny HTTP server that captures the request body
+	var bodies []string
+	var mu sync.Mutex
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		// Return a minimal streaming response so the client doesn't error
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "hi"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+	srv := &http.Server{Handler: capture}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:    "http://" + ln.Addr().String() + "/v1",
+		Model:     "test-model",
+		CacheSalt: &config.CacheSalt{Mode: "fixed", Value: "test-salt-abc"},
+		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:  rec,
+		Duration:  500 * time.Millisecond,
+		Concurrency: 1,
+	}
+
+	gen.Run(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) == 0 {
+		t.Fatal("expected at least one captured request")
+	}
+	for i, b := range bodies {
+		if !strings.Contains(b, `"cache_salt":"test-salt-abc"`) {
+			t.Errorf("request %d missing cache_salt: %s", i, b)
+		}
+	}
+}
+
+func TestCacheSaltOmittedWhenNil(t *testing.T) {
+	var bodies []string
+	var mu sync.Mutex
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "hi"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+	srv := &http.Server{Handler: capture}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		Dataset:     dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:    rec,
+		Duration:    500 * time.Millisecond,
+		Concurrency: 1,
+	}
+
+	gen.Run(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) == 0 {
+		t.Fatal("expected at least one captured request")
+	}
+	for i, b := range bodies {
+		if strings.Contains(b, "cache_salt") {
+			t.Errorf("request %d should not contain cache_salt: %s", i, b)
+		}
+	}
+}
+
+func TestRandomCacheSaltUnique(t *testing.T) {
+	var bodies []string
+	var mu sync.Mutex
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "hi"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+	srv := &http.Server{Handler: capture}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:    "http://" + ln.Addr().String() + "/v1",
+		Model:     "test-model",
+		CacheSalt: &config.CacheSalt{Mode: "random"},
+		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:        rec,
+		Duration:        1 * time.Second,
+		Concurrency:     1,
+	}
+
+	gen.Run(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) < 2 {
+		t.Fatalf("expected at least 2 requests, got %d", len(bodies))
+	}
+
+	// Extract cache_salt values and verify they're all unique
+	salts := make(map[string]bool)
+	for i, b := range bodies {
+		var req struct {
+			CacheSalt string `json:"cache_salt"`
+		}
+		if err := json.Unmarshal([]byte(b), &req); err != nil {
+			t.Fatalf("request %d: unmarshal error: %v", i, err)
+		}
+		if req.CacheSalt == "" {
+			t.Errorf("request %d: cache_salt is empty", i)
+		}
+		if salts[req.CacheSalt] {
+			t.Errorf("request %d: duplicate cache_salt %q", i, req.CacheSalt)
+		}
+		salts[req.CacheSalt] = true
 	}
 }
 
