@@ -44,6 +44,7 @@ type Generator struct {
 	Duration    time.Duration
 	Dataset     dataset.Dataset
 	Recorder    *recorder.Recorder
+	CacheSalt   string           // If non-empty, sent as cache_salt on every request
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
 }
 
@@ -344,6 +345,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		MaxTokens:   conv.MaxTokens,
 		Stop:        conv.Stop,
 		Temperature: conv.Temperature,
+		CacheSalt:   g.CacheSalt,
 	}
 
 	result := c.CompletionStream(ctx, req)
@@ -450,6 +452,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			Messages:  messages,
 			Stream:    true,
 			MaxTokens: conv.MaxTokens,
+			CacheSalt: g.CacheSalt,
 		}
 
 		result := c.ChatStream(ctx, req)

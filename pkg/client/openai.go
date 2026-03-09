@@ -22,6 +22,7 @@ type Request struct {
 	Messages  []Message `json:"messages"`
 	Stream    bool      `json:"stream"`
 	MaxTokens int       `json:"max_tokens,omitempty"`
+	CacheSalt string    `json:"cache_salt,omitempty"`
 }
 
 type CompletionRequest struct {
@@ -31,6 +32,7 @@ type CompletionRequest struct {
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stop        []string  `json:"stop,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
+	CacheSalt   string    `json:"cache_salt,omitempty"`
 }
 
 type TokenEvent struct {

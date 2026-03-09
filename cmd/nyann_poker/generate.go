@@ -94,8 +94,12 @@ Workload types:
 				return fmt.Errorf("config: %w", err)
 			}
 
-			// Calibrate chars-per-token ratio
 			w := cfg.Workload
+			if w.CacheSalt != "" {
+				slog.Info("Cache salt enabled", "length", len(w.CacheSalt))
+			}
+
+			// Calibrate chars-per-token ratio
 			charsPerToken := w.CharsPerToken
 			if charsPerToken <= 0 {
 				// Use a sample text for calibration
@@ -187,11 +191,12 @@ Workload types:
 					"duration", cfg.Warmup.Duration.Duration())
 				warmupRec := recorder.NewMemory()
 				warmupGen := &loadgen.Generator{
-					Target:   target,
-					Model:    model,
-					Mode:     loadgen.Mode(cfg.Load.Mode),
-					Dataset:  ds,
-					Recorder: warmupRec,
+					Target:    target,
+					Model:     model,
+					Mode:      loadgen.Mode(cfg.Load.Mode),
+					CacheSalt: w.CacheSalt,
+					Dataset:   ds,
+					Recorder:  warmupRec,
 				}
 				warmupStages := []loadgen.Stage{{
 					Concurrency: cfg.Warmup.Concurrency,
@@ -216,6 +221,7 @@ Workload types:
 				Rate:        cfg.Load.Rate,
 				MaxInFlight: cfg.Load.MaxInFlight,
 				Rampup:      cfg.Load.Rampup.Duration(),
+				CacheSalt:   w.CacheSalt,
 				Dataset:     ds,
 				Recorder:    rec,
 				Metrics:     m,
