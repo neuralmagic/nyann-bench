@@ -9,6 +9,6 @@
     "isl": 500,
     "osl": 1500,
     "turns": 1,
-    "cache_salt": "dGVuYW50LWFsaWNlLXByb2R1Y3Rpb24tMjAyNg"
+    "cache_salt": {"mode": "fixed", "value": "dGVuYW50LWFsaWNlLXByb2R1Y3Rpb24tMjAyNg"}
   }
 }

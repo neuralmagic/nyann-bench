@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/neuralmagic/nyann_poker/pkg/client"
+	"github.com/neuralmagic/nyann_poker/pkg/config"
 	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/eval"
 	"github.com/neuralmagic/nyann_poker/pkg/metrics"
@@ -46,8 +47,7 @@ type Generator struct {
 	Duration    time.Duration
 	Dataset     dataset.Dataset
 	Recorder    *recorder.Recorder
-	CacheSalt       string // Fixed cache salt for every request
-	RandomCacheSalt bool   // Generate unique cache salt per request
+	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
 }
 
@@ -342,12 +342,19 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 
 // cacheSalt returns the cache salt for a single request.
 func (g *Generator) cacheSalt() string {
-	if g.RandomCacheSalt {
+	if g.CacheSalt == nil {
+		return ""
+	}
+	switch g.CacheSalt.Mode {
+	case "random":
 		var b [32]byte
 		rand.Read(b[:])
 		return base64.RawURLEncoding.EncodeToString(b[:])
+	case "fixed":
+		return g.CacheSalt.Value
+	default:
+		return ""
 	}
-	return g.CacheSalt
 }
 
 func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {

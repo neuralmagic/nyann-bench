@@ -8,6 +8,6 @@
     "isl": 500,
     "osl": 1500,
     "turns": 1,
-    "random_cache_salt": true
+    "cache_salt": {"mode": "random"}
   }
 }
