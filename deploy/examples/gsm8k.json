@@ -1,6 +1,6 @@
 {
   "load": {
-    "concurrency": 512,
+    "concurrency": 128,
     "duration": "3600s"
   },
   "warmup": {

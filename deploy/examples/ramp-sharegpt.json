@@ -1,9 +1,9 @@
 {
   "sweep": {
-    "min": 64,
+    "min": 1024,
     "max": 2048,
-    "steps": 20,
-    "step_duration": "300s"
+    "steps": 4,
+    "step_duration": "120s"
   },
   "workload": {
     "type": "corpus",
