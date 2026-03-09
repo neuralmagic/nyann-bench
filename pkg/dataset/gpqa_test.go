@@ -120,6 +120,44 @@ func TestGPQAEmpty(t *testing.T) {
 	}
 }
 
+func TestGPQAFingertapFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gpqa.jsonl")
+
+	// fingertap/GPQA-Diamond format: lowercase keys, choices inline in question, bare letter answer
+	data := `{"question":"Among the following, which has the highest density? a) Earth-mass planet b) 2x Earth mass c) 5x Earth mass d) Half Earth mass","answer":"D"}
+{"question":"What is Planck's constant? A. 6.626e-34 B. 3.0e8 C. 1.38e-23 D. 9.81","answer":"A"}
+`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ds, err := dataset.NewGPQA(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conv := ds.NextConversation()
+	if conv.Prompt == "" {
+		t.Fatal("expected non-empty Prompt")
+	}
+	if !strings.Contains(conv.Prompt, "Among the following") {
+		t.Error("prompt should contain the question")
+	}
+	// fingertap format: choices are already inline, so no separate (A)-(D) labels added
+	if !strings.Contains(conv.Prompt, "Let's think step by step:") {
+		t.Error("prompt should contain CoT instruction")
+	}
+	if conv.ExpectedAnswer != "(D)" {
+		t.Errorf("expected answer (D), got %q", conv.ExpectedAnswer)
+	}
+
+	conv2 := ds.NextConversation()
+	if conv2.ExpectedAnswer != "(A)" {
+		t.Errorf("expected answer (A), got %q", conv2.ExpectedAnswer)
+	}
+}
+
 func TestGPQAPreprocess(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gpqa.jsonl")
