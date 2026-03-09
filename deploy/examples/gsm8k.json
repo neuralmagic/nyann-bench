@@ -1,7 +1,11 @@
 {
   "load": {
-    "concurrency": 512,
-    "duration": "600s"
+    "concurrency": 128,
+    "duration": "3600s"
+  },
+  "warmup": {
+    "concurrency": 16,
+    "duration": "30s"
   },
   "workload": {
     "type": "gsm8k",

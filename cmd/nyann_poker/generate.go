@@ -70,9 +70,16 @@ Workload types:
 				}
 			}
 
+			// Wait for endpoint to be ready
+			c := client.New(target)
+			slog.Info("Waiting for endpoint to be ready", "target", target)
+			if err := c.WaitForReady(ctx); err != nil {
+				return err
+			}
+			slog.Info("Endpoint ready")
+
 			// Auto-detect model if not specified
 			if model == "" {
-				c := client.New(target)
 				detected, err := c.DetectModel(ctx)
 				if err != nil {
 					return fmt.Errorf("auto-detecting model (use --model to specify): %w", err)
@@ -91,7 +98,6 @@ Workload types:
 			w := cfg.Workload
 			charsPerToken := w.CharsPerToken
 			if charsPerToken <= 0 {
-				c := client.New(target)
 				// Use a sample text for calibration
 				sample := "The quick brown fox jumps over the lazy dog. This is a sample of natural English text used to calibrate the tokenizer ratio for accurate input sequence length targeting."
 				calibrated, err := c.CalibrateTokenRatio(ctx, sample, model)
@@ -172,6 +178,31 @@ Workload types:
 						slog.Error("Metrics server error", "error", err)
 					}
 				}()
+			}
+
+			// Run warmup (results discarded)
+			if cfg.Warmup != nil {
+				slog.Info("Running warmup",
+					"concurrency", cfg.Warmup.Concurrency,
+					"duration", cfg.Warmup.Duration.Duration())
+				warmupRec := recorder.NewMemory()
+				warmupGen := &loadgen.Generator{
+					Target:   target,
+					Model:    model,
+					Mode:     loadgen.Mode(cfg.Load.Mode),
+					Dataset:  ds,
+					Recorder: warmupRec,
+				}
+				warmupStages := []loadgen.Stage{{
+					Concurrency: cfg.Warmup.Concurrency,
+					Duration:    cfg.Warmup.Duration.Duration(),
+				}}
+				warmupGen.RunStages(ctx, warmupStages, func(i, concurrency int) {
+					slog.Info("Warmup running", "concurrency", concurrency)
+				})
+				warmupRec.Close()
+				slog.Info("Warmup complete",
+					"requests", len(warmupRec.Records()))
 			}
 
 			// Run stages

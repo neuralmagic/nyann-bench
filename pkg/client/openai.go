@@ -98,6 +98,43 @@ func New(baseURL string) *Client {
 	}
 }
 
+// WaitForReady polls /v1/models until it returns a valid model ID or the
+// context is cancelled. Uses exponential backoff from 1s to 30s.
+func (c *Client) WaitForReady(ctx context.Context) error {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/models", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := c.HTTPClient.Do(req)
+		if err == nil {
+			var result struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&result) == nil && len(result.Data) > 0 && result.Data[0].ID != "" {
+				resp.Body.Close()
+				return nil
+			}
+			resp.Body.Close()
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("endpoint not ready: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 // DetectModel queries /v1/models and returns the first model ID.
 func (c *Client) DetectModel(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/models", nil)

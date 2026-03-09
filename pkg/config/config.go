@@ -14,7 +14,15 @@ type Config struct {
 	Load     Load     `json:"load"`
 	Stages   []Stage  `json:"stages,omitempty"`
 	Sweep    *Sweep   `json:"sweep,omitempty"`
+	Warmup   *Warmup  `json:"warmup,omitempty"`
 	Workload Workload `json:"workload"`
+}
+
+// Warmup defines a warmup stage that runs before the main benchmark.
+// Results from the warmup are discarded.
+type Warmup struct {
+	Concurrency int      `json:"concurrency"`
+	Duration    Duration `json:"duration"`
 }
 
 // Stage defines one step in a multi-stage sweep.
