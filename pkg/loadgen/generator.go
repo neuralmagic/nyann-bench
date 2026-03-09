@@ -393,8 +393,15 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 
 	// Evaluate response if expected answer is set
 	if conv.ExpectedAnswer != "" {
-		extracted := eval.ExtractAnswer(result.Content)
-		correct := eval.CheckCorrect(conv.ExpectedAnswer, extracted)
+		var extracted string
+		var correct bool
+		if eval.IsMCAnswer(conv.ExpectedAnswer) {
+			extracted = eval.ExtractMCAnswer(result.Content)
+			correct = eval.CheckMCCorrect(conv.ExpectedAnswer, extracted)
+		} else {
+			extracted = eval.ExtractAnswer(result.Content)
+			correct = eval.CheckCorrect(conv.ExpectedAnswer, extracted)
+		}
 		rec.EvalExpected = conv.ExpectedAnswer
 		rec.EvalExtracted = extracted
 		rec.EvalCorrect = &correct

@@ -52,6 +52,7 @@ type Workload struct {
 	GSM8KPath      string `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
 	GSM8KTrainPath string `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)
 	NumFewShot     *int   `json:"num_fewshot,omitempty"`       // number of few-shot examples (default: 5, requires gsm8k_train_path)
+	GPQAPath       string `json:"gpqa_path,omitempty"`         // path to GPQA JSONL file
 	CharsPerToken float64 `json:"chars_per_token"`         // override auto-calibrated ratio (0 = auto)
 }
 

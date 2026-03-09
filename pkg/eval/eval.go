@@ -69,6 +69,46 @@ func CheckCorrect(expected, extracted string) bool {
 	return normalizeNumber(expected) == normalizeNumber(extracted)
 }
 
+// mcStrictRe matches "The answer is (X)" where X is a letter.
+var mcStrictRe = regexp.MustCompile(`(?i)The answer is \(?([A-D])\)?`)
+
+// mcFlexibleRe matches any (A)-(D) pattern.
+var mcFlexibleRe = regexp.MustCompile(`\(([A-D])\)`)
+
+// ExtractMCAnswer extracts a multiple-choice answer letter from a model response.
+// Two-tier extraction matching lm_eval:
+//  1. "The answer is (X)" (strict)
+//  2. First (A)-(D) occurrence (flexible fallback)
+func ExtractMCAnswer(response string) string {
+	if m := mcStrictRe.FindStringSubmatch(response); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	if m := mcFlexibleRe.FindStringSubmatch(response); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+// IsMCAnswer returns true if the answer looks like a multiple-choice letter: (A)-(D).
+func IsMCAnswer(answer string) bool {
+	return mcFlexibleRe.MatchString(answer)
+}
+
+// CheckMCCorrect compares expected and extracted multiple-choice answers.
+// Handles both "(B)" and "B" formats.
+func CheckMCCorrect(expected, extracted string) bool {
+	if expected == "" || extracted == "" {
+		return false
+	}
+	return normalizeMC(expected) == normalizeMC(extracted)
+}
+
+func normalizeMC(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "()")
+	return strings.ToUpper(s)
+}
+
 // normalizeNumber strips commas and leading zeros from a number string.
 func normalizeNumber(s string) string {
 	s = strings.ReplaceAll(s, ",", "")

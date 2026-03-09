@@ -56,7 +56,8 @@ Workload types:
   synthetic   Random word padding
   faker       Diverse generated prose (gofakeit)
   corpus      Sliding window over real text files (--corpus-path in config)
-  gsm8k       GSM8K math problems with streaming eval (--gsm8k-path in config)`,
+  gsm8k       GSM8K math problems with streaming eval (--gsm8k-path in config)
+  gpqa        GPQA graduate-level multiple-choice with CoT eval (--gpqa-path in config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
@@ -139,8 +140,17 @@ Workload types:
 				if err != nil {
 					return err
 				}
+			case "gpqa":
+				if w.GPQAPath == "" {
+					return fmt.Errorf("workload.gpqa_path is required for gpqa type")
+				}
+				w.OSL = 0
+				ds, err = dataset.NewGPQA(w.GPQAPath)
+				if err != nil {
+					return err
+				}
 			default:
-				return fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k)", w.Type)
+				return fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k, gpqa)", w.Type)
 			}
 
 			// Build recorder
@@ -162,7 +172,8 @@ Workload types:
 				if workloadName == "" {
 					workloadName = w.Type
 				}
-				m = metrics.New(reg, workloadName, w.Type == "gsm8k")
+				enableEval := w.Type == "gsm8k" || w.Type == "gpqa"
+				m = metrics.New(reg, workloadName, enableEval)
 				mux := http.NewServeMux()
 				mux.Handle("/metrics", metrics.Handler(reg))
 				srv := &http.Server{Addr: metricsAddr, Handler: mux}
