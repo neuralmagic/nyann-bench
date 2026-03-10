@@ -55,6 +55,7 @@ type Result struct {
 	TokenTimes   []time.Time // Time of each token arrival
 	EndTime      time.Time
 	Content      string
+	FinishReason string // "stop", "length", etc.
 	Usage        *Usage
 	Err          error
 }
@@ -282,12 +283,17 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 			continue // Skip malformed chunks
 		}
 
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			if result.FirstToken.IsZero() {
-				result.FirstToken = now
+		if len(chunk.Choices) > 0 {
+			if chunk.Choices[0].Delta.Content != "" {
+				if result.FirstToken.IsZero() {
+					result.FirstToken = now
+				}
+				result.TokenTimes = append(result.TokenTimes, now)
+				content.WriteString(chunk.Choices[0].Delta.Content)
 			}
-			result.TokenTimes = append(result.TokenTimes, now)
-			content.WriteString(chunk.Choices[0].Delta.Content)
+			if chunk.Choices[0].FinishReason != nil {
+				result.FinishReason = *chunk.Choices[0].FinishReason
+			}
 		}
 
 		if chunk.Usage != nil {
@@ -369,12 +375,17 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 			continue
 		}
 
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Text != "" {
-			if result.FirstToken.IsZero() {
-				result.FirstToken = now
+		if len(chunk.Choices) > 0 {
+			if chunk.Choices[0].Text != "" {
+				if result.FirstToken.IsZero() {
+					result.FirstToken = now
+				}
+				result.TokenTimes = append(result.TokenTimes, now)
+				content.WriteString(chunk.Choices[0].Text)
 			}
-			result.TokenTimes = append(result.TokenTimes, now)
-			content.WriteString(chunk.Choices[0].Text)
+			if chunk.Choices[0].FinishReason != nil {
+				result.FinishReason = *chunk.Choices[0].FinishReason
+			}
 		}
 
 		if chunk.Usage != nil {

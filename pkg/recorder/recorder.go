@@ -21,6 +21,7 @@ type Record struct {
 	PromptTokens   int       `json:"prompt_tokens"`
 	OutputTokens   int       `json:"output_tokens"`
 	TotalLatencyMs float64   `json:"latency_ms"`
+	FinishReason   string    `json:"finish_reason,omitempty"`
 	Status         string    `json:"status"` // "ok" or "error"
 	Error          string    `json:"error,omitempty"`
 

@@ -9,6 +9,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/neuralmagic/nyann_poker/pkg/client"
@@ -49,6 +50,9 @@ type Generator struct {
 	Recorder    *recorder.Recorder
 	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
+
+	evalCount   atomic.Int64
+	evalCorrect atomic.Int64
 }
 
 // streamPool manages a resizable pool of concurrent streams.
@@ -400,6 +404,7 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 	}
 
 	rec.Status = "ok"
+	rec.FinishReason = result.FinishReason
 	rec.TTFT = result.TTFT().Seconds() * 1000
 
 	itls := result.ITLs()
@@ -434,11 +439,28 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		if g.Metrics != nil {
 			g.Metrics.RecordEval(correct)
 		}
+
+		// Periodic eval summary
+		total := g.evalCount.Add(1)
+		if correct {
+			g.evalCorrect.Add(1)
+		}
+		if total%100 == 0 {
+			c := g.evalCorrect.Load()
+			slog.Info("Eval progress",
+				"total", total,
+				"correct", c,
+				"accuracy", fmt.Sprintf("%.1f%%", float64(c)/float64(total)*100),
+				"finish_reason", rec.FinishReason)
+		}
 	}
 
 	// Emit Prometheus metrics
 	if g.Metrics != nil {
 		g.Metrics.RequestsTotal.WithLabelValues("ok").Inc()
+		if rec.FinishReason != "" {
+			g.Metrics.FinishReasons.WithLabelValues(rec.FinishReason).Inc()
+		}
 		if rec.TTFT > 0 {
 			g.Metrics.TTFTSeconds.Observe(rec.TTFT / 1000)
 		}
