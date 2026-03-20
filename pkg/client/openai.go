@@ -95,9 +95,15 @@ type Client struct {
 }
 
 func New(baseURL string) *Client {
+	transport := &http.Transport{
+		MaxIdleConns:        0, // unlimited
+		MaxIdleConnsPerHost: 8192,
+		MaxConnsPerHost:     0, // unlimited
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &Client{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTPClient: &http.Client{},
+		HTTPClient: &http.Client{Transport: transport},
 	}
 }
 

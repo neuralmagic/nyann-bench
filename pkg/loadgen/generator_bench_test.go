@@ -52,7 +52,7 @@ func startFastMockServer(tb testing.TB) string {
 func BenchmarkThroughput(b *testing.B) {
 	addr := startFastMockServer(b)
 
-	for _, concurrency := range []int{1, 4, 16, 64} {
+	for _, concurrency := range []int{1, 4, 16, 64, 256, 1024, 4096} {
 		b.Run(fmt.Sprintf("c%d", concurrency), func(b *testing.B) {
 			dir := b.TempDir()
 			rec, err := recorder.New(dir, 0)
@@ -96,7 +96,7 @@ func TestConcurrencyUtilization(t *testing.T) {
 
 	addr := startFastMockServer(t)
 
-	for _, concurrency := range []int{4, 16, 64} {
+	for _, concurrency := range []int{4, 16, 64, 256, 1024, 4096} {
 		t.Run(fmt.Sprintf("c%d", concurrency), func(t *testing.T) {
 			rec := recorder.NewMemory()
 			gen := &loadgen.Generator{
