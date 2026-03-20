@@ -52,6 +52,7 @@ type Generator struct {
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
 
 	recordWG    sync.WaitGroup // tracks in-flight recordResult goroutines
+	inFlight    atomic.Int64
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
 }
@@ -364,6 +365,13 @@ func (g *Generator) cacheSalt() string {
 	}
 }
 
+func (g *Generator) trackInFlight(delta int64) {
+	n := g.inFlight.Add(delta)
+	if g.Metrics != nil {
+		g.Metrics.Concurrency.Set(float64(n))
+	}
+}
+
 func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {
 	req := &client.CompletionRequest{
 		Model:       g.Model,
@@ -375,7 +383,9 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		CacheSalt:   g.cacheSalt(),
 	}
 
+	g.trackInFlight(1)
 	result := c.CompletionStream(ctx, req)
+	g.trackInFlight(-1)
 
 	g.recordWG.Add(1)
 	go func() {
@@ -503,7 +513,9 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			CacheSalt: g.cacheSalt(),
 		}
 
+		g.trackInFlight(1)
 		result := c.ChatStream(ctx, req)
+		g.trackInFlight(-1)
 
 		g.recordWG.Add(1)
 		go func(turn int) {

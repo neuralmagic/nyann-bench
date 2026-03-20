@@ -243,7 +243,6 @@ Workload types:
 					"duration", stages[i].Duration)
 				if m != nil {
 					m.Stage.Set(float64(i))
-					m.Concurrency.Set(float64(concurrency))
 				}
 			})
 
