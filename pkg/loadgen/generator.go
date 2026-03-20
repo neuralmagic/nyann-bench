@@ -365,6 +365,11 @@ func (g *Generator) cacheSalt() string {
 	}
 }
 
+// InFlight returns the current number of in-flight requests.
+func (g *Generator) InFlight() int64 {
+	return g.inFlight.Load()
+}
+
 func (g *Generator) trackInFlight(delta int64) {
 	n := g.inFlight.Add(delta)
 	if g.Metrics != nil {
