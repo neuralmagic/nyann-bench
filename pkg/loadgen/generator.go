@@ -51,6 +51,7 @@ type Generator struct {
 	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
 
+	recordWG    sync.WaitGroup // tracks in-flight recordResult goroutines
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
 }
@@ -157,6 +158,7 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 	}
 
 	pool.Stop()
+	g.recordWG.Wait()
 }
 
 func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
@@ -179,6 +181,7 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 		return nil, fmt.Errorf("unknown mode: %s", g.Mode)
 	}
 
+	g.recordWG.Wait()
 	endTime := time.Now()
 	ts := &recorder.Timestamps{
 		StartTime:     recorder.TimeToFloat(startTime),
@@ -374,8 +377,11 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 
 	result := c.CompletionStream(ctx, req)
 
-	// Record and eval asynchronously so the stream can fire the next request immediately.
-	g.recordResult(result, streamID, convID, 0, conv)
+	g.recordWG.Add(1)
+	go func() {
+		defer g.recordWG.Done()
+		g.recordResult(result, streamID, convID, 0, conv)
+	}()
 }
 
 // recordResult handles eval, metrics, and recording for a completed request.
@@ -499,11 +505,14 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 
 		result := c.ChatStream(ctx, req)
 
+		g.recordWG.Add(1)
+		go func(turn int) {
+			defer g.recordWG.Done()
+			g.recordResult(result, streamID, convID, turn, conv)
+		}(turnIdx)
+
 		if result.Err != nil {
-			g.recordResult(result, streamID, convID, turnIdx, conv)
 			return
 		}
-
-		g.recordResult(result, streamID, convID, turnIdx, conv)
 	}
 }
