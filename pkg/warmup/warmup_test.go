@@ -57,27 +57,19 @@ func TestComputeStages(t *testing.T) {
 		t.Fatalf("ComputeStages failed: %v", err)
 	}
 
-	if len(stages) != 2 {
-		t.Fatalf("expected 2 stages, got %d", len(stages))
+	if len(stages) != 1 {
+		t.Fatalf("expected 1 stage (settle), got %d", len(stages))
 	}
 
-	// Stage 1: kernel warmup at C=1, no rampup
-	if stages[0].Concurrency != 1 {
-		t.Errorf("stage 0 concurrency: got %d, want 1", stages[0].Concurrency)
+	// Settle at target with staggered rampup
+	if stages[0].Concurrency != 8 {
+		t.Errorf("stage 0 concurrency: got %d, want 8", stages[0].Concurrency)
 	}
-	if stages[0].Rampup != 0 {
-		t.Errorf("stage 0 rampup should be 0, got %v", stages[0].Rampup)
+	if stages[0].Rampup <= 0 {
+		t.Error("stage 0 rampup should be > 0 (stagger across request lifetime)")
 	}
-
-	// Stage 2: settle at target with staggered rampup
-	if stages[1].Concurrency != 8 {
-		t.Errorf("stage 1 concurrency: got %d, want 8", stages[1].Concurrency)
-	}
-	if stages[1].Rampup <= 0 {
-		t.Error("stage 1 rampup should be > 0 (stagger across request lifetime)")
-	}
-	if stages[1].Duration < 5*time.Second {
-		t.Errorf("stage 1 duration should be >= 5s, got %v", stages[1].Duration)
+	if stages[0].Duration < 5*time.Second {
+		t.Errorf("stage 0 duration should be >= 5s, got %v", stages[0].Duration)
 	}
 }
 
@@ -97,13 +89,10 @@ func TestComputeStagesConcurrency1(t *testing.T) {
 		t.Fatalf("ComputeStages failed: %v", err)
 	}
 
-	if len(stages) != 2 {
-		t.Fatalf("expected 2 stages, got %d", len(stages))
+	if len(stages) != 1 {
+		t.Fatalf("expected 1 stage, got %d", len(stages))
 	}
 	if stages[0].Concurrency != 1 {
 		t.Errorf("stage 0: got C=%d, want 1", stages[0].Concurrency)
-	}
-	if stages[1].Concurrency != 1 {
-		t.Errorf("stage 1: got C=%d, want 1", stages[1].Concurrency)
 	}
 }

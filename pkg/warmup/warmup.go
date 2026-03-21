@@ -114,19 +114,14 @@ func ComputeStages(ctx context.Context, cfg *AutoConfig) ([]loadgen.Stage, error
 	requestLifetimeMs := ttftStable + meanTPOT*float64(cfg.WorkloadOSL)
 	requestLifetime := time.Duration(requestLifetimeMs * float64(time.Millisecond))
 
-	slog.Info("Warmup computed",
+	slog.Info("Warmup probing complete",
 		"kernel_requests", kernelCount,
 		"ttft_ms", fmt.Sprintf("%.1f", ttftStable),
 		"tpot_ms", fmt.Sprintf("%.2f", meanTPOT),
 		"request_lifetime", requestLifetime)
 
-	// Stage 1: Kernel warmup at C=1
-	kernelDur := time.Duration(float64(kernelCount) * requestLifetimeMs * 1.5 * float64(time.Millisecond))
-	if kernelDur < 2*time.Second {
-		kernelDur = 2 * time.Second
-	}
-
-	// Stage 2: Settle at target concurrency
+	// Kernels are already compiled from the probes above.
+	// Go straight to the settle stage at target concurrency.
 	// Rampup = one request lifetime (stagger streams across lifecycle)
 	// Duration = rampup + settle_cycles × request_lifetime
 	rampup := requestLifetime
@@ -142,13 +137,13 @@ func ComputeStages(ctx context.Context, cfg *AutoConfig) ([]loadgen.Stage, error
 	}
 
 	stages := []loadgen.Stage{
-		{Concurrency: 1, Duration: kernelDur},
 		{Concurrency: cfg.TargetConcurrency, Duration: settleDur, Rampup: rampup},
 	}
 
-	slog.Info("Warmup stages",
-		"kernel_stage", fmt.Sprintf("C=1 for %v", kernelDur),
-		"settle_stage", fmt.Sprintf("C=%d for %v (rampup %v)", cfg.TargetConcurrency, settleDur, rampup))
+	slog.Info("Warmup settle stage",
+		"concurrency", cfg.TargetConcurrency,
+		"duration", settleDur,
+		"rampup", rampup)
 
 	return stages, nil
 }
