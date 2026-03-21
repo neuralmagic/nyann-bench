@@ -21,11 +21,12 @@ type Config struct {
 // Warmup defines a warmup stage that runs before the main benchmark.
 // Results from the warmup are discarded.
 //
-// When Profile is set, warmup uses a characterization profile for
-// data-driven warmup (ignores Concurrency/Duration).
-// Otherwise, falls back to fixed-duration warmup.
+// When Auto is true, warmup probes the engine to detect kernel compilation
+// and measure request lifetime, then staggers stream starts across one
+// request lifetime for true steady state.
+// Otherwise, uses fixed concurrency and duration.
 type Warmup struct {
-	Profile     string   `json:"profile,omitempty"`
+	Auto        bool     `json:"auto,omitempty"`
 	Concurrency int      `json:"concurrency,omitempty"`
 	Duration    Duration `json:"duration,omitempty"`
 }
