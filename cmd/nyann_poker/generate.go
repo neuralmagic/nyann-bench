@@ -17,10 +17,10 @@ import (
 	"github.com/neuralmagic/nyann_poker/pkg/analysis"
 	"github.com/neuralmagic/nyann_poker/pkg/client"
 	"github.com/neuralmagic/nyann_poker/pkg/config"
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
 	"github.com/neuralmagic/nyann_poker/pkg/metrics"
 	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann_poker/pkg/warmup"
 	"github.com/spf13/cobra"
 )
 
@@ -99,58 +99,11 @@ Workload types:
 				slog.Info("Cache salt enabled", "mode", w.CacheSalt.Mode)
 			}
 
-			// Calibrate chars-per-token ratio
-			charsPerToken := w.CharsPerToken
-			if charsPerToken <= 0 {
-				// Use a sample text for calibration
-				sample := "The quick brown fox jumps over the lazy dog. This is a sample of natural English text used to calibrate the tokenizer ratio for accurate input sequence length targeting."
-				calibrated, err := c.CalibrateTokenRatio(ctx, sample, model)
-				if err != nil {
-					slog.Warn("Tokenizer calibration failed, using default", "error", err, "default", 4.0)
-					charsPerToken = 4.0
-				} else {
-					charsPerToken = calibrated
-					slog.Info("Calibrated chars/token", "ratio", charsPerToken)
-				}
-			} else {
-				slog.Info("Using configured chars/token", "ratio", charsPerToken)
-			}
+			charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
 
-			// Build dataset
-			var ds dataset.Dataset
-			switch w.Type {
-			case "synthetic":
-				ds = dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
-			case "faker":
-				ds = dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
-			case "corpus":
-				if w.CorpusPath == "" {
-					return fmt.Errorf("workload.corpus_path is required for corpus type")
-				}
-				ds, err = dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
-				if err != nil {
-					return err
-				}
-			case "gsm8k":
-				if w.GSM8KPath == "" {
-					return fmt.Errorf("workload.gsm8k_path is required for gsm8k type")
-				}
-				// Clear default OSL — GSM8K must generate freely
-				w.OSL = 0
-				// Default to 5-shot (matching lm_eval) if not explicitly set
-				numFewShot := 5
-				if w.NumFewShot != nil {
-					numFewShot = *w.NumFewShot
-				}
-				if numFewShot > 0 && w.GSM8KTrainPath == "" {
-					return fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
-				}
-				ds, err = dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
-				if err != nil {
-					return err
-				}
-			default:
-				return fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k)", w.Type)
+			ds, err := buildDataset(&w, charsPerToken)
+			if err != nil {
+				return err
 			}
 
 			// Build recorder
@@ -190,14 +143,41 @@ Workload types:
 
 			var allStages []loadgen.Stage
 			if cfg.Warmup != nil {
-				slog.Info("Running warmup",
-					"concurrency", cfg.Warmup.Concurrency,
-					"duration", cfg.Warmup.Duration.Duration())
-				allStages = append(allStages, loadgen.Stage{
-					Concurrency: cfg.Warmup.Concurrency,
-					Duration:    cfg.Warmup.Duration.Duration(),
-				})
-				warmupStages = 1
+				if cfg.Warmup.Profile != "" {
+					// Profile-based smart warmup
+					profile, err := warmup.LoadProfile(cfg.Warmup.Profile)
+					if err != nil {
+						return fmt.Errorf("loading warmup profile: %w", err)
+					}
+					targetConcurrency := cfgStages[0].Concurrency
+					planCfg := &warmup.PlanConfig{
+						TargetConcurrency: targetConcurrency,
+						WorkloadOSL:       w.OSL,
+					}
+					warmupStageList := warmup.PlanWarmupStages(profile, planCfg)
+					allStages = append(allStages, warmupStageList...)
+					warmupStages = len(warmupStageList)
+
+					var totalWarmupDur time.Duration
+					for _, s := range warmupStageList {
+						totalWarmupDur += s.Duration
+					}
+					slog.Info("Smart warmup from profile",
+						"profile", cfg.Warmup.Profile,
+						"kernel_warmup_requests", profile.KernelWarmupRequests,
+						"stages", warmupStages,
+						"total_warmup_duration", totalWarmupDur)
+				} else {
+					// Legacy fixed-duration warmup
+					slog.Info("Running warmup",
+						"concurrency", cfg.Warmup.Concurrency,
+						"duration", cfg.Warmup.Duration.Duration())
+					allStages = append(allStages, loadgen.Stage{
+						Concurrency: cfg.Warmup.Concurrency,
+						Duration:    cfg.Warmup.Duration.Duration(),
+					})
+					warmupStages = 1
+				}
 			}
 			for _, s := range cfgStages {
 				allStages = append(allStages, loadgen.Stage{

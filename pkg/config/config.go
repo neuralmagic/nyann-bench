@@ -20,9 +20,14 @@ type Config struct {
 
 // Warmup defines a warmup stage that runs before the main benchmark.
 // Results from the warmup are discarded.
+//
+// When Profile is set, warmup uses a characterization profile for
+// data-driven warmup (ignores Concurrency/Duration).
+// Otherwise, falls back to fixed-duration warmup.
 type Warmup struct {
-	Concurrency int      `json:"concurrency"`
-	Duration    Duration `json:"duration"`
+	Profile     string   `json:"profile,omitempty"`
+	Concurrency int      `json:"concurrency,omitempty"`
+	Duration    Duration `json:"duration,omitempty"`
 }
 
 // Stage defines one step in a multi-stage sweep.

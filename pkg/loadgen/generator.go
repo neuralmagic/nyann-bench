@@ -78,29 +78,39 @@ func newStreamPool(g *Generator, c *client.Client) *streamPool {
 }
 
 // Resize adjusts the pool to the target concurrency.
-// New streams start immediately; excess streams are cancelled
-// (they finish their current in-flight request, then exit).
-func (p *streamPool) Resize(ctx context.Context, target int) {
+// New streams start immediately (or staggered over rampup if > 0);
+// excess streams are cancelled (they finish their current in-flight request, then exit).
+func (p *streamPool) Resize(ctx context.Context, target int, rampup time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	current := len(p.streams)
+	newCount := target - current
 
 	// Add streams
+	idx := 0
 	for current < target {
 		id := p.nextID
 		p.nextID++
 		streamCtx, cancel := context.WithCancel(ctx)
 		p.streams[id] = cancel
+
+		// Compute stagger delay: spread new streams evenly over rampup
+		delay := time.Duration(0)
+		if rampup > 0 && newCount > 1 {
+			delay = rampup * time.Duration(idx) / time.Duration(newCount-1)
+		}
+
 		p.wg.Add(1)
-		go func(sid int, sctx context.Context) {
+		go func(sid int, sctx context.Context, d time.Duration) {
 			defer p.wg.Done()
-			p.g.runStream(sctx, p.c, sid, 0)
+			p.g.runStream(sctx, p.c, sid, d)
 			p.mu.Lock()
 			delete(p.streams, sid)
 			p.mu.Unlock()
-		}(id, streamCtx)
+		}(id, streamCtx, delay)
 		current++
+		idx++
 	}
 
 	// Remove excess streams (cancel the most recently added)
@@ -135,6 +145,7 @@ func (p *streamPool) Stop() {
 type Stage struct {
 	Concurrency int
 	Duration    time.Duration
+	Rampup      time.Duration // stagger new stream starts over this duration
 }
 
 // RunStages runs multiple stages with a shared goroutine pool, dynamically
@@ -151,7 +162,7 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 		if onStage != nil {
 			onStage(i, stage.Concurrency)
 		}
-		pool.Resize(ctx, stage.Concurrency)
+		pool.Resize(ctx, stage.Concurrency, stage.Rampup)
 
 		select {
 		case <-ctx.Done():
