@@ -246,6 +246,11 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Context cancelled — not a real error, just shutdown
+			result.EndTime = time.Now()
+			return result
+		}
 		result.Err = fmt.Errorf("sending request: %w", err)
 		result.EndTime = time.Now()
 		return result
@@ -310,7 +315,7 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 	result.Content = content.String()
 	result.EndTime = time.Now()
 
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		result.Err = fmt.Errorf("reading stream: %w", err)
 	}
 
@@ -341,6 +346,10 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
+		if ctx.Err() != nil {
+			result.EndTime = time.Now()
+			return result
+		}
 		result.Err = fmt.Errorf("sending request: %w", err)
 		result.EndTime = time.Now()
 		return result
@@ -402,7 +411,7 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 	result.Content = content.String()
 	result.EndTime = time.Now()
 
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		result.Err = fmt.Errorf("reading stream: %w", err)
 	}
 

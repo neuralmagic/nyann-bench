@@ -417,6 +417,11 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 	result := c.CompletionStream(ctx, req)
 	g.trackInFlight(-1)
 
+	// Don't record requests cancelled by shutdown
+	if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
+		return
+	}
+
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
@@ -546,6 +551,11 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		g.trackInFlight(1)
 		result := c.ChatStream(ctx, req)
 		g.trackInFlight(-1)
+
+		// Don't record requests cancelled by shutdown
+		if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
+			return
+		}
 
 		g.recordWG.Add(1)
 		go func(turn int) {
