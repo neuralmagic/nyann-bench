@@ -31,13 +31,24 @@ type Record struct {
 	EvalCorrect   *bool  `json:"eval_correct,omitempty"`
 }
 
+// written is a pre-marshalled record: the serialized JSONL line plus the
+// parsed Record for the in-memory buffer.
+type written struct {
+	line   []byte
+	record Record
+}
+
 // Recorder writes per-request records. Thread-safe.
-// Supports file-based (JSONL) and in-memory modes.
+//
+// JSON marshalling happens in the caller goroutine (parallel), and a single
+// background goroutine writes pre-serialized bytes to disk. This eliminates
+// lock contention on the marshal step at high concurrency.
 type Recorder struct {
-	mu      sync.Mutex
+	ch      chan written
+	done    chan struct{}
 	file    *os.File
-	enc     *json.Encoder
-	records []Record // in-memory buffer (always populated)
+	mu      sync.Mutex
+	records []Record
 }
 
 // New creates a file-based recorder that also buffers in memory.
@@ -50,32 +61,68 @@ func New(dir string, workerID int) (*Recorder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Recorder{file: f, enc: json.NewEncoder(f)}, nil
+	r := &Recorder{
+		ch:   make(chan written, 8192),
+		done: make(chan struct{}),
+		file: f,
+	}
+	go r.drain()
+	return r, nil
 }
 
 // NewMemory creates an in-memory recorder with no file output.
 func NewMemory() *Recorder {
-	return &Recorder{}
+	r := &Recorder{
+		ch:   make(chan written, 8192),
+		done: make(chan struct{}),
+	}
+	go r.drain()
+	return r
+}
+
+func (r *Recorder) drain() {
+	defer close(r.done)
+	for w := range r.ch {
+		r.mu.Lock()
+		r.records = append(r.records, w.record)
+		r.mu.Unlock()
+		if r.file != nil {
+			r.file.Write(w.line)
+		}
+	}
 }
 
 func (r *Recorder) Write(rec *Record) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.records = append(r.records, *rec)
-	if r.enc != nil {
-		return r.enc.Encode(rec)
+	line, err := json.Marshal(rec)
+	if err != nil {
+		return err
 	}
+	line = append(line, '\n')
+	r.ch <- written{line: line, record: *rec}
 	return nil
 }
 
-// Records returns all buffered records.
+// Records returns all buffered records. Must be called after Close.
 func (r *Recorder) Records() []Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.records
 }
 
+// Close drains pending writes and closes the underlying file.
+// Safe to call multiple times.
 func (r *Recorder) Close() error {
+	r.mu.Lock()
+	ch := r.ch
+	r.ch = nil
+	r.mu.Unlock()
+
+	if ch == nil {
+		return nil // already closed
+	}
+
+	close(ch)
+	<-r.done
 	if r.file != nil {
 		return r.file.Close()
 	}
