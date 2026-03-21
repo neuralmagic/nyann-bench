@@ -184,36 +184,30 @@ Workload types:
 				}()
 			}
 
-			// Run warmup (results discarded)
+			// Build combined stages: warmup (if any) + main stages
+			cfgStages := cfg.EffectiveStages()
+			warmupStages := 0
+
+			var allStages []loadgen.Stage
 			if cfg.Warmup != nil {
 				slog.Info("Running warmup",
 					"concurrency", cfg.Warmup.Concurrency,
 					"duration", cfg.Warmup.Duration.Duration())
-				warmupRec := recorder.NewMemory()
-				warmupGen := &loadgen.Generator{
-					Target:    target,
-					Model:     model,
-					Mode:      loadgen.Mode(cfg.Load.Mode),
-					CacheSalt: w.CacheSalt,
-					Dataset:   ds,
-					Recorder:  warmupRec,
-				}
-				warmupStages := []loadgen.Stage{{
+				allStages = append(allStages, loadgen.Stage{
 					Concurrency: cfg.Warmup.Concurrency,
 					Duration:    cfg.Warmup.Duration.Duration(),
-				}}
-				warmupGen.RunStages(ctx, warmupStages, func(i, concurrency int) {
-					slog.Info("Warmup running", "concurrency", concurrency)
 				})
-				warmupRec.Close()
-				slog.Info("Warmup complete",
-					"requests", len(warmupRec.Records()))
+				warmupStages = 1
+			}
+			for _, s := range cfgStages {
+				allStages = append(allStages, loadgen.Stage{
+					Concurrency: s.Concurrency,
+					Duration:    s.Duration.Duration(),
+				})
 			}
 
-			// Run stages
-			cfgStages := cfg.EffectiveStages()
-			startTime := time.Now()
-
+			// Start with a discard recorder; swap to the real one after warmup
+			warmupRec := recorder.NewMemory()
 			gen := &loadgen.Generator{
 				Target:      target,
 				Model:       model,
@@ -223,26 +217,35 @@ Workload types:
 				Rampup:      cfg.Load.Rampup.Duration(),
 				CacheSalt:   w.CacheSalt,
 				Dataset:     ds,
-				Recorder:    rec,
+				Recorder:    warmupRec,
 				Metrics:     m,
 			}
-
-			// Convert config stages to loadgen stages
-			stages := make([]loadgen.Stage, len(cfgStages))
-			for i, s := range cfgStages {
-				stages[i] = loadgen.Stage{
-					Concurrency: s.Concurrency,
-					Duration:    s.Duration.Duration(),
-				}
+			if cfg.Warmup == nil {
+				gen.Recorder = rec
 			}
 
-			gen.RunStages(ctx, stages, func(i, concurrency int) {
+			var startTime time.Time
+			gen.RunStages(ctx, allStages, func(i, concurrency int) {
+				if i < warmupStages {
+					slog.Info("Warmup running", "concurrency", concurrency)
+					return
+				}
+				mainIdx := i - warmupStages
+				if mainIdx == 0 {
+					// Transition from warmup to main: swap recorder
+					if cfg.Warmup != nil {
+						gen.SetRecorder(rec)
+						slog.Info("Warmup complete",
+							"requests", len(warmupRec.Records()))
+					}
+					startTime = time.Now()
+				}
 				slog.Info("Stage started",
-					"stage", fmt.Sprintf("%d/%d", i+1, len(stages)),
+					"stage", fmt.Sprintf("%d/%d", mainIdx+1, len(cfgStages)),
 					"concurrency", concurrency,
-					"duration", stages[i].Duration)
+					"duration", allStages[i].Duration)
 				if m != nil {
-					m.Stage.Set(float64(i))
+					m.Stage.Set(float64(mainIdx))
 				}
 			})
 

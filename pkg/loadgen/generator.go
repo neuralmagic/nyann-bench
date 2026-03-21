@@ -51,6 +51,7 @@ type Generator struct {
 	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
 
+	recorderPtr atomic.Pointer[recorder.Recorder] // swappable recorder for warmup→main transition
 	recordWG    sync.WaitGroup // tracks in-flight recordResult goroutines
 	inFlight    atomic.Int64
 	evalCount   atomic.Int64
@@ -370,6 +371,19 @@ func (g *Generator) InFlight() int64 {
 	return g.inFlight.Load()
 }
 
+// SetRecorder atomically swaps the recorder. In-flight recordResult goroutines
+// may still write to the previous recorder; new ones will use the new recorder.
+func (g *Generator) SetRecorder(r *recorder.Recorder) {
+	g.recorderPtr.Store(r)
+}
+
+func (g *Generator) getRecorder() *recorder.Recorder {
+	if r := g.recorderPtr.Load(); r != nil {
+		return r
+	}
+	return g.Recorder
+}
+
 func (g *Generator) trackInFlight(delta int64) {
 	n := g.inFlight.Add(delta)
 	if g.Metrics != nil {
@@ -418,7 +432,7 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		if g.Metrics != nil {
 			g.Metrics.RequestsTotal.WithLabelValues("error").Inc()
 		}
-		if err := g.Recorder.Write(rec); err != nil {
+		if err := g.getRecorder().Write(rec); err != nil {
 			slog.Error("Recorder write error", "error", err)
 		}
 		return
@@ -493,7 +507,7 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		g.Metrics.PromptTokens.Observe(float64(rec.PromptTokens))
 	}
 
-	if err := g.Recorder.Write(rec); err != nil {
+	if err := g.getRecorder().Write(rec); err != nil {
 		slog.Error("Recorder write error", "error", err)
 	}
 }
