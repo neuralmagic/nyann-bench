@@ -20,6 +20,7 @@ type AutoConfig struct {
 	TargetConcurrency int
 	WorkloadOSL       int
 	CacheSalt         *config.CacheSalt
+	Rampup            time.Duration // if set, skip probing and use this directly
 
 	MaxKernelRequests  int     // cap on kernel warmup probes (default: 10)
 	StabilityThreshold float64 // TTFT change threshold (default: 0.10)
@@ -38,89 +39,27 @@ func (c *AutoConfig) defaults() {
 	}
 }
 
-// ComputeStages probes the engine with sequential requests to detect kernel
-// warmup and measure request lifetime, then returns warmup stages that
-// stagger stream starts across one request lifetime for true steady state.
+// ComputeStages returns warmup stages that stagger stream starts across one
+// request lifetime for true steady state.
+//
+// If Rampup is set, skips probing and uses it directly.
+// Otherwise, probes the engine to detect kernel compilation and measure
+// request lifetime.
 func ComputeStages(ctx context.Context, cfg *AutoConfig) ([]loadgen.Stage, error) {
 	cfg.defaults()
 
-	cl := client.New(cfg.Target)
-
-	// Phase 1: Send sequential probes to compile kernels and measure timing
-	var ttfts []float64
-	var ttftStable, tpotSum float64
-	var tpotCount int
-	kernelCount := 0
-
-	for i := 0; i < cfg.MaxKernelRequests; i++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		ttft, tpot, err := sendProbe(ctx, cl, cfg)
+	rampup := cfg.Rampup
+	if rampup > 0 {
+		slog.Info("Warmup using configured rampup, skipping probes", "rampup", rampup)
+	} else {
+		// Probe the engine to measure request lifetime
+		measured, err := probeRequestLifetime(ctx, cfg)
 		if err != nil {
-			slog.Warn("Warmup probe failed", "error", err)
-			continue
+			return nil, err
 		}
-
-		ttfts = append(ttfts, ttft)
-		slog.Info("Warmup probe",
-			"request", i+1,
-			"ttft_ms", fmt.Sprintf("%.1f", ttft),
-			"tpot_ms", fmt.Sprintf("%.2f", tpot))
-
-		if IsStable(ttfts, cfg.StabilityThreshold, cfg.StabilityWindow) {
-			kernelCount = len(ttfts)
-			// Use post-warmup measurements for timing
-			ttftStable = ttft
-			tpotSum += tpot
-			tpotCount++
-			// Collect one more measurement for confidence
-			if tpotCount >= 2 {
-				break
-			}
-		} else if len(ttfts) > cfg.StabilityWindow {
-			// Post-convergence measurement
-			tpotSum += tpot
-			tpotCount++
-		}
+		rampup = measured
 	}
 
-	if kernelCount == 0 {
-		kernelCount = len(ttfts)
-		slog.Warn("Kernel warmup did not converge, using all probes", "count", kernelCount)
-	}
-	if tpotCount == 0 || ttftStable == 0 {
-		// Use last measurement as fallback
-		if len(ttfts) > 0 {
-			ttftStable = ttfts[len(ttfts)-1]
-		}
-		tpotSum = 1 // avoid division by zero
-		tpotCount = 1
-	}
-
-	meanTPOT := tpotSum / float64(tpotCount)
-
-	// Request lifetime at target concurrency (ms)
-	// Approximate: TPOT scales with concurrency but we only measured at C=1.
-	// Use the C=1 measurement as a lower bound — the actual lifetime will be
-	// longer, which means our rampup stagger is conservative (slightly too short
-	// rather than too long). This is fine: natural jitter decorrelates streams
-	// over the settle cycles.
-	requestLifetimeMs := ttftStable + meanTPOT*float64(cfg.WorkloadOSL)
-	requestLifetime := time.Duration(requestLifetimeMs * float64(time.Millisecond))
-
-	slog.Info("Warmup probing complete",
-		"kernel_requests", kernelCount,
-		"ttft_ms", fmt.Sprintf("%.1f", ttftStable),
-		"tpot_ms", fmt.Sprintf("%.2f", meanTPOT),
-		"request_lifetime", requestLifetime)
-
-	// Kernels are already compiled from the probes above.
-	// Go straight to the settle stage at target concurrency.
-	// Rampup = one request lifetime (stagger streams across lifecycle).
-	// Once all streams have started, the batch is in steady state.
-	rampup := requestLifetime
 	settleDur := rampup
 	if settleDur < 5*time.Second {
 		settleDur = 5 * time.Second
@@ -140,6 +79,73 @@ func ComputeStages(ctx context.Context, cfg *AutoConfig) ([]loadgen.Stage, error
 		"rampup", rampup)
 
 	return stages, nil
+}
+
+// probeRequestLifetime sends sequential requests to detect kernel warmup
+// and measure request lifetime. Returns the measured lifetime as a duration.
+func probeRequestLifetime(ctx context.Context, cfg *AutoConfig) (time.Duration, error) {
+	cl := client.New(cfg.Target)
+
+	var ttfts []float64
+	var ttftStable, tpotSum float64
+	var tpotCount int
+
+	for i := 0; i < cfg.MaxKernelRequests; i++ {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+
+		ttft, tpot, err := sendProbe(ctx, cl, cfg)
+		if err != nil {
+			slog.Warn("Warmup probe failed", "error", err)
+			continue
+		}
+
+		ttfts = append(ttfts, ttft)
+		slog.Info("Warmup probe",
+			"request", i+1,
+			"ttft_ms", fmt.Sprintf("%.1f", ttft),
+			"tpot_ms", fmt.Sprintf("%.2f", tpot))
+
+		if IsStable(ttfts, cfg.StabilityThreshold, cfg.StabilityWindow) {
+			if tpotCount == 0 {
+				ttftStable = ttft
+			}
+			tpotSum += tpot
+			tpotCount++
+			if tpotCount >= 2 {
+				break
+			}
+		} else if len(ttfts) > cfg.StabilityWindow {
+			tpotSum += tpot
+			tpotCount++
+		}
+	}
+
+	if tpotCount == 0 || ttftStable == 0 {
+		if len(ttfts) > 0 {
+			ttftStable = ttfts[len(ttfts)-1]
+		}
+		tpotSum = 1
+		tpotCount = 1
+	}
+
+	meanTPOT := tpotSum / float64(tpotCount)
+	requestLifetimeMs := ttftStable + meanTPOT*float64(cfg.WorkloadOSL)
+	requestLifetime := time.Duration(requestLifetimeMs * float64(time.Millisecond))
+
+	rounded := requestLifetime.Round(time.Second)
+	if rounded == 0 {
+		rounded = requestLifetime.Round(time.Millisecond)
+	}
+	slog.Info("Warmup probing complete",
+		"ttft_ms", fmt.Sprintf("%.1f", ttftStable),
+		"tpot_ms", fmt.Sprintf("%.2f", meanTPOT),
+		"request_lifetime", requestLifetime)
+	slog.Info("To skip probing next time, use:",
+		"warmup", fmt.Sprintf(`{"auto":true,"rampup":"%s"}`, rounded))
+
+	return requestLifetime, nil
 }
 
 // sendProbe sends a single request and returns TTFT (ms) and mean TPOT (ms).

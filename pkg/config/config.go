@@ -18,17 +18,11 @@ type Config struct {
 	Workload Workload `json:"workload"`
 }
 
-// Warmup defines a warmup stage that runs before the main benchmark.
-// Results from the warmup are discarded.
-//
-// When Auto is true, warmup probes the engine to detect kernel compilation
-// and measure request lifetime, then staggers stream starts across one
-// request lifetime for true steady state.
-// Otherwise, uses fixed concurrency and duration.
+// Warmup probes the engine and staggers stream starts across one request
+// lifetime so the batch reaches true steady state before recording.
+// If Rampup is set, probing is skipped and the value is used directly.
 type Warmup struct {
-	Auto        bool     `json:"auto,omitempty"`
-	Concurrency int      `json:"concurrency,omitempty"`
-	Duration    Duration `json:"duration,omitempty"`
+	Rampup Duration `json:"rampup,omitempty"` // skip probing, use this as stagger duration
 }
 
 // Stage defines one step in a multi-stage sweep.
