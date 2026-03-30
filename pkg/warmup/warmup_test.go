@@ -1,98 +1,72 @@
 package warmup_test
 
 import (
-	"context"
-	"net"
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
-	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
 	"github.com/neuralmagic/nyann_poker/pkg/warmup"
 )
 
-func startMockServer(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func TestStage(t *testing.T) {
+	cfg := &warmup.Config{
+		Duration:    30 * time.Second,
+		Concurrency: 8,
+		Stagger:     false,
+	}
+
+	stage, err := warmup.Stage(cfg)
 	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-
-	srv := &mockserver.Server{
-		Addr:         addr,
-		TTFT:         5 * time.Millisecond,
-		ITL:          1 * time.Millisecond,
-		OutputTokens: 10,
-		Model:        "test-model",
-	}
-	go srv.ListenAndServe()
-
-	for i := 0; i < 50; i++ {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return addr
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("server did not start")
-	return ""
-}
-
-func TestComputeStages(t *testing.T) {
-	addr := startMockServer(t)
-
-	cfg := &warmup.AutoConfig{
-		Target:            "http://" + addr + "/v1",
-		Model:             "test-model",
-		Dataset:           dataset.NewSynthetic(32, 10, 1, 4.0),
-		TargetConcurrency: 8,
-		WorkloadOSL:       10,
+		t.Fatalf("Stage failed: %v", err)
 	}
 
-	stages, err := warmup.ComputeStages(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("ComputeStages failed: %v", err)
+	if stage.Concurrency != 8 {
+		t.Errorf("concurrency: got %d, want 8", stage.Concurrency)
 	}
-
-	if len(stages) != 1 {
-		t.Fatalf("expected 1 stage (settle), got %d", len(stages))
+	if stage.Duration != 30*time.Second {
+		t.Errorf("duration: got %v, want 30s", stage.Duration)
 	}
-
-	// Settle at target with staggered rampup
-	if stages[0].Concurrency != 8 {
-		t.Errorf("stage 0 concurrency: got %d, want 8", stages[0].Concurrency)
-	}
-	if stages[0].Rampup <= 0 {
-		t.Error("stage 0 rampup should be > 0 (stagger across request lifetime)")
-	}
-	if stages[0].Duration < 5*time.Second {
-		t.Errorf("stage 0 duration should be >= 5s, got %v", stages[0].Duration)
+	if stage.Rampup != 0 {
+		t.Errorf("rampup should be 0 without stagger, got %v", stage.Rampup)
 	}
 }
 
-func TestComputeStagesConcurrency1(t *testing.T) {
-	addr := startMockServer(t)
-
-	cfg := &warmup.AutoConfig{
-		Target:            "http://" + addr + "/v1",
-		Model:             "test-model",
-		Dataset:           dataset.NewSynthetic(32, 10, 1, 4.0),
-		TargetConcurrency: 1,
-		WorkloadOSL:       10,
+func TestStageWithStagger(t *testing.T) {
+	cfg := &warmup.Config{
+		Duration:    30 * time.Second,
+		Concurrency: 8,
+		Stagger:     true,
 	}
 
-	stages, err := warmup.ComputeStages(context.Background(), cfg)
+	stage, err := warmup.Stage(cfg)
 	if err != nil {
-		t.Fatalf("ComputeStages failed: %v", err)
+		t.Fatalf("Stage failed: %v", err)
 	}
 
-	if len(stages) != 1 {
-		t.Fatalf("expected 1 stage, got %d", len(stages))
+	if stage.Rampup != 30*time.Second {
+		t.Errorf("rampup should equal duration with stagger, got %v", stage.Rampup)
 	}
-	if stages[0].Concurrency != 1 {
-		t.Errorf("stage 0: got C=%d, want 1", stages[0].Concurrency)
+}
+
+func TestStageZeroDuration(t *testing.T) {
+	cfg := &warmup.Config{
+		Duration:    0,
+		Concurrency: 8,
+	}
+
+	_, err := warmup.Stage(cfg)
+	if err == nil {
+		t.Fatal("expected error for zero duration")
+	}
+}
+
+func TestStageZeroConcurrency(t *testing.T) {
+	cfg := &warmup.Config{
+		Duration:    10 * time.Second,
+		Concurrency: 0,
+	}
+
+	_, err := warmup.Stage(cfg)
+	if err == nil {
+		t.Fatal("expected error for zero concurrency")
 	}
 }

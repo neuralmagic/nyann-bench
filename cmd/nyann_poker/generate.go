@@ -143,21 +143,17 @@ Workload types:
 
 			var allStages []loadgen.Stage
 			if cfg.Warmup != nil {
-				autoCfg := &warmup.AutoConfig{
-					Target:            target,
-					Model:             model,
-					Dataset:           ds,
-					TargetConcurrency: cfgStages[0].Concurrency,
-					WorkloadOSL:       w.OSL,
-					CacheSalt:         w.CacheSalt,
-					Rampup:            cfg.Warmup.Rampup.Duration(),
+				warmupCfg := &warmup.Config{
+					Duration:    cfg.Warmup.Duration.Duration(),
+					Concurrency: cfgStages[0].Concurrency,
+					Stagger:     cfg.Warmup.Stagger,
 				}
-				warmupStageList, err := warmup.ComputeStages(ctx, autoCfg)
+				ws, err := warmup.Stage(warmupCfg)
 				if err != nil {
 					return fmt.Errorf("warmup: %w", err)
 				}
-				allStages = append(allStages, warmupStageList...)
-				warmupStages = len(warmupStageList)
+				allStages = append(allStages, ws)
+				warmupStages = 1
 			}
 			for _, s := range cfgStages {
 				allStages = append(allStages, loadgen.Stage{

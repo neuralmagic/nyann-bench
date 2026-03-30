@@ -18,11 +18,11 @@ type Config struct {
 	Workload Workload `json:"workload"`
 }
 
-// Warmup probes the engine and staggers stream starts across one request
-// lifetime so the batch reaches true steady state before recording.
-// If Rampup is set, probing is skipped and the value is used directly.
+// Warmup runs traffic at the target concurrency for a fixed duration before
+// measurement begins, allowing the engine to JIT-compile kernels.
 type Warmup struct {
-	Rampup Duration `json:"rampup,omitempty"` // skip probing, use this as stagger duration
+	Duration Duration `json:"duration"`          // how long to run warmup traffic
+	Stagger  bool     `json:"stagger,omitempty"` // spread stream starts across warmup duration
 }
 
 // Stage defines one step in a multi-stage sweep.
