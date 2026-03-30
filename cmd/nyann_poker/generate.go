@@ -142,18 +142,13 @@ Workload types:
 			warmupStages := 0
 
 			var allStages []loadgen.Stage
-			if cfg.Warmup != nil {
-				warmupCfg := &warmup.Config{
-					Duration:    cfg.Warmup.Duration.Duration(),
-					Concurrency: cfgStages[0].Concurrency,
-					Stagger:     cfg.Warmup.Stagger,
-				}
-				ws, err := warmup.Stage(warmupCfg)
+			if len(cfg.Warmup) > 0 {
+				ws, err := warmup.Stages(cfg.Warmup, cfgStages[0].Concurrency)
 				if err != nil {
 					return fmt.Errorf("warmup: %w", err)
 				}
-				allStages = append(allStages, ws)
-				warmupStages = 1
+				allStages = append(allStages, ws...)
+				warmupStages = len(ws)
 			}
 			for _, s := range cfgStages {
 				allStages = append(allStages, loadgen.Stage{
@@ -176,7 +171,7 @@ Workload types:
 				Recorder:    warmupRec,
 				Metrics:     m,
 			}
-			if cfg.Warmup == nil {
+			if len(cfg.Warmup) == 0 {
 				gen.Recorder = rec
 			}
 
@@ -189,7 +184,7 @@ Workload types:
 				mainIdx := i - warmupStages
 				if mainIdx == 0 {
 					// Transition from warmup to main: swap recorder
-					if cfg.Warmup != nil {
+					if len(cfg.Warmup) > 0 {
 						gen.SetRecorder(rec)
 						slog.Info("Warmup complete",
 							"requests", len(warmupRec.Records()))

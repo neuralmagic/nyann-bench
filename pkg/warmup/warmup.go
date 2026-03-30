@@ -5,41 +5,46 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/neuralmagic/nyann_poker/pkg/config"
 	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
 )
 
-// Config controls the warmup behavior.
-type Config struct {
-	Duration    time.Duration
-	Concurrency int
-	Stagger     bool
-}
-
-// Stage returns a single warmup stage that runs traffic at the target
-// concurrency for the configured duration, allowing the engine to JIT-compile
-// kernels before measurement begins. If Stagger is true, stream starts are
-// spread evenly across the warmup duration.
-func Stage(cfg *Config) (loadgen.Stage, error) {
-	if cfg.Duration <= 0 {
-		return loadgen.Stage{}, fmt.Errorf("warmup duration must be > 0")
-	}
-	if cfg.Concurrency <= 0 {
-		return loadgen.Stage{}, fmt.Errorf("warmup concurrency must be > 0")
+// Stages converts warmup config stages into loadgen stages. Stages with
+// concurrency=0 inherit defaultConcurrency (typically from the first main stage).
+func Stages(cfgStages []config.WarmupStage, defaultConcurrency int) ([]loadgen.Stage, error) {
+	if len(cfgStages) == 0 {
+		return nil, fmt.Errorf("warmup: no stages configured")
 	}
 
-	var rampup time.Duration
-	if cfg.Stagger {
-		rampup = cfg.Duration
+	stages := make([]loadgen.Stage, len(cfgStages))
+	for i, ws := range cfgStages {
+		dur := ws.Duration.Duration()
+		if dur <= 0 {
+			return nil, fmt.Errorf("warmup stage %d: duration must be > 0", i)
+		}
+
+		concurrency := ws.Concurrency
+		if concurrency <= 0 {
+			concurrency = defaultConcurrency
+		}
+
+		var rampup time.Duration
+		if ws.Stagger {
+			rampup = dur
+		}
+
+		slog.Info("Warmup stage",
+			"stage", fmt.Sprintf("%d/%d", i+1, len(cfgStages)),
+			"concurrency", concurrency,
+			"duration", dur,
+			"stagger", ws.Stagger)
+
+		stages[i] = loadgen.Stage{
+			Concurrency: concurrency,
+			Duration:    dur,
+			Rampup:      rampup,
+		}
 	}
 
-	slog.Info("Warmup stage",
-		"concurrency", cfg.Concurrency,
-		"duration", cfg.Duration,
-		"stagger", cfg.Stagger)
-
-	return loadgen.Stage{
-		Concurrency: cfg.Concurrency,
-		Duration:    cfg.Duration,
-		Rampup:      rampup,
-	}, nil
+	return stages, nil
 }

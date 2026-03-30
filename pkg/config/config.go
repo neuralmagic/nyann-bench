@@ -14,15 +14,17 @@ type Config struct {
 	Load     Load     `json:"load"`
 	Stages   []Stage  `json:"stages,omitempty"`
 	Sweep    *Sweep   `json:"sweep,omitempty"`
-	Warmup   *Warmup  `json:"warmup,omitempty"`
+	Warmup   []WarmupStage `json:"warmup,omitempty"`
 	Workload Workload `json:"workload"`
 }
 
-// Warmup runs traffic at the target concurrency for a fixed duration before
-// measurement begins, allowing the engine to JIT-compile kernels.
-type Warmup struct {
-	Duration Duration `json:"duration"`          // how long to run warmup traffic
-	Stagger  bool     `json:"stagger,omitempty"` // spread stream starts across warmup duration
+// WarmupStage defines one warmup phase. Multiple stages run in order before
+// measurement begins (e.g. JIT at concurrency=1, then settle at full load).
+// Concurrency defaults to the first main stage's concurrency if omitted.
+type WarmupStage struct {
+	Duration    Duration `json:"duration"`              // how long to run this stage
+	Concurrency int      `json:"concurrency,omitempty"` // 0 = inherit from first main stage
+	Stagger     bool     `json:"stagger,omitempty"`     // spread stream starts across duration
 }
 
 // Stage defines one step in a multi-stage sweep.
