@@ -205,6 +205,9 @@ def query_stage(
         q = f"avg(vllm:num_requests_running{{{pod_filter}}})"
         result["running_requests"] = prom_query(base_url, q, end_time)
 
+        q = f'avg(vllm:num_requests_waiting{{job="vllm-prefill",{pod_filter}}})'
+        result["waiting_requests"] = prom_query(base_url, q, end_time)
+
         q = f'sum(rate(vllm:generation_tokens_total{{job="vllm-decode",{pod_filter}}}[{rng}]))'
         result["tgtt"] = prom_query(base_url, q, end_time)
 
@@ -255,6 +258,7 @@ def print_table(rows: list[dict], deployment: str | None):
     if deployment:
         columns += [
             ("Running Reqs", "running_requests", 1),
+            ("Waiting Reqs", "waiting_requests", 1),
             ("TGTT", "tgtt", 0),
         ]
     columns += [
