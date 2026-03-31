@@ -730,6 +730,95 @@ func TestRandomCacheSaltUnique(t *testing.T) {
 	}
 }
 
+func TestMultiTurnFeedsRealResponses(t *testing.T) {
+	// Capture request bodies to verify that turn N+1 contains the real
+	// model response from turn N, not a synthetic placeholder.
+	var bodies []string
+	var mu sync.Mutex
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "real-model-output"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+	srv := &http.Server{Handler: capture}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		Dataset:     dataset.NewSynthetic(8, 4, 3, 4.0), // 3 turns
+		Recorder:    rec,
+		Duration:    500 * time.Millisecond,
+		Concurrency: 1,
+	}
+
+	gen.Run(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// With 3 turns per conversation, bodies come in groups of 3.
+	// Need at least one full conversation.
+	if len(bodies) < 3 {
+		t.Fatalf("expected at least 3 requests (one conversation), got %d", len(bodies))
+	}
+
+	// Parse the messages from each turn of the first conversation.
+	type reqBody struct {
+		Messages []client.Message `json:"messages"`
+	}
+	for turn := 0; turn < 3; turn++ {
+		var req reqBody
+		if err := json.Unmarshal([]byte(bodies[turn]), &req); err != nil {
+			t.Fatalf("turn %d: unmarshal: %v", turn, err)
+		}
+
+		if turn == 0 {
+			// Turn 0: just one user message.
+			if len(req.Messages) != 1 {
+				t.Errorf("turn 0: expected 1 message, got %d", len(req.Messages))
+			}
+			continue
+		}
+
+		// Turn 1+: should contain real model output, not synthetic placeholder.
+		// Expected structure: [user, assistant, user, assistant, ..., user]
+		expectedLen := turn*2 + 1
+		if len(req.Messages) != expectedLen {
+			t.Errorf("turn %d: expected %d messages, got %d", turn, expectedLen, len(req.Messages))
+			continue
+		}
+
+		// Every assistant message should be the real model output.
+		for i, msg := range req.Messages {
+			if msg.Role == "assistant" {
+				if msg.Content != "real-model-output" {
+					t.Errorf("turn %d, message %d: expected real model output, got %q", turn, i, msg.Content)
+				}
+			}
+		}
+	}
+}
+
 func readRecords(t *testing.T, path string) []recorder.Record {
 	t.Helper()
 	data, err := os.ReadFile(path)
