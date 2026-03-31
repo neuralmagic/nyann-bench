@@ -23,6 +23,11 @@ func NewSynthetic(isl, osl, turns int, charsPerToken float64) *Synthetic {
 	return &Synthetic{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
+// Clone returns an independent copy.
+func (s *Synthetic) Clone() Dataset {
+	return &Synthetic{ISL: s.ISL, OSL: s.OSL, Turns: s.Turns, CharsPerToken: s.CharsPerToken}
+}
+
 func (s *Synthetic) NextConversation() Conversation {
 	turns := make([][]client.Message, s.Turns)
 

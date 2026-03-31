@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,12 +27,14 @@ import (
 
 func generateCmd() *cobra.Command {
 	var (
-		target     string
-		model      string
-		cfgInput   string
-		outputDir  string
-		workerID   int
+		target      string
+		model       string
+		cfgInput    string
+		outputDir   string
+		workerID    int
 		metricsAddr string
+		seed        int64
+		seedSet     bool
 	)
 
 	cmd := &cobra.Command{
@@ -101,6 +104,20 @@ Workload types:
 
 			charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
 
+			// Also accept seed from env var (for K8s Jobs where args are static).
+			if !seedSet {
+				if v, ok := os.LookupEnv("NYANN_SEED"); ok {
+					if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+						seed = parsed
+						seedSet = true
+					}
+				}
+			}
+			if seedSet {
+				rand.Seed(seed) //nolint:staticcheck // intentional: deterministic global seed
+				slog.Info("Using fixed random seed", "seed", seed)
+			}
+
 			ds, err := buildDataset(&w, charsPerToken)
 			if err != nil {
 				return err
@@ -165,16 +182,17 @@ Workload types:
 			// Start with a discard recorder; swap to the real one after warmup
 			warmupRec := recorder.NewMemory()
 			gen := &loadgen.Generator{
-				Target:      target,
-				Model:       model,
-				Mode:        loadgen.Mode(cfg.Load.Mode),
-				Rate:        cfg.Load.Rate,
-				MaxInFlight: cfg.Load.MaxInFlight,
-				Rampup:      cfg.Load.Rampup.Duration(),
-				CacheSalt:   w.CacheSalt,
-				Dataset:     ds,
-				Recorder:    warmupRec,
-				Metrics:     m,
+				Target:         target,
+				Model:          model,
+				Mode:           loadgen.Mode(cfg.Load.Mode),
+				Rate:           cfg.Load.Rate,
+				MaxInFlight:    cfg.Load.MaxInFlight,
+				Rampup:         cfg.Load.Rampup.Duration(),
+				CacheSalt:      w.CacheSalt,
+				Dataset:        ds,
+				PerStreamClone: seedSet,
+				Recorder:       warmupRec,
+				Metrics:        m,
 			}
 			if cfg.Warmup == nil {
 				gen.Recorder = rec
@@ -289,6 +307,11 @@ Workload types:
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().Int64Var(&seed, "seed", 0, "Fixed random seed for deterministic datasets (all pods send same data)")
+	// Track whether --seed was explicitly passed so seed=0 is distinguishable from unset.
+	cmd.PreRun = func(cmd *cobra.Command, args []string) {
+		seedSet = cmd.Flags().Changed("seed")
+	}
 
 	return cmd
 }

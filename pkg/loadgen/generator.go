@@ -46,7 +46,8 @@ type Generator struct {
 	MaxInFlight int           // For ModeConstant/ModePoisson: cap on concurrent requests (0 = unlimited)
 	Rampup      time.Duration // Stagger stream starts (concurrent) or ramp rate (constant/poisson)
 	Duration    time.Duration
-	Dataset     dataset.Dataset
+	Dataset         dataset.Dataset
+	PerStreamClone  bool // Clone dataset per stream (deterministic mode: every stream replays same sequence)
 	Recorder    *recorder.Recorder
 	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
@@ -322,6 +323,15 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 		}
 	}
 
+	// In deterministic mode, give each stream its own dataset clone so every
+	// stream replays the exact same sequence independently.
+	ds := g.Dataset
+	if g.PerStreamClone {
+		if cl, ok := ds.(dataset.Cloneable); ok {
+			ds = cl.Clone()
+		}
+	}
+
 	// Prefetch the next conversation while the current request is in-flight.
 	// This overlaps dataset preparation with network I/O to minimize gaps.
 	type pending struct {
@@ -332,7 +342,7 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 	nextID := 0
 
 	fill := func() {
-		conv := g.Dataset.NextConversation()
+		conv := ds.NextConversation()
 		id := fmt.Sprintf("w%d-c%d", streamID, nextID)
 		nextID++
 		prefetch <- pending{conv: conv, convID: id}

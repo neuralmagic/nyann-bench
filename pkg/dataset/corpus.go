@@ -44,6 +44,12 @@ func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64) (*
 	return c, nil
 }
 
+// Clone returns an independent copy that replays the same corpus from offset 0.
+func (c *Corpus) Clone() Dataset {
+	clone := &Corpus{ISL: c.ISL, OSL: c.OSL, Turns: c.Turns, CharsPerToken: c.CharsPerToken, text: c.text}
+	return clone
+}
+
 func (c *Corpus) NextConversation() Conversation {
 	turns := make([][]client.Message, c.Turns)
 	var history []client.Message
