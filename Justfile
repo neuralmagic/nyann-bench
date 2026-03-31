@@ -85,12 +85,13 @@ deploy NAME TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='b
     # Inject NYANN_SEED env var after envsubst to avoid kustomize stripping quotes
     # (bare 42 is a YAML number, but env.value must be a string)
     if [[ -n "{{SEED}}" ]]; then
-      YAML=$(echo "$YAML" | sed '/name: nyann-poker/,/args:/{
-        /args:/i\
-\          env:\
-\            - name: NYANN_SEED\
-\              value: "{{SEED}}"
-      }')
+      YAML=$(echo "$YAML" | python3 -c "
+import sys
+y = sys.stdin.read()
+marker = '          args:'
+env_block = '          env:\n            - name: NYANN_SEED\n              value: \"{{SEED}}\"\n'
+print(y.replace(marker, env_block + marker, 1), end='')
+")
     fi
     echo "$YAML" | kubectl -n {{NAMESPACE}} apply -f -
 
