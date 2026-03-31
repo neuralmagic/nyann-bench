@@ -19,6 +19,8 @@ type GSM8K struct {
 	items    []gsm8kItem
 	fewShot  []gsm8kItem // training examples for few-shot prompting
 	nShot    int
+	rng      *rand.Rand // per-instance RNG for few-shot selection
+	rngSeed  int64
 	idx      atomic.Uint64
 }
 
@@ -66,7 +68,19 @@ func NewGSM8K(testPath string, trainPath string, numFewShot int) (*GSM8K, error)
 	// Shuffle so multiple workers don't all start at the same question
 	rand.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 
-	return &GSM8K{items: items, fewShot: fewShot, nShot: numFewShot}, nil
+	rngSeed := rand.Int63()
+	return &GSM8K{items: items, fewShot: fewShot, nShot: numFewShot, rng: rand.New(rand.NewSource(rngSeed)), rngSeed: rngSeed}, nil
+}
+
+// Clone returns an independent copy that replays the same sequence from the start.
+func (g *GSM8K) Clone() Dataset {
+	return &GSM8K{
+		items:   g.items,
+		fewShot: g.fewShot,
+		nShot:   g.nShot,
+		rng:     rand.New(rand.NewSource(g.rngSeed)),
+		rngSeed: g.rngSeed,
+	}
 }
 
 func (g *GSM8K) NextConversation() Conversation {
@@ -100,7 +114,7 @@ func (g *GSM8K) buildPrompt(testItem gsm8kItem) string {
 
 	// Add few-shot examples from training set
 	if g.nShot > 0 {
-		indices := rand.Perm(len(g.fewShot))[:g.nShot]
+		indices := g.rng.Perm(len(g.fewShot))[:g.nShot]
 		for i, idx := range indices {
 			if i > 0 {
 				b.WriteString("\n\n")

@@ -17,3 +17,11 @@ type Dataset interface {
 	// NextConversation returns a conversation (one or more turns).
 	NextConversation() Conversation
 }
+
+// Cloneable is implemented by datasets that can produce independent copies.
+// Each clone has its own counter and RNG, so separate streams replay the
+// exact same sequence from the start.
+type Cloneable interface {
+	Dataset
+	Clone() Dataset
+}

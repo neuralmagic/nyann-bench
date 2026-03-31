@@ -25,6 +25,11 @@ func NewFaker(isl, osl, turns int, charsPerToken float64) *Faker {
 	return &Faker{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
+// Clone returns an independent copy that replays the same sequence from the start.
+func (f *Faker) Clone() Dataset {
+	return &Faker{ISL: f.ISL, OSL: f.OSL, Turns: f.Turns, CharsPerToken: f.CharsPerToken}
+}
+
 func (f *Faker) NextConversation() Conversation {
 	seed := f.seq.Add(1)
 	faker := gofakeit.New(seed)

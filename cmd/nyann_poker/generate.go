@@ -182,16 +182,17 @@ Workload types:
 			// Start with a discard recorder; swap to the real one after warmup
 			warmupRec := recorder.NewMemory()
 			gen := &loadgen.Generator{
-				Target:      target,
-				Model:       model,
-				Mode:        loadgen.Mode(cfg.Load.Mode),
-				Rate:        cfg.Load.Rate,
-				MaxInFlight: cfg.Load.MaxInFlight,
-				Rampup:      cfg.Load.Rampup.Duration(),
-				CacheSalt:   w.CacheSalt,
-				Dataset:     ds,
-				Recorder:    warmupRec,
-				Metrics:     m,
+				Target:         target,
+				Model:          model,
+				Mode:           loadgen.Mode(cfg.Load.Mode),
+				Rate:           cfg.Load.Rate,
+				MaxInFlight:    cfg.Load.MaxInFlight,
+				Rampup:         cfg.Load.Rampup.Duration(),
+				CacheSalt:      w.CacheSalt,
+				Dataset:        ds,
+				PerStreamClone: seedSet,
+				Recorder:       warmupRec,
+				Metrics:        m,
 			}
 			if cfg.Warmup == nil {
 				gen.Recorder = rec
