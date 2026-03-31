@@ -535,10 +535,24 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		return
 	}
 
-	for turnIdx, messages := range conv.Turns {
+	// Build history dynamically so real model responses become the prefix
+	// for subsequent turns. This enables KV cache reuse via prefix caching
+	// (e.g., vLLM's --enable-prefix-caching). The dataset pre-builds turns
+	// with synthetic assistant placeholders; we extract only the new user
+	// message from each turn and substitute real responses.
+	var history []client.Message
+
+	for turnIdx, prebuilt := range conv.Turns {
 		if ctx.Err() != nil {
 			return
 		}
+
+		// The last message in each pre-built turn is the new user message.
+		userMsg := prebuilt[len(prebuilt)-1]
+		history = append(history, userMsg)
+
+		messages := make([]client.Message, len(history))
+		copy(messages, history)
 
 		req := &client.Request{
 			Model:     g.Model,
@@ -566,5 +580,12 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		if result.Err != nil {
 			return
 		}
+
+		// Append the real model response so subsequent turns reuse the
+		// server's KV cache instead of sending synthetic placeholders.
+		history = append(history, client.Message{
+			Role:    "assistant",
+			Content: result.Content,
+		})
 	}
 }
