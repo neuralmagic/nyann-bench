@@ -11,6 +11,7 @@ import (
 // Synthetic generates synthetic conversations with configurable ISL, OSL, and turn count.
 type Synthetic struct {
 	ISL           int
+	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
 	CharsPerToken float64
@@ -23,14 +24,22 @@ func NewSynthetic(isl, osl, turns int, charsPerToken float64) *Synthetic {
 	return &Synthetic{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
+func (s *Synthetic) turnISL(t int) int {
+	if t > 0 && s.SubsequentISL > 0 {
+		return s.SubsequentISL
+	}
+	return s.ISL
+}
+
 func (s *Synthetic) NextConversation() Conversation {
 	turns := make([][]client.Message, s.Turns)
 
 	var history []client.Message
 	for t := 0; t < s.Turns; t++ {
+		isl := s.turnISL(t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), s.ISL, s.CharsPerToken),
+			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), isl, s.CharsPerToken),
 		}
 		history = append(history, userMsg)
 

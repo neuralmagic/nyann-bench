@@ -28,16 +28,30 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 
 // buildDataset constructs a dataset from the workload config.
 func buildDataset(w *config.Workload, charsPerToken float64) (dataset.Dataset, error) {
+	subISL := 0
+	if w.SubsequentISL != nil {
+		subISL = *w.SubsequentISL
+	}
+
 	switch w.Type {
 	case "synthetic":
-		return dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken), nil
+		ds := dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
+		ds.SubsequentISL = subISL
+		return ds, nil
 	case "faker":
-		return dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken), nil
+		ds := dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
+		ds.SubsequentISL = subISL
+		return ds, nil
 	case "corpus":
 		if w.CorpusPath == "" {
 			return nil, fmt.Errorf("workload.corpus_path is required for corpus type")
 		}
-		return dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
+		ds, err := dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
+		if err != nil {
+			return nil, err
+		}
+		ds.SubsequentISL = subISL
+		return ds, nil
 	case "gsm8k":
 		if w.GSM8KPath == "" {
 			return nil, fmt.Errorf("workload.gsm8k_path is required for gsm8k type")

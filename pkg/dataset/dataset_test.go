@@ -145,6 +145,64 @@ func TestCorpusSlidingWindow(t *testing.T) {
 	}
 }
 
+func TestSubsequentISL(t *testing.T) {
+	// Turn 0 should use ISL=200, turns 1+ should use SubsequentISL=50.
+	charsPerToken := 4.0
+
+	t.Run("synthetic", func(t *testing.T) {
+		ds := dataset.NewSynthetic(200, 64, 3, charsPerToken)
+		ds.SubsequentISL = 50
+		conv := ds.NextConversation()
+
+		turn0Len := len(conv.Turns[0][0].Content)
+		// Turn 0 user message: 200 tokens * 4 chars = 800
+		if turn0Len != 800 {
+			t.Errorf("turn 0: expected 800 chars, got %d", turn0Len)
+		}
+		// Turn 1 new user message is the last in the slice
+		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		// 50 tokens * 4 chars = 200
+		if len(turn1User) != 200 {
+			t.Errorf("turn 1 user: expected 200 chars, got %d", len(turn1User))
+		}
+		// Turn 2 new user message
+		turn2User := conv.Turns[2][len(conv.Turns[2])-1].Content
+		if len(turn2User) != 200 {
+			t.Errorf("turn 2 user: expected 200 chars, got %d", len(turn2User))
+		}
+	})
+
+	t.Run("faker", func(t *testing.T) {
+		ds := dataset.NewFaker(200, 64, 3, charsPerToken)
+		ds.SubsequentISL = 50
+		conv := ds.NextConversation()
+
+		turn0Len := len(conv.Turns[0][0].Content)
+		if turn0Len != 800 {
+			t.Errorf("turn 0: expected 800 chars, got %d", turn0Len)
+		}
+		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		if len(turn1User) != 200 {
+			t.Errorf("turn 1 user: expected 200 chars, got %d", len(turn1User))
+		}
+	})
+
+	t.Run("default_no_subsequent", func(t *testing.T) {
+		// When SubsequentISL is 0, all turns use ISL.
+		ds := dataset.NewSynthetic(100, 64, 2, charsPerToken)
+		conv := ds.NextConversation()
+
+		turn0Len := len(conv.Turns[0][0].Content)
+		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		if turn0Len != 400 {
+			t.Errorf("turn 0: expected 400 chars, got %d", turn0Len)
+		}
+		if len(turn1User) != 400 {
+			t.Errorf("turn 1 user: expected 400 chars (same as ISL), got %d", len(turn1User))
+		}
+	})
+}
+
 func TestCorpusEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.txt")

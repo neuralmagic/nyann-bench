@@ -98,6 +98,9 @@ Workload types:
 			if w.CacheSalt != nil {
 				slog.Info("Cache salt enabled", "mode", w.CacheSalt.Mode)
 			}
+			if w.SubsequentISL != nil {
+				slog.Info("Subsequent ISL configured", "isl", w.ISL, "subsequent_isl", *w.SubsequentISL)
+			}
 
 			charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
 

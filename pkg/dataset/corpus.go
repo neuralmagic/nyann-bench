@@ -15,6 +15,7 @@ import (
 // Corpus generates conversations by sliding a window over real text files.
 type Corpus struct {
 	ISL           int
+	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
 	CharsPerToken float64
@@ -44,12 +45,19 @@ func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64) (*
 	return c, nil
 }
 
+func (c *Corpus) turnISL(t int) int {
+	if t > 0 && c.SubsequentISL > 0 {
+		return c.SubsequentISL
+	}
+	return c.ISL
+}
+
 func (c *Corpus) NextConversation() Conversation {
 	turns := make([][]client.Message, c.Turns)
 	var history []client.Message
 
 	for t := 0; t < c.Turns; t++ {
-		chunk := c.nextChunk(c.ISL)
+		chunk := c.nextChunk(c.turnISL(t))
 		userMsg := client.Message{
 			Role:    "user",
 			Content: chunk,

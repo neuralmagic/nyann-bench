@@ -12,6 +12,7 @@ import (
 // Faker generates conversations using gofakeit for realistic, diverse text.
 type Faker struct {
 	ISL           int
+	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
 	CharsPerToken float64
@@ -25,6 +26,13 @@ func NewFaker(isl, osl, turns int, charsPerToken float64) *Faker {
 	return &Faker{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
 }
 
+func (f *Faker) turnISL(t int) int {
+	if t > 0 && f.SubsequentISL > 0 {
+		return f.SubsequentISL
+	}
+	return f.ISL
+}
+
 func (f *Faker) NextConversation() Conversation {
 	seed := f.seq.Add(1)
 	faker := gofakeit.New(seed)
@@ -36,7 +44,7 @@ func (f *Faker) NextConversation() Conversation {
 		prompt := f.generatePrompt(faker, t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padWithFaker(faker, prompt, f.ISL, f.CharsPerToken),
+			Content: padWithFaker(faker, prompt, f.turnISL(t), f.CharsPerToken),
 		}
 		history = append(history, userMsg)
 

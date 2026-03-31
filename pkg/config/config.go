@@ -54,6 +54,7 @@ type Workload struct {
 	Type          string  `json:"type"`                    // synthetic, faker, corpus, gsm8k
 	Name          string  `json:"name,omitempty"`          // human-readable name for this workload (shown in Prometheus/Grafana)
 	ISL           int     `json:"isl"`                     // input sequence length (tokens)
+	SubsequentISL *int    `json:"subsequent_isl,omitempty"` // ISL for turns > 0 (defaults to ISL)
 	OSL           int     `json:"osl"`                     // output sequence length (tokens)
 	Turns         int     `json:"turns"`                   // turns per conversation
 	CorpusPath    string  `json:"corpus_path,omitempty"`   // path to corpus file/directory
