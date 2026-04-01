@@ -202,6 +202,8 @@ def query_stage(
     result = {
         "stage": stage["stage"] + 1,
         "concurrency": stage["concurrency"],
+        "start_time": stage["start_time"],
+        "end_time": stage["end_time"],
     }
 
     # Build all queries up front
@@ -275,6 +277,8 @@ def get_columns(rows: list[dict], deployment: str | None) -> list[tuple[str, str
     columns = [
         ("Stage", "stage", 0),
         ("Concurrency", "concurrency", 0),
+        ("Start Time", "start_time", 3),
+        ("End Time", "end_time", 3),
     ]
     if deployment:
         columns += [
