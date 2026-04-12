@@ -19,7 +19,7 @@ def get_rss(label):
 
 
 for c in levels:
-    # nyann_poker: JSON summary on stdout
+    # nyann-bench: JSON summary on stdout
     try:
         d = json.load(open(os.path.join(rdir, f"nyann_c{c}.stdout")))
         rss = get_rss(f"nyann_c{c}")

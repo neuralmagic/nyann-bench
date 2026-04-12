@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
-	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/mockserver"
 )
 
 func startTestServer(t *testing.T, ttft, itl time.Duration, outputTokens int) string {

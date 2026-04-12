@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query Prometheus for per-stage metrics from a nyann_poker benchmark run.
+"""Query Prometheus for per-stage metrics from a nyann-bench benchmark run.
 
 Pulls stage timestamps from K8s pod logs (or a local JSON file), merges across
 pods, then queries Prometheus for server-side and client-side metrics within
@@ -80,7 +80,7 @@ def get_stages_from_k8s(client_job: str, namespace: str) -> list[dict]:
     # Collect per-pod stage timestamps in parallel
     def fetch_pod_stages(pod):
         log_result = subprocess.run(
-            ["kubectl", "-n", namespace, "logs", pod, "-c", "nyann-poker"],
+            ["kubectl", "-n", namespace, "logs", pod, "-c", "nyann-bench"],
             capture_output=True, text=True,
         )
         if log_result.returncode != 0:
@@ -317,7 +317,7 @@ def print_csv(rows: list[dict], deployment: str | None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Query Prometheus for per-stage nyann_poker benchmark metrics."
+        description="Query Prometheus for per-stage nyann-bench benchmark metrics."
     )
     parser.add_argument(
         "--prometheus-url",
@@ -327,7 +327,7 @@ def main():
     parser.add_argument(
         "--client-job",
         required=True,
-        help="nyann_poker K8s Job name (used as app label for client pod filtering)",
+        help="nyann-bench K8s Job name (used as app label for client pod filtering)",
     )
     parser.add_argument(
         "--namespace", "-n",
@@ -342,7 +342,7 @@ def main():
     parser.add_argument(
         "--eval-job",
         default=None,
-        help="Separate K8s Job name for eval metrics (e.g. poker-eval). Defaults to --client-job.",
+        help="Separate K8s Job name for eval metrics (e.g. bench-eval). Defaults to --client-job.",
     )
     parser.add_argument(
         "--timestamps",

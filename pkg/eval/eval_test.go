@@ -3,7 +3,7 @@ package eval_test
 import (
 	"testing"
 
-	"github.com/neuralmagic/nyann_poker/pkg/eval"
+	"github.com/neuralmagic/nyann-bench/pkg/eval"
 )
 
 func TestExtractAnswer(t *testing.T) {

@@ -1,5 +1,5 @@
 # Binaries
-/nyann_poker
+/nyann-bench
 *.exe
 *.dll
 *.so

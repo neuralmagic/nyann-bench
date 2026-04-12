@@ -13,7 +13,7 @@ func main() {
 	var logLevel string
 
 	root := &cobra.Command{
-		Use:   "nyann_poker",
+		Use:   "nyann-bench",
 		Short: "High-performance LLM inference benchmarking",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			level, err := parseLogLevel(logLevel)

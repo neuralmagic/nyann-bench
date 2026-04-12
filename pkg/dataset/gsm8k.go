@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/neuralmagic/nyann_poker/pkg/eval"
+	"github.com/neuralmagic/nyann-bench/pkg/eval"
 )
 
 // GSM8K generates single-turn completions from GSM8K math problems.

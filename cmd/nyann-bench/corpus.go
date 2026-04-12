@@ -32,9 +32,9 @@ Formats:
   auto        Auto-detect from input path (default)
 
 Examples:
-  nyann_poker corpus --input ShareGPT_V3.json --output sharegpt.txt
-  nyann_poker corpus --input ./vllm/ --output code.txt
-  nyann_poker corpus --input novel.txt --output prose.txt
+  nyann-bench corpus --input ShareGPT_V3.json --output sharegpt.txt
+  nyann-bench corpus --input ./vllm/ --output code.txt
+  nyann-bench corpus --input novel.txt --output prose.txt
 
 Combine multiple corpora:
   cat sharegpt.txt code.txt > mixed.txt`,

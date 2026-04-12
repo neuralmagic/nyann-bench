@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
-	"github.com/neuralmagic/nyann_poker/pkg/config"
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
 )
 
 // calibrateTokenRatio calibrates the chars-per-token ratio using the endpoint's tokenizer.

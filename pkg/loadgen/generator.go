@@ -12,12 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
-	"github.com/neuralmagic/nyann_poker/pkg/config"
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
-	"github.com/neuralmagic/nyann_poker/pkg/eval"
-	"github.com/neuralmagic/nyann_poker/pkg/metrics"
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/eval"
+	"github.com/neuralmagic/nyann-bench/pkg/metrics"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 )
 
 // Mode determines how requests are scheduled.

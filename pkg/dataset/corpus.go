@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
 
 // Corpus generates conversations by sliding a window over real text files.

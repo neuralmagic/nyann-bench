@@ -41,8 +41,8 @@ spec:
             privileged: true
 
       containers:
-        - name: nyann-poker
-          image: ghcr.io/neuralmagic/nyann_poker:${IMAGE_TAG}
+        - name: nyann-bench
+          image: ghcr.io/neuralmagic/nyann-bench:${IMAGE_TAG}
           imagePullPolicy: Always
           resources:
             limits:
@@ -59,12 +59,12 @@ spec:
             - --target
             - ${TARGET}
             - --config
-            - /etc/nyann-poker/config.json
+            - /etc/nyann-bench/config.json
             - --metrics
             - :9090
           volumeMounts:
             - name: config
-              mountPath: /etc/nyann-poker
+              mountPath: /etc/nyann-bench
               readOnly: true
       volumes:
         - name: config

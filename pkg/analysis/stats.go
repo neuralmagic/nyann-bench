@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 )
 
 // Summary holds aggregate statistics from one or more JSONL result files.

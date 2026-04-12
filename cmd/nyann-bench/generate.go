@@ -14,13 +14,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/neuralmagic/nyann_poker/pkg/analysis"
-	"github.com/neuralmagic/nyann_poker/pkg/client"
-	"github.com/neuralmagic/nyann_poker/pkg/config"
-	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
-	"github.com/neuralmagic/nyann_poker/pkg/metrics"
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
-	"github.com/neuralmagic/nyann_poker/pkg/warmup"
+	"github.com/neuralmagic/nyann-bench/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/loadgen"
+	"github.com/neuralmagic/nyann-bench/pkg/metrics"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/warmup"
 	"github.com/spf13/cobra"
 )
 
@@ -41,10 +41,10 @@ func generateCmd() *cobra.Command {
 
 Configure the workload via --config (JSON file or inline JSON):
 
-  nyann_poker generate --target http://localhost:8000/v1 --model my-model \
+  nyann-bench generate --target http://localhost:8000/v1 --model my-model \
     --config '{"load":{"mode":"concurrent","concurrency":10,"duration":"60s"},"workload":{"type":"faker","isl":128,"osl":256}}'
 
-  nyann_poker generate --target http://localhost:8000/v1 --model my-model \
+  nyann-bench generate --target http://localhost:8000/v1 --model my-model \
     --config benchmark.json
 
 Load modes:

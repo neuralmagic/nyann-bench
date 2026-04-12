@@ -1,6 +1,6 @@
 package dataset
 
-import "github.com/neuralmagic/nyann_poker/pkg/client"
+import "github.com/neuralmagic/nyann-bench/pkg/client"
 
 // Conversation is a multi-turn conversation with a max_tokens hint per turn.
 type Conversation struct {

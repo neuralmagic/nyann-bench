@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compare sustained request rate of nyann_poker, guidellm, and vllm bench
+# Compare sustained request rate of nyann-bench, guidellm, and vllm bench
 # at increasing concurrency levels against the mock server.
 #
 # Usage:
@@ -7,7 +7,7 @@
 #   ./bench_compare/run.sh "1 16 256 4096"       # custom levels
 #
 # Prerequisites:
-#   1. go build -o nyann_poker ./cmd/nyann_poker/
+#   1. go build -o nyann-bench ./cmd/nyann-bench/
 #   2. ./bench_compare/setup.sh
 set -euo pipefail
 
@@ -15,7 +15,7 @@ ulimit -n 65536 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-NYANN="$PROJECT_DIR/nyann_poker"
+NYANN="$PROJECT_DIR/nyann-bench"
 GUIDELLM="$SCRIPT_DIR/venvs/guidellm/bin/guidellm"
 VLLM_BIN="$SCRIPT_DIR/venvs/vllm/bin/vllm"
 
@@ -145,8 +145,8 @@ for C in $CONCURRENCY_LEVELS; do
     echo "  Concurrency: $C"
     echo "==============================="
 
-    # nyann_poker
-    echo "  [nyann_poker] ..."
+    # nyann-bench
+    echo "  [nyann-bench] ..."
     OUTDIR="$RESULTS_DIR/nyann_c${C}"
     mkdir -p "$OUTDIR"
     run_tool "nyann_c${C}" \

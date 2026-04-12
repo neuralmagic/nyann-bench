@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
+	"github.com/neuralmagic/nyann-bench/pkg/loadgen"
 )
 
 // Config controls the warmup behavior.

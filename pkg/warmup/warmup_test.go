@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/warmup"
+	"github.com/neuralmagic/nyann-bench/pkg/warmup"
 )
 
 func TestStage(t *testing.T) {

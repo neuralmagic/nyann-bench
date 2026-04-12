@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/brianvoe/gofakeit/v7"
-	"github.com/neuralmagic/nyann_poker/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
 
 // Faker generates conversations using gofakeit for realistic, diverse text.

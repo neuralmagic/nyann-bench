@@ -2,7 +2,7 @@ default:
     @just --list
 
 build:
-    go build -o nyann_poker ./cmd/nyann_poker/
+    go build -o nyann-bench ./cmd/nyann-bench/
 
 test:
     go test ./... -count=1
@@ -12,42 +12,42 @@ test-verbose:
 
 # Cross-compile for linux/amd64
 build-linux-amd64:
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o nyann_poker-linux-amd64 ./cmd/nyann_poker/
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o nyann-bench-linux-amd64 ./cmd/nyann-bench/
 
 # Cross-compile for linux/arm64 (GB200, Graviton, etc.)
 build-linux-arm64:
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o nyann_poker-linux-arm64 ./cmd/nyann_poker/
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o nyann-bench-linux-arm64 ./cmd/nyann-bench/
 
 # Build container image
 container-build tag="latest":
-    podman build -t nyann_poker:{{tag}} .
+    podman build -t nyann-bench:{{tag}} .
 
 # Push container image to registry
 container-push registry tag="latest":
-    podman tag nyann_poker:{{tag}} {{registry}}/nyann_poker:{{tag}}
-    podman push {{registry}}/nyann_poker:{{tag}}
+    podman tag nyann-bench:{{tag}} {{registry}}/nyann-bench:{{tag}}
+    podman push {{registry}}/nyann-bench:{{tag}}
 
 # Run mock server locally
 mock-server port="8000" tokens="128":
-    go run ./cmd/nyann_poker/ mock-server --addr :{{port}} --output-tokens {{tokens}}
+    go run ./cmd/nyann-bench/ mock-server --addr :{{port}} --output-tokens {{tokens}}
 
 # Quick smoke test: mock server + load generator
 smoke-test:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Starting mock server..."
-    go run ./cmd/nyann_poker/ mock-server --addr :9999 --ttft 10ms --itl 2ms --output-tokens 20 &
+    go run ./cmd/nyann-bench/ mock-server --addr :9999 --ttft 10ms --itl 2ms --output-tokens 20 &
     SERVER_PID=$!
     sleep 0.5
     echo "Running load generator..."
-    go run ./cmd/nyann_poker/ generate \
+    go run ./cmd/nyann-bench/ generate \
         --target http://localhost:9999/v1 \
         --config '{"load":{"concurrency":4,"rampup":"2s","duration":"10s"},"workload":{"type":"faker","isl":32,"osl":10,"turns":3}}' \
-        --output-dir /tmp/nyann_poker_smoke
+        --output-dir /tmp/nyann-bench_smoke
     kill $SERVER_PID 2>/dev/null || true
     echo "Results:"
-    wc -l /tmp/nyann_poker_smoke/requests_0.jsonl
-    cat /tmp/nyann_poker_smoke/timestamps_0.json
+    wc -l /tmp/nyann-bench_smoke/requests_0.jsonl
+    cat /tmp/nyann-bench_smoke/timestamps_0.json
     echo ""
     echo "Smoke test passed."
 
@@ -117,7 +117,7 @@ prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
     metadata:
       name: gsm8k-prep
       labels:
-        app: nyann-poker
+        app: nyann-bench
     spec:
       backoffLimit: 0
       template:
@@ -164,13 +164,13 @@ collect NAME NAMESPACE='vllm':
     set -euo pipefail
     PODS=$(kubectl -n {{NAMESPACE}} get pods -l app={{NAME}} -o jsonpath='{.items[*].metadata.name}')
     for POD in $PODS; do
-      ( echo "--- $POD ---"; kubectl -n {{NAMESPACE}} logs "$POD" -c nyann-poker ) &
+      ( echo "--- $POD ---"; kubectl -n {{NAMESPACE}} logs "$POD" -c nyann-bench ) &
     done
     wait
 
 # Tail logs from running Job
 logs NAME NAMESPACE='vllm':
-    kubectl -n {{NAMESPACE}} logs -l app={{NAME}} -c nyann-poker --tail=50 -f
+    kubectl -n {{NAMESPACE}} logs -l app={{NAME}} -c nyann-bench --tail=50 -f
 
 # Query Prometheus for per-stage metrics from a completed benchmark run
 # PORT-FORWARD first: kubectl -n monitoring port-forward svc/prometheus 9090:9090
@@ -191,5 +191,5 @@ query-prometheus CLIENT_JOB DEPLOYMENT='' NAMESPACE='vllm' PROMETHEUS_URL='http:
     python3 scripts/query_prometheus.py "${ARGS[@]}"
 
 clean:
-    rm -f nyann_poker nyann_poker-linux-amd64 nyann_poker-linux-arm64
-    rm -rf /tmp/nyann_poker_*
+    rm -f nyann-bench nyann-bench-linux-amd64 nyann-bench-linux-arm64
+    rm -rf /tmp/nyann-bench_*

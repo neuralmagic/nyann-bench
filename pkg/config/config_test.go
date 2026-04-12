@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
 )
 
 func TestParseInline(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/neuralmagic/nyann_poker/pkg/analysis"
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 )
 
 func writeTestRecords(t *testing.T, dir string, records []recorder.Record) {

@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
-	"github.com/neuralmagic/nyann_poker/pkg/config"
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
-	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
-	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/loadgen"
+	"github.com/neuralmagic/nyann-bench/pkg/mockserver"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 )
 
 func startMockServer(t *testing.T) string {

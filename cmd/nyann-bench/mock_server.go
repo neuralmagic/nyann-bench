@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
+	"github.com/neuralmagic/nyann-bench/pkg/mockserver"
 	"github.com/spf13/cobra"
 )
 

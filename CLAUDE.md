@@ -1,17 +1,17 @@
-# nyann_poker
+# nyann-bench
 
-High-performance LLM inference benchmarking tool. "Not Yet Another Neural Network... Poker."
+High-performance LLM inference benchmarking tool. "Not Yet Another Neural Network... Benchmark."
 
 ## Build / Run
 
 ```bash
-go build -o nyann_poker ./cmd/bench/
+go build -o nyann-bench ./cmd/nyann-bench/
 go test ./... -count=1
 ```
 
 ## Project structure
 
-- `cmd/nyann_poker/` — CLI entry point (subcommands: generate, mock-server, analyze, corpus)
+- `cmd/nyann-bench/` — CLI entry point (subcommands: generate, mock-server, analyze, corpus)
 - `pkg/mockserver/` — OpenAI-compatible mock inference server for testing
 - `pkg/client/` — Streaming OpenAI chat completions client with token-level timing
 - `pkg/loadgen/` — Goroutine pool load generator with rampup and multi-turn support
@@ -37,4 +37,4 @@ go test ./... -v
 
 ## Go module
 
-`github.com/neuralmagic/nyann_poker`
+`github.com/neuralmagic/nyann-bench`

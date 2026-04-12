@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"strings"
 
-	"github.com/neuralmagic/nyann_poker/pkg/client"
+	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
 
 // Synthetic generates synthetic conversations with configurable ISL, OSL, and turn count.

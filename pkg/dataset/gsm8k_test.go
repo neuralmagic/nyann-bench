@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
 )
 
 func TestGSM8KFromJSONL(t *testing.T) {

@@ -6,7 +6,7 @@ spec:
   template:
     spec:
       containers:
-        - name: nyann-poker
+        - name: nyann-bench
           volumeMounts:
             - name: lustre
               mountPath: /mnt/lustre

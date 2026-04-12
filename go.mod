@@ -1,4 +1,4 @@
-module github.com/neuralmagic/nyann_poker
+module github.com/neuralmagic/nyann-bench
 
 go 1.23.0
 

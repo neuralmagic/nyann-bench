@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neuralmagic/nyann_poker/pkg/dataset"
-	"github.com/neuralmagic/nyann_poker/pkg/loadgen"
-	"github.com/neuralmagic/nyann_poker/pkg/mockserver"
-	"github.com/neuralmagic/nyann_poker/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/loadgen"
+	"github.com/neuralmagic/nyann-bench/pkg/mockserver"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 )
 
 // startFastMockServer starts a mock server with minimal latency to make

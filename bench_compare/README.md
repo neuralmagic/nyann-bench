@@ -1,6 +1,6 @@
 # Benchmark Tool Comparison
 
-Measures sustained request rate of nyann_poker vs guidellm vs vllm bench serve
+Measures sustained request rate of nyann-bench vs guidellm vs vllm bench serve
 at increasing concurrency levels, using the built-in mock server as the target.
 
 The mock server has very fast token latencies (1ms TTFT, 500us ITL, 32 tokens)
@@ -9,8 +9,8 @@ so the bottleneck is the benchmarking client, not the server.
 ## Setup
 
 ```bash
-# Build nyann_poker
-go build -o nyann_poker ./cmd/nyann_poker/
+# Build nyann-bench
+go build -o nyann-bench ./cmd/nyann-bench/
 
 # Install competitor tools (requires uv)
 ./bench_compare/setup.sh
@@ -61,10 +61,10 @@ vllm           4096     1798.7     45652        0     1195.5
 ```
 
 At low concurrency (1-16) all three tools are equivalent — the mock server is
-the bottleneck. At c=64+, nyann_poker pulls ahead due to Go's goroutine model
+the bottleneck. At c=64+, nyann-bench pulls ahead due to Go's goroutine model
 and tuned HTTP transport. By c=4096:
 
-- **nyann_poker: 17,889 req/s** — 13.7x guidellm, 9.9x vllm bench
+- **nyann-bench: 17,889 req/s** — 13.7x guidellm, 9.9x vllm bench
 - **guidellm plateaus ~1,300 req/s** regardless of concurrency (worker pool saturation)
 - **vllm bench plateaus ~2,100 req/s** (single asyncio event loop)
-- nyann_poker uses **29 MB at c=1** vs ~850-1100 MB baseline for the Python tools
+- nyann-bench uses **29 MB at c=1** vs ~850-1100 MB baseline for the Python tools

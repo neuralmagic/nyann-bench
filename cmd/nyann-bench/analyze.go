@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/neuralmagic/nyann_poker/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/analysis"
 	"github.com/spf13/cobra"
 )
 
