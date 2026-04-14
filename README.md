@@ -6,10 +6,10 @@ A high-performance LLM inference benchmarking tool designed for Kubernetes-scale
 
 ## Why nyann-bench?
 
-`nyann-bench` was ~vibe-coded~ developed via agantic engineering in support of vLLM GB200 NVL72 WideEP, to address a series of challenges we ran into at scale.
+`nyann-bench` was ~~vibe-coded~~ developed via agantic engineering in support of vLLM's GB200 NVL72 WideEP development, in order to address a series of challenges we ran into at scale.
 
-1. In order to sustain a high number of concurrent requests, a benchmarking tool needs to support scale-out, and the faster the tool is, the easier this becomes.
-2. Observability becomes more important at scale. A benchmarking tool that reports metrics makes it much easier to see what all benchmarking pods are doing at a glance.
+1. In order to sustain a high number of concurrent requests, a benchmarking tool needs to support scale-out and a high request rate at high concurrency.
+2. Observability becomes more important at scale. Client-side benchmarking metrics make it easy to see what all benchmarking pods are doing at a glance.
 3. Streaming evals helped us detect and debug numerical issues that would gradually degrade the accuracy of NVFP4 models over the lifetime of the server -- rare events that would only happen at scale.
 4. Tools like `vllm bench`, `guide-llm` or `lm-eval` that have heavy dependencies like PyTorch are too slow to update or deploy. `nyann-bench` is only 5MB compressed.
 
