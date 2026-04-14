@@ -143,21 +143,38 @@ func (p *streamPool) Stop() {
 
 // Stage defines a concurrency level and duration for RunStages.
 type Stage struct {
-	Concurrency int
-	Duration    time.Duration
-	Rampup      time.Duration // stagger new stream starts over this duration
+	Concurrency  int
+	Duration     time.Duration
+	Rampup       time.Duration // stagger new stream starts over this duration
+	Barrier      bool          // sync point — pool stays alive (unless BarrierDrain), onBarrier fires
+	BarrierDrain bool          // stop pool before sync, fresh pool after
 }
 
 // RunStages runs multiple stages with a shared goroutine pool, dynamically
 // resizing concurrency between stages without tearing down in-flight requests.
 // The onStage callback is called before each stage starts (for logging/metrics).
-func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int)) {
+// The onBarrier callback is called at barrier sync points and should block until
+// the barrier releases. The pool stays alive through non-drain barriers.
+func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
 	c := client.New(g.Target)
 	pool := newStreamPool(g, c)
 
 	for i, stage := range stages {
 		if ctx.Err() != nil {
 			break
+		}
+		if stage.Barrier {
+			if stage.BarrierDrain {
+				pool.Stop()
+				g.recordWG.Wait()
+			}
+			if onBarrier != nil {
+				onBarrier(i)
+			}
+			if stage.BarrierDrain {
+				pool = newStreamPool(g, c)
+			}
+			continue
 		}
 		if onStage != nil {
 			onStage(i, stage.Concurrency)

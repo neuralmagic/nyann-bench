@@ -522,7 +522,7 @@ func TestRunStagesPoolResize(t *testing.T) {
 	var stageLog []int
 	gen.RunStages(context.Background(), stages, func(i, concurrency int) {
 		stageLog = append(stageLog, concurrency)
-	})
+	}, nil)
 
 	if len(stageLog) != 3 {
 		t.Fatalf("expected 3 stage callbacks, got %d", len(stageLog))

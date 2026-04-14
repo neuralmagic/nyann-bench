@@ -433,7 +433,7 @@ scenario(stages=[workload("faker")])
 	if err == nil {
 		t.Fatal("expected error for wrong type in stages")
 	}
-	if got := err.Error(); !contains(got, "expected Stage") {
+	if got := err.Error(); !contains(got, "expected Stage or barrier()") {
 		t.Errorf("unexpected error: %s", got)
 	}
 }
@@ -549,6 +549,105 @@ scenario(
 	// Default workload is light
 	if sc.Workload.Name != "light" {
 		t.Errorf("expected default workload name 'light', got %q", sc.Workload.Name)
+	}
+}
+
+func TestStarlarkBarrier(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [
+        stage("2m", concurrency=16, warmup=True),
+        barrier(),
+        stage("5m", concurrency=64),
+    ],
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sc.Stages) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(sc.Stages))
+	}
+
+	if !sc.Stages[0].Warmup {
+		t.Error("stage 0: expected warmup")
+	}
+	if !sc.Stages[1].Barrier {
+		t.Error("stage 1: expected barrier")
+	}
+	if sc.Stages[1].BarrierDrain {
+		t.Error("stage 1: barrier should not drain by default")
+	}
+	if sc.Stages[2].Barrier {
+		t.Error("stage 2: should not be barrier")
+	}
+	if sc.Stages[2].Concurrency != 64 {
+		t.Errorf("stage 2: expected concurrency 64, got %d", sc.Stages[2].Concurrency)
+	}
+}
+
+func TestStarlarkBarrierDrain(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [
+        stage("5m", concurrency=64),
+        barrier(drain=True),
+        stage("5m", concurrency=64),
+    ],
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sc.Stages) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(sc.Stages))
+	}
+
+	if !sc.Stages[1].Barrier {
+		t.Error("stage 1: expected barrier")
+	}
+	if !sc.Stages[1].BarrierDrain {
+		t.Error("stage 1: expected barrier drain=true")
+	}
+}
+
+func TestStarlarkBarrierInComplex(t *testing.T) {
+	path := writeStarFile(t, `
+chat = workload("faker", isl=256, osl=512)
+coding = workload("faker", isl=1024, osl=2048)
+
+scenario(
+    stages = [
+        stage("2m", concurrency=16, warmup=True),
+        barrier(),
+        stage("5m", concurrency=64),
+        stage("5m", concurrency=128),
+        barrier(drain=True),
+        stage("5m", concurrency=64, workload=coding),
+    ],
+    workload = chat,
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sc.Stages) != 6 {
+		t.Fatalf("expected 6 stages, got %d", len(sc.Stages))
+	}
+
+	// barrier at index 1 (no drain)
+	if !sc.Stages[1].Barrier || sc.Stages[1].BarrierDrain {
+		t.Error("stage 1: expected barrier without drain")
+	}
+	// barrier at index 4 (drain)
+	if !sc.Stages[4].Barrier || !sc.Stages[4].BarrierDrain {
+		t.Error("stage 4: expected barrier with drain")
 	}
 }
 
