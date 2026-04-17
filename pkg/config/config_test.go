@@ -182,6 +182,106 @@ func TestParseJSONWithWarmup(t *testing.T) {
 	}
 }
 
+func TestParseSyncFlag(t *testing.T) {
+	sc, err := config.ParseSyncFlag(`{"workers": 4, "timeout": "5m"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workers != 4 {
+		t.Errorf("expected 4 workers, got %d", sc.Workers)
+	}
+	if sc.Timeout.Duration() != 5*time.Minute {
+		t.Errorf("expected 5m timeout, got %v", sc.Timeout.Duration())
+	}
+	if sc.Port != 8080 {
+		t.Errorf("expected default port 8080, got %d", sc.Port)
+	}
+}
+
+func TestParseSyncFlagDefaults(t *testing.T) {
+	sc, err := config.ParseSyncFlag(`{"workers": 2}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Timeout.Duration() != 10*time.Minute {
+		t.Errorf("expected default 10m timeout, got %v", sc.Timeout.Duration())
+	}
+	if sc.Port != 8080 {
+		t.Errorf("expected default port 8080, got %d", sc.Port)
+	}
+}
+
+func TestParseSyncFlagInvalid(t *testing.T) {
+	_, err := config.ParseSyncFlag(`{"workers": 0}`)
+	if err == nil {
+		t.Fatal("expected error for workers=0")
+	}
+}
+
+func TestInsertImplicitBarrier(t *testing.T) {
+	sc := &config.ScenarioConfig{
+		Stages: []config.ScenarioStage{
+			{Warmup: true, Duration: 2 * time.Minute, Concurrency: 16},
+			{Duration: 5 * time.Minute, Concurrency: 64},
+			{Duration: 5 * time.Minute, Concurrency: 128},
+		},
+	}
+
+	sc.InsertImplicitBarrier()
+
+	if len(sc.Stages) != 4 {
+		t.Fatalf("expected 4 stages after implicit barrier, got %d", len(sc.Stages))
+	}
+	if !sc.Stages[0].Warmup {
+		t.Error("stage 0: expected warmup")
+	}
+	if !sc.Stages[1].Barrier {
+		t.Error("stage 1: expected implicit barrier")
+	}
+	if !sc.Stages[1].BarrierDrain {
+		t.Error("stage 1: implicit barrier should have drain=true")
+	}
+	if sc.Stages[2].Concurrency != 64 {
+		t.Errorf("stage 2: expected concurrency 64, got %d", sc.Stages[2].Concurrency)
+	}
+}
+
+func TestInsertImplicitBarrierSkipsIfPresent(t *testing.T) {
+	sc := &config.ScenarioConfig{
+		Stages: []config.ScenarioStage{
+			{Warmup: true, Duration: 2 * time.Minute},
+			{Barrier: true},
+			{Duration: 5 * time.Minute, Concurrency: 64},
+		},
+	}
+
+	sc.InsertImplicitBarrier()
+
+	// Should not insert a second barrier
+	if len(sc.Stages) != 3 {
+		t.Fatalf("expected 3 stages (no duplicate barrier), got %d", len(sc.Stages))
+	}
+}
+
+func TestInsertImplicitBarrierNoWarmup(t *testing.T) {
+	sc := &config.ScenarioConfig{
+		Stages: []config.ScenarioStage{
+			{Duration: 5 * time.Minute, Concurrency: 64},
+			{Duration: 5 * time.Minute, Concurrency: 128},
+		},
+	}
+
+	sc.InsertImplicitBarrier()
+
+	// Should insert barrier at position 0
+	if len(sc.Stages) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(sc.Stages))
+	}
+	if !sc.Stages[0].Barrier {
+		t.Error("stage 0: expected implicit barrier")
+	}
+}
+
 func TestParseJSONWithSweep(t *testing.T) {
 	sc, err := config.Parse(`{
 		"sweep": {"min": 10, "max": 50, "steps": 5, "step_duration": "2m"},
