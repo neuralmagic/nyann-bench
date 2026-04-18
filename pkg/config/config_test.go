@@ -205,3 +205,75 @@ func TestParseJSONWithSweep(t *testing.T) {
 		}
 	}
 }
+
+func TestBurstStages(t *testing.T) {
+	cfg, err := config.Parse(`{
+		"burst": {
+			"concurrency": 64,
+			"burst_duration": "5s",
+			"pause_duration": "10s",
+			"cycles": 3
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stages := cfg.EffectiveStages()
+	if len(stages) != 6 {
+		t.Fatalf("expected 6 stages (3 cycles × 2), got %d", len(stages))
+	}
+
+	for i, stage := range stages {
+		if i%2 == 0 {
+			// Burst stage
+			if stage.Concurrency != 64 {
+				t.Errorf("stage %d: expected concurrency 64, got %d", i, stage.Concurrency)
+			}
+			if stage.Duration.Duration() != 5*time.Second {
+				t.Errorf("stage %d: expected 5s, got %v", i, stage.Duration.Duration())
+			}
+		} else {
+			// Pause stage
+			if stage.Concurrency != 0 {
+				t.Errorf("stage %d: expected concurrency 0, got %d", i, stage.Concurrency)
+			}
+			if stage.Duration.Duration() != 10*time.Second {
+				t.Errorf("stage %d: expected 10s, got %v", i, stage.Duration.Duration())
+			}
+		}
+	}
+}
+
+func TestBurstDefaultCycles(t *testing.T) {
+	stages := config.BurstStages(&config.Burst{
+		Concurrency:   32,
+		BurstDuration: config.Duration(3 * time.Second),
+		PauseDuration: config.Duration(7 * time.Second),
+		Cycles:        0, // should default to 1
+	})
+	if len(stages) != 2 {
+		t.Fatalf("expected 2 stages (1 default cycle), got %d", len(stages))
+	}
+	if stages[0].Concurrency != 32 {
+		t.Errorf("expected concurrency 32, got %d", stages[0].Concurrency)
+	}
+}
+
+func TestBurstOverridesOtherModes(t *testing.T) {
+	cfg, err := config.Parse(`{
+		"burst": {"concurrency": 16, "burst_duration": "2s", "pause_duration": "3s", "cycles": 1},
+		"sweep": {"min": 1, "max": 100, "steps": 10, "step_duration": "30s"},
+		"stages": [{"concurrency": 50, "duration": "60s"}]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages := cfg.EffectiveStages()
+	if len(stages) != 2 {
+		t.Fatalf("burst should take priority, got %d stages", len(stages))
+	}
+	if stages[0].Concurrency != 16 {
+		t.Errorf("expected burst concurrency 16, got %d", stages[0].Concurrency)
+	}
+}

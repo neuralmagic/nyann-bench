@@ -14,6 +14,7 @@ type Config struct {
 	Load     Load     `json:"load"`
 	Stages   []Stage  `json:"stages,omitempty"`
 	Sweep    *Sweep   `json:"sweep,omitempty"`
+	Burst    *Burst   `json:"burst,omitempty"`
 	Warmup   *Warmup  `json:"warmup,omitempty"`
 	Workload Workload `json:"workload"`
 }
@@ -37,6 +38,15 @@ type Sweep struct {
 	Max          int      `json:"max"`
 	Steps        int      `json:"steps"`
 	StepDuration Duration `json:"step_duration"`
+}
+
+// Burst defines a stress test pattern that alternates between full concurrency
+// and zero concurrency (pause). Each cycle is one burst followed by one pause.
+type Burst struct {
+	Concurrency   int      `json:"concurrency"`
+	BurstDuration Duration `json:"burst_duration"`
+	PauseDuration Duration `json:"pause_duration"`
+	Cycles        int      `json:"cycles"`
 }
 
 // Load defines how requests are scheduled.
@@ -158,8 +168,11 @@ func (d Duration) Duration() time.Duration {
 }
 
 // EffectiveStages returns the stages to run.
-// Priority: sweep > stages > single load config.
+// Priority: burst > sweep > stages > single load config.
 func (c *Config) EffectiveStages() []Stage {
+	if c.Burst != nil {
+		return BurstStages(c.Burst)
+	}
 	if c.Sweep != nil {
 		return SweepStages(c.Sweep.Min, c.Sweep.Max, c.Sweep.Steps, c.Sweep.StepDuration)
 	}
@@ -170,6 +183,26 @@ func (c *Config) EffectiveStages() []Stage {
 		Concurrency: c.Load.Concurrency,
 		Duration:    c.Load.Duration,
 	}}
+}
+
+// BurstStages generates alternating burst/pause stages for stress testing.
+func BurstStages(b *Burst) []Stage {
+	cycles := b.Cycles
+	if cycles < 1 {
+		cycles = 1
+	}
+	stages := make([]Stage, 0, cycles*2)
+	for i := 0; i < cycles; i++ {
+		stages = append(stages, Stage{
+			Concurrency: b.Concurrency,
+			Duration:    b.BurstDuration,
+		})
+		stages = append(stages, Stage{
+			Concurrency: 0,
+			Duration:    b.PauseDuration,
+		})
+	}
+	return stages
 }
 
 // SweepStages generates N evenly-spaced concurrency stages from min to max.
