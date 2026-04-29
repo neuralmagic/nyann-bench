@@ -37,6 +37,16 @@ const (
 	ModePoisson Mode = "poisson"
 )
 
+// maxRequestsState holds per-stage state for the max_requests feature.
+// Swapped atomically between stages so goroutines from previous stages
+// don't race with the new stage's initialization.
+type maxRequestsState struct {
+	limit int64
+	count atomic.Int64
+	done  chan struct{}
+	once  sync.Once
+}
+
 type Generator struct {
 	Target      string
 	Model       string
@@ -57,10 +67,7 @@ type Generator struct {
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
 
-	maxRequests  int64
-	requestCount atomic.Int64
-	requestsDone chan struct{}
-	requestsOnce sync.Once
+	maxReqState atomic.Pointer[maxRequestsState]
 }
 
 // streamPool manages a resizable pool of concurrent streams.
@@ -183,10 +190,11 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 			continue
 		}
 
-		g.maxRequests = int64(stage.MaxRequests)
-		g.requestCount.Store(0)
-		g.requestsDone = make(chan struct{})
-		g.requestsOnce = sync.Once{}
+		state := &maxRequestsState{
+			limit: int64(stage.MaxRequests),
+			done:  make(chan struct{}),
+		}
+		g.maxReqState.Store(state)
 		if onStage != nil {
 			onStage(i, stage.Concurrency)
 		}
@@ -197,9 +205,9 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 			case <-ctx.Done():
 			case <-time.After(stage.Duration):
 				slog.Warn("Stage timed out before all requests completed",
-					"completed", g.requestCount.Load(),
+					"completed", state.count.Load(),
 					"target", stage.MaxRequests)
-			case <-g.requestsDone:
+			case <-state.done:
 				pool.Wait()
 			}
 		} else {
@@ -393,10 +401,10 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 			return
 		}
 
-		if g.maxRequests > 0 {
-			n := g.requestCount.Add(1)
-			if n > g.maxRequests {
-				g.requestsOnce.Do(func() { close(g.requestsDone) })
+		if state := g.maxReqState.Load(); state != nil && state.limit > 0 {
+			n := state.count.Add(1)
+			if n > state.limit {
+				state.once.Do(func() { close(state.done) })
 				return
 			}
 		}
