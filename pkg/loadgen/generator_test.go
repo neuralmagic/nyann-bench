@@ -970,7 +970,9 @@ type mcEvalDataset struct {
 func (d *mcEvalDataset) NextConversation() dataset.Conversation {
 	greedy := 0.0
 	return dataset.Conversation{
-		Prompt:         "What is the correct answer?\nChoices:\n(A) Wrong\n(B) Right\n(C) Wrong\n(D) Wrong\nLet's think step by step: ",
+		Turns: [][]client.Message{
+			{{Role: "user", Content: "What is the correct answer?\n(A) Wrong\n(B) Right\n(C) Wrong\n(D) Wrong\nExpress your final answer as 'A', 'B', 'C', or 'D'."}},
+		},
 		MaxTokens:      256,
 		Temperature:    &greedy,
 		ExpectedAnswer: d.answer,

@@ -10,6 +10,13 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
 )
 
+func gpqaPrompt(conv dataset.Conversation) string {
+	if len(conv.Turns) == 0 || len(conv.Turns[0]) == 0 {
+		return ""
+	}
+	return conv.Turns[0][0].Content
+}
+
 func TestGPQAFromJSONL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gpqa.jsonl")
@@ -31,14 +38,18 @@ func TestGPQAFromJSONL(t *testing.T) {
 	}
 
 	conv := ds.NextConversation()
-	if conv.Prompt == "" {
-		t.Fatal("expected non-empty Prompt")
+	prompt := gpqaPrompt(conv)
+	if prompt == "" {
+		t.Fatal("expected non-empty prompt in Turns")
 	}
-	if !strings.Contains(conv.Prompt, "(A)") || !strings.Contains(conv.Prompt, "(D)") {
+	if conv.Prompt != "" {
+		t.Error("should use chat API (Turns), not completions API (Prompt)")
+	}
+	if !strings.Contains(prompt, "(A)") || !strings.Contains(prompt, "(D)") {
 		t.Error("prompt should contain choice labels (A) through (D)")
 	}
-	if !strings.Contains(conv.Prompt, "Let's think step by step:") {
-		t.Error("prompt should end with CoT instruction")
+	if !strings.Contains(prompt, "Express your final answer") {
+		t.Error("prompt should contain answer instruction")
 	}
 	if conv.MaxTokens != 1024 {
 		t.Errorf("expected MaxTokens=1024, got %d", conv.MaxTokens)
@@ -130,15 +141,15 @@ func TestGPQAFingertapFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Items are shuffled, so consume both and check answers
 	answers := map[string]bool{}
 	for i := 0; i < 2; i++ {
 		conv := ds.NextConversation()
-		if conv.Prompt == "" {
-			t.Fatal("expected non-empty Prompt")
+		prompt := gpqaPrompt(conv)
+		if prompt == "" {
+			t.Fatal("expected non-empty prompt in Turns")
 		}
-		if !strings.Contains(conv.Prompt, "Let's think step by step:") {
-			t.Error("prompt should contain CoT instruction")
+		if !strings.Contains(prompt, "Express your final answer") {
+			t.Error("prompt should contain answer instruction")
 		}
 		answers[conv.ExpectedAnswer] = true
 	}
@@ -163,13 +174,14 @@ func TestGPQAPreprocess(t *testing.T) {
 	}
 
 	conv := ds.NextConversation()
-	if strings.Contains(conv.Prompt, "[title]") {
+	prompt := gpqaPrompt(conv)
+	if strings.Contains(prompt, "[title]") {
 		t.Error("prompt should not contain [title]")
 	}
-	if strings.Contains(conv.Prompt, "[Newton]") {
+	if strings.Contains(prompt, "[Newton]") {
 		t.Error("prompt should not contain bracket annotations")
 	}
-	if !strings.Contains(conv.Prompt, "In physics.") {
+	if !strings.Contains(prompt, "In physics.") {
 		t.Error("expected [title] replaced with period")
 	}
 }
@@ -200,11 +212,11 @@ func TestGPQAPartitionDisjoint(t *testing.T) {
 
 		for i := 0; i < ds.Len(); i++ {
 			conv := ds.NextConversation()
-			// Use prompt as key since ExpectedAnswer can repeat across items
-			if prev, ok := allPrompts[conv.Prompt]; ok {
+			prompt := gpqaPrompt(conv)
+			if prev, ok := allPrompts[prompt]; ok {
 				t.Errorf("item assigned to both worker %d and worker %d", prev, w)
 			}
-			allPrompts[conv.Prompt] = w
+			allPrompts[prompt] = w
 		}
 	}
 

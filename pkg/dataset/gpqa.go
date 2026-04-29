@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+
+	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
 
 // GPQA generates chain-of-thought completions from GPQA multiple-choice questions.
@@ -84,28 +86,25 @@ func (g *GPQA) NextConversation() Conversation {
 	idx := g.idx.Add(1) - 1
 	item := g.items[idx%uint64(len(g.items))]
 
-	var prompt string
+	var b strings.Builder
 	if item.InlinePrompt {
-		var b strings.Builder
-		fmt.Fprintf(&b, "What is the correct answer to this question: %s\n", item.Question)
-		b.WriteString("Let's think step by step: ")
-		prompt = b.String()
+		b.WriteString(item.Question)
 	} else {
-		var b strings.Builder
-		fmt.Fprintf(&b, "What is the correct answer to this question: %s\n", item.Question)
-		b.WriteString("Choices:\n")
+		b.WriteString(item.Question)
+		b.WriteString("\n")
 		for i, choice := range item.Choices {
 			fmt.Fprintf(&b, "(%c) %s\n", 'A'+i, choice)
 		}
-		b.WriteString("Let's think step by step: ")
-		prompt = b.String()
 	}
+	b.WriteString("Express your final answer as the corresponding option 'A', 'B', 'C', or 'D'.")
+	prompt := b.String()
 
 	greedy := 0.0
 	return Conversation{
-		Prompt:         prompt,
+		Turns: [][]client.Message{
+			{{Role: "user", Content: prompt}},
+		},
 		MaxTokens:      1024,
-		Stop:           []string{"</s>", "<|im_end|>"},
 		Temperature:    &greedy,
 		ExpectedAnswer: item.Answer,
 	}
