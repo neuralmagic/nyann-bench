@@ -31,6 +31,7 @@ func main() {
 		"Log level (debug, info, warn, error)")
 
 	root.AddCommand(generateCmd())
+	root.AddCommand(evalCmd())
 	root.AddCommand(mockServerCmd())
 	root.AddCommand(analyzeCmd())
 	root.AddCommand(corpusCmd())

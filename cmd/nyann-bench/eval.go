@@ -1,0 +1,180 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/neuralmagic/nyann-bench/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/spf13/cobra"
+)
+
+func evalCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "eval",
+		Short: "Run evaluation benchmarks",
+		Long:  "Run standardized evaluation benchmarks against an LLM endpoint.",
+	}
+	cmd.AddCommand(evalGSM8KCmd())
+	return cmd
+}
+
+func evalGSM8KCmd() *cobra.Command {
+	var (
+		target         string
+		model          string
+		concurrency    int
+		gsm8kPath      string
+		gsm8kTrainPath string
+		numFewShot     int
+		timeout        string
+		outputDir      string
+		metricsAddr    string
+		workerID       int
+		numWorkers     int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "gsm8k",
+		Short: "Evaluate GSM8K math accuracy under load",
+		Long: `Run the GSM8K evaluation benchmark against an LLM endpoint.
+
+Sends all GSM8K test problems with few-shot prompting, evaluates
+correctness of model responses, and reports accuracy alongside latency metrics.
+
+For multi-worker scale-out (e.g., LeaderWorkerSet), use --num-workers and
+--worker-id to partition the dataset across workers. Each worker runs a
+disjoint slice, and --worker-id auto-detects from LWS_WORKER_INDEX.
+
+Example:
+  nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
+    --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl
+
+  # Scale-out: 4 workers, each runs ~330 items
+  nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
+    --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl \
+    --num-workers 4`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			timeoutDur, err := time.ParseDuration(timeout)
+			if err != nil {
+				return fmt.Errorf("invalid timeout %q: %w", timeout, err)
+			}
+
+			if gsm8kPath == "" {
+				return fmt.Errorf("--gsm8k-path is required (path to GSM8K test JSONL)")
+			}
+			if numFewShot > 0 && gsm8kTrainPath == "" {
+				return fmt.Errorf("--gsm8k-train-path is required when --num-fewshot > 0")
+			}
+
+			// Auto-detect worker ID from LWS or K8s indexed Job
+			if workerID == 0 {
+				for _, env := range []string{"LWS_WORKER_INDEX", "JOB_COMPLETION_INDEX"} {
+					if idx, ok := os.LookupEnv(env); ok {
+						if v, err := strconv.Atoi(idx); err == nil {
+							workerID = v
+							slog.Info("Auto-detected worker ID", "env", env, "worker_id", workerID)
+							break
+						}
+					}
+				}
+			}
+
+			if numWorkers > 1 && workerID >= numWorkers {
+				return fmt.Errorf("--worker-id %d must be < --num-workers %d", workerID, numWorkers)
+			}
+
+			// Build dataset and partition for this worker
+			gsm8kDS, err := dataset.NewGSM8K(gsm8kPath, gsm8kTrainPath, numFewShot)
+			if err != nil {
+				return fmt.Errorf("loading GSM8K dataset: %w", err)
+			}
+			totalItems := gsm8kDS.Len()
+			if numWorkers > 1 {
+				gsm8kDS.Partition(workerID, numWorkers)
+			}
+			partitionItems := gsm8kDS.Len()
+
+			slog.Info("GSM8K eval configured",
+				"total_items", totalItems,
+				"partition_items", partitionItems,
+				"worker_id", workerID,
+				"num_workers", numWorkers,
+				"concurrency", concurrency,
+				"timeout", timeout,
+				"num_fewshot", numFewShot)
+
+			sc := &config.ScenarioConfig{
+				Target: target,
+				Model:  model,
+				Workload: config.Workload{
+					Type:           "gsm8k",
+					GSM8KPath:      gsm8kPath,
+					GSM8KTrainPath: gsm8kTrainPath,
+					NumFewShot:     &numFewShot,
+				},
+				Stages: []config.ScenarioStage{{
+					Name:        "gsm8k-eval",
+					Duration:    timeoutDur,
+					Mode:        "concurrent",
+					Concurrency: concurrency,
+					MaxRequests: partitionItems,
+				}},
+			}
+
+			summary, err := runScenario(ctx, cancel, scenarioOpts{
+				Target:      target,
+				Model:       model,
+				Scenario:    sc,
+				OutputDir:   outputDir,
+				WorkerID:    workerID,
+				MetricsAddr: metricsAddr,
+				Dataset:     gsm8kDS,
+			})
+			if err != nil {
+				return err
+			}
+
+			if summary.TotalRequests > 0 {
+				fmt.Fprint(os.Stderr, "\n")
+				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
+
+				jsonOut, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshalling summary: %w", err)
+				}
+				fmt.Println(string(jsonOut))
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&target, "target", "", "Target endpoint base URL (required)")
+	cmd.Flags().StringVar(&model, "model", "", "Model name (auto-detected if omitted)")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 64, "Number of concurrent streams")
+	cmd.Flags().StringVar(&gsm8kPath, "gsm8k-path", "", "Path to GSM8K test JSONL file (required)")
+	cmd.Flags().StringVar(&gsm8kTrainPath, "gsm8k-train-path", "", "Path to GSM8K train JSONL (for few-shot examples)")
+	cmd.Flags().IntVar(&numFewShot, "num-fewshot", 5, "Number of few-shot examples (0 for zero-shot)")
+	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
+	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from LWS_WORKER_INDEX)")
+	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
+
+	cmd.MarkFlagRequired("target")
+	cmd.MarkFlagRequired("gsm8k-path")
+
+	return cmd
+}

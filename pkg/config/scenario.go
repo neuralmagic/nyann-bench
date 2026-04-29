@@ -36,6 +36,7 @@ type ScenarioStage struct {
 	Workload     *Workload     // nil = inherit from scenario
 	Target       string        // empty = inherit from scenario
 	Model        string        // empty = inherit from scenario
+	MaxRequests  int           // stop after this many requests (0 = unlimited)
 	Warmup       bool          // true = don't record results
 	Barrier      bool          // true = sync point (other fields ignored)
 	BarrierDrain bool          // true = stop pool before sync, fresh pool after

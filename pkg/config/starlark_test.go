@@ -480,6 +480,39 @@ scenario(
 	}
 }
 
+func TestStarlarkMaxRequests(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("30m", concurrency=64, max_requests=1319)],
+    workload = workload("faker"),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].MaxRequests != 1319 {
+		t.Errorf("expected max_requests 1319, got %d", sc.Stages[0].MaxRequests)
+	}
+}
+
+func TestStarlarkMaxRequestsDefault(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", concurrency=10)],
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].MaxRequests != 0 {
+		t.Errorf("expected default max_requests 0, got %d", sc.Stages[0].MaxRequests)
+	}
+}
+
 func TestStarlarkWorkloadImmutable(t *testing.T) {
 	path := writeStarFile(t, `
 w = workload("faker")

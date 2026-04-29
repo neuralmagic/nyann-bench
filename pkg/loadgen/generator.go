@@ -37,6 +37,16 @@ const (
 	ModePoisson Mode = "poisson"
 )
 
+// maxRequestsState holds per-stage state for the max_requests feature.
+// Swapped atomically between stages so goroutines from previous stages
+// don't race with the new stage's initialization.
+type maxRequestsState struct {
+	limit int64
+	count atomic.Int64
+	done  chan struct{}
+	once  sync.Once
+}
+
 type Generator struct {
 	Target      string
 	Model       string
@@ -56,6 +66,8 @@ type Generator struct {
 	inFlight    atomic.Int64
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
+
+	maxReqState atomic.Pointer[maxRequestsState]
 }
 
 // streamPool manages a resizable pool of concurrent streams.
@@ -146,6 +158,7 @@ type Stage struct {
 	Concurrency  int
 	Duration     time.Duration
 	Rampup       time.Duration // stagger new stream starts over this duration
+	MaxRequests  int           // stop after this many requests (0 = unlimited)
 	Barrier      bool          // sync point — pool stays alive (unless BarrierDrain), onBarrier fires
 	BarrierDrain bool          // stop pool before sync, fresh pool after
 }
@@ -176,14 +189,32 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 			}
 			continue
 		}
+
+		state := &maxRequestsState{
+			limit: int64(stage.MaxRequests),
+			done:  make(chan struct{}),
+		}
+		g.maxReqState.Store(state)
 		if onStage != nil {
 			onStage(i, stage.Concurrency)
 		}
 		pool.Resize(ctx, stage.Concurrency, stage.Rampup)
 
-		select {
-		case <-ctx.Done():
-		case <-time.After(stage.Duration):
+		if stage.MaxRequests > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(stage.Duration):
+				slog.Warn("Stage timed out before all requests completed",
+					"completed", state.count.Load(),
+					"target", stage.MaxRequests)
+			case <-state.done:
+				pool.Wait()
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+			case <-time.After(stage.Duration):
+			}
 		}
 	}
 
@@ -368,6 +399,14 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 		case p = <-prefetch:
 		case <-ctx.Done():
 			return
+		}
+
+		if state := g.maxReqState.Load(); state != nil && state.limit > 0 {
+			n := state.count.Add(1)
+			if n > state.limit {
+				state.once.Do(func() { close(state.done) })
+				return
+			}
 		}
 
 		// Start prefetching the next conversation while this request runs

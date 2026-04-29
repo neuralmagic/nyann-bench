@@ -1,6 +1,7 @@
 package dataset_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,158 @@ func TestGSM8KFewShot(t *testing.T) {
 
 	if conv.ExpectedAnswer != "15" {
 		t.Errorf("expected answer '15', got %q", conv.ExpectedAnswer)
+	}
+}
+
+func TestGSM8KPartitionDisjoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gsm8k.jsonl")
+
+	// 7 items across 3 workers: workers get 3, 2, 2 items
+	var items []string
+	for i := 1; i <= 7; i++ {
+		items = append(items, fmt.Sprintf(`{"question":"Q%d","answer":"#### %d"}`, i, i))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(items, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	numWorkers := 3
+	allAnswers := map[string]int{} // answer -> worker that got it
+
+	for w := 0; w < numWorkers; w++ {
+		ds, err := dataset.NewGSM8K(path, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ds.Partition(w, numWorkers)
+
+		if w < 7%numWorkers {
+			if ds.Len() != 7/numWorkers+1 {
+				t.Errorf("worker %d: expected %d items, got %d", w, 7/numWorkers+1, ds.Len())
+			}
+		} else {
+			if ds.Len() != 7/numWorkers {
+				t.Errorf("worker %d: expected %d items, got %d", w, 7/numWorkers, ds.Len())
+			}
+		}
+
+		for i := 0; i < ds.Len(); i++ {
+			conv := ds.NextConversation()
+			if prev, ok := allAnswers[conv.ExpectedAnswer]; ok {
+				t.Errorf("item with answer %q assigned to both worker %d and worker %d", conv.ExpectedAnswer, prev, w)
+			}
+			allAnswers[conv.ExpectedAnswer] = w
+		}
+	}
+
+	// All 7 items should be covered
+	if len(allAnswers) != 7 {
+		t.Errorf("expected 7 unique items across all workers, got %d", len(allAnswers))
+	}
+}
+
+func TestGSM8KPartitionEvenDivisibility(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gsm8k.jsonl")
+
+	// 6 items across 3 workers: each gets exactly 2
+	var items []string
+	for i := 1; i <= 6; i++ {
+		items = append(items, fmt.Sprintf(`{"question":"Q%d","answer":"#### %d"}`, i, i))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(items, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for w := 0; w < 3; w++ {
+		ds, err := dataset.NewGSM8K(path, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ds.Partition(w, 3)
+		if ds.Len() != 2 {
+			t.Errorf("worker %d: expected 2 items, got %d", w, ds.Len())
+		}
+	}
+}
+
+func TestGSM8KPartitionSingleWorker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gsm8k.jsonl")
+
+	data := `{"question":"Q1","answer":"#### 1"}
+{"question":"Q2","answer":"#### 2"}
+{"question":"Q3","answer":"#### 3"}
+`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ds, err := dataset.NewGSM8K(path, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds.Partition(0, 1)
+
+	if ds.Len() != 3 {
+		t.Errorf("single worker should get all 3 items, got %d", ds.Len())
+	}
+}
+
+func TestPartitionSize(t *testing.T) {
+	// 1319 items across 4 workers: 330, 330, 330, 329
+	if got := dataset.PartitionSize(1319, 0, 4); got != 330 {
+		t.Errorf("worker 0: expected 330, got %d", got)
+	}
+	if got := dataset.PartitionSize(1319, 1, 4); got != 330 {
+		t.Errorf("worker 1: expected 330, got %d", got)
+	}
+	if got := dataset.PartitionSize(1319, 2, 4); got != 330 {
+		t.Errorf("worker 2: expected 330, got %d", got)
+	}
+	if got := dataset.PartitionSize(1319, 3, 4); got != 329 {
+		t.Errorf("worker 3: expected 329, got %d", got)
+	}
+
+	// Verify they sum to total
+	total := 0
+	for w := 0; w < 4; w++ {
+		total += dataset.PartitionSize(1319, w, 4)
+	}
+	if total != 1319 {
+		t.Errorf("partition sizes should sum to 1319, got %d", total)
+	}
+
+	// Even split
+	if got := dataset.PartitionSize(100, 0, 4); got != 25 {
+		t.Errorf("expected 25, got %d", got)
+	}
+
+	// Single worker gets everything
+	if got := dataset.PartitionSize(1319, 0, 1); got != 1319 {
+		t.Errorf("expected 1319, got %d", got)
+	}
+}
+
+func TestCountGSM8KItems(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gsm8k.jsonl")
+
+	data := `{"question":"Q1","answer":"#### 1"}
+{"question":"Q2","answer":"#### 2"}
+{"question":"Q3","answer":"#### 3"}
+`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := dataset.CountGSM8KItems(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3, got %d", count)
 	}
 }
 

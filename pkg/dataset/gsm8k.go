@@ -63,10 +63,65 @@ func NewGSM8K(testPath string, trainPath string, numFewShot int) (*GSM8K, error)
 		}
 	}
 
-	// Shuffle so multiple workers don't all start at the same question
-	rand.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
+	// Deterministic shuffle so all workers agree on item ordering for partitioning
+	rng := rand.New(rand.NewSource(42))
+	rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 
 	return &GSM8K{items: items, fewShot: fewShot, nShot: numFewShot}, nil
+}
+
+func (g *GSM8K) Len() int {
+	return len(g.items)
+}
+
+// Partition slices the dataset to only the items assigned to the given worker.
+// All workers must use the same dataset file so the deterministic shuffle
+// produces the same ordering. Items are divided into contiguous chunks;
+// the first (total % numWorkers) workers each get one extra item.
+func (g *GSM8K) Partition(workerID, numWorkers int) {
+	if numWorkers <= 0 {
+		panic("Partition: numWorkers must be > 0")
+	}
+	if workerID < 0 || workerID >= numWorkers {
+		panic(fmt.Sprintf("Partition: workerID %d out of range [0, %d)", workerID, numWorkers))
+	}
+
+	n := len(g.items)
+	base := n / numWorkers
+	remainder := n % numWorkers
+
+	start := workerID*base + min(workerID, remainder)
+	size := base
+	if workerID < remainder {
+		size++
+	}
+
+	g.items = g.items[start : start+size]
+	g.idx.Store(0)
+}
+
+// CountGSM8KItems returns the number of test items in a GSM8K file
+// without loading training data.
+func CountGSM8KItems(testPath string) (int, error) {
+	data, err := os.ReadFile(testPath)
+	if err != nil {
+		return 0, fmt.Errorf("reading gsm8k test file %s: %w", testPath, err)
+	}
+	items, err := parseGSM8K(data)
+	if err != nil {
+		return 0, fmt.Errorf("parsing gsm8k test file %s: %w", testPath, err)
+	}
+	return len(items), nil
+}
+
+// PartitionSize returns the number of items assigned to a given worker
+// when dividing total items across numWorkers.
+func PartitionSize(total, workerID, numWorkers int) int {
+	base := total / numWorkers
+	if workerID < total%numWorkers {
+		return base + 1
+	}
+	return base
 }
 
 func (g *GSM8K) NextConversation() Conversation {

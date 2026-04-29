@@ -135,6 +135,7 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 		rate        starlark.Value = starlark.None
 		mode        = "concurrent"
 		maxInFlight = 0
+		maxRequests = 0
 		rampup      starlark.Value = starlark.None
 		workload    starlark.Value = starlark.None
 		target      starlark.Value = starlark.None
@@ -149,6 +150,7 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 		"rate?", &rate,
 		"mode?", &mode,
 		"max_inflight?", &maxInFlight,
+		"max_requests?", &maxRequests,
 		"rampup?", &rampup,
 		"workload?", &workload,
 		"target?", &target,
@@ -204,6 +206,7 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 		"rate":         rate,
 		"mode":         starlark.String(mode),
 		"max_inflight": starlark.MakeInt(maxInFlight),
+		"max_requests": starlark.MakeInt(maxRequests),
 		"rampup":       rampup,
 		"workload":     workload,
 		"target":       target,
@@ -393,6 +396,9 @@ func structToScenarioStage(s *starlarkstruct.Struct) (*ScenarioStage, error) {
 
 	maxInFlight, _ := s.Attr("max_inflight")
 	stage.MaxInFlight = starlarkInt(maxInFlight)
+
+	maxReqs, _ := s.Attr("max_requests")
+	stage.MaxRequests = starlarkInt(maxReqs)
 
 	rampup, _ := s.Attr("rampup")
 	if rampup != starlark.None {

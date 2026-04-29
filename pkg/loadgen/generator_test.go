@@ -819,6 +819,103 @@ func TestMultiTurnFeedsRealResponses(t *testing.T) {
 	}
 }
 
+func TestGeneratorMaxRequests(t *testing.T) {
+	addr := startMockServer(t)
+
+	rec := recorder.NewMemory()
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 2, Duration: 30 * time.Second, MaxRequests: 5},
+	}
+
+	start := time.Now()
+	gen.RunStages(context.Background(), stages, nil, nil)
+	elapsed := time.Since(start)
+
+	rec.Close()
+	records := rec.Records()
+
+	if len(records) != 5 {
+		t.Fatalf("expected exactly 5 records, got %d", len(records))
+	}
+
+	// Should complete much faster than 30s duration
+	if elapsed > 5*time.Second {
+		t.Errorf("expected fast completion, took %v", elapsed)
+	}
+}
+
+func TestGeneratorMaxRequestsTimeout(t *testing.T) {
+	addr := startMockServer(t)
+
+	rec := recorder.NewMemory()
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 1, Duration: 500 * time.Millisecond, MaxRequests: 999999},
+	}
+
+	start := time.Now()
+	gen.RunStages(context.Background(), stages, nil, nil)
+	elapsed := time.Since(start)
+
+	rec.Close()
+	records := rec.Records()
+
+	// Should have completed some requests but not all
+	if len(records) == 0 {
+		t.Fatal("expected some records before timeout")
+	}
+	if len(records) >= 999999 {
+		t.Fatal("should not have completed all requests")
+	}
+
+	// Should have terminated around the 500ms duration
+	if elapsed > 3*time.Second {
+		t.Errorf("expected timeout around 500ms, took %v", elapsed)
+	}
+}
+
+func TestGeneratorMaxRequestsZero(t *testing.T) {
+	addr := startMockServer(t)
+
+	rec := recorder.NewMemory()
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 2, Duration: 300 * time.Millisecond, MaxRequests: 0},
+	}
+
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+
+	// With MaxRequests=0 (unlimited), should have many records from 300ms run
+	if len(records) < 2 {
+		t.Fatalf("expected multiple records with unlimited max_requests, got %d", len(records))
+	}
+}
+
 func readRecords(t *testing.T, path string) []recorder.Record {
 	t.Helper()
 	data, err := os.ReadFile(path)
