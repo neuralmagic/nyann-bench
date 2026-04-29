@@ -73,7 +73,14 @@ func buildDataset(w *config.Workload, charsPerToken float64) (dataset.Dataset, e
 		if numFewShot > 0 && w.GSM8KTrainPath == "" {
 			return nil, fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
 		}
-		return dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
+		gsm8k, err := dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
+		if err != nil {
+			return nil, err
+		}
+		if w.NumWorkers > 1 {
+			gsm8k.Partition(w.WorkerID, w.NumWorkers)
+		}
+		return gsm8k, nil
 	default:
 		return nil, fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k)", w.Type)
 	}

@@ -63,6 +63,10 @@ type Workload struct {
 	NumFewShot     *int   `json:"num_fewshot,omitempty"`       // number of few-shot examples (default: 5, requires gsm8k_train_path)
 	CharsPerToken float64 `json:"chars_per_token"`         // override auto-calibrated ratio (0 = auto)
 	CacheSalt *CacheSalt `json:"cache_salt,omitempty"` // prefix cache isolation config
+
+	// Worker partitioning for eval scale-out (not serialized to JSON config)
+	WorkerID   int `json:"-"`
+	NumWorkers int `json:"-"`
 }
 
 // CacheSalt configures vLLM prefix cache isolation.

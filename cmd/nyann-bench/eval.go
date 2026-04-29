@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -37,6 +38,8 @@ func evalGSM8KCmd() *cobra.Command {
 		timeout        string
 		outputDir      string
 		metricsAddr    string
+		workerID       int
+		numWorkers     int
 	)
 
 	cmd := &cobra.Command{
@@ -47,12 +50,18 @@ func evalGSM8KCmd() *cobra.Command {
 Sends all GSM8K test problems with few-shot prompting, evaluates
 correctness of model responses, and reports accuracy alongside latency metrics.
 
+For multi-worker scale-out (e.g., LeaderWorkerSet), use --num-workers and
+--worker-id to partition the dataset across workers. Each worker runs a
+disjoint slice, and --worker-id auto-detects from LWS_WORKER_INDEX.
+
 Example:
   nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
     --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl
 
+  # Scale-out: 4 workers, each runs ~330 items
   nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
-    --gsm8k-path data/gsm8k_test.jsonl --num-fewshot 0 --concurrency 128`,
+    --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl \
+    --num-workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
@@ -69,15 +78,39 @@ Example:
 				return fmt.Errorf("--gsm8k-train-path is required when --num-fewshot > 0")
 			}
 
-			// Load dataset to get item count
-			gsm8kDS, err := dataset.NewGSM8K(gsm8kPath, gsm8kTrainPath, numFewShot)
-			if err != nil {
-				return fmt.Errorf("loading GSM8K dataset: %w", err)
+			// Auto-detect worker ID from LWS or K8s indexed Job
+			if workerID == 0 {
+				for _, env := range []string{"LWS_WORKER_INDEX", "JOB_COMPLETION_INDEX"} {
+					if idx, ok := os.LookupEnv(env); ok {
+						if v, err := strconv.Atoi(idx); err == nil {
+							workerID = v
+							slog.Info("Auto-detected worker ID", "env", env, "worker_id", workerID)
+							break
+						}
+					}
+				}
 			}
-			itemCount := gsm8kDS.Len()
+
+			if numWorkers > 1 && workerID >= numWorkers {
+				return fmt.Errorf("--worker-id %d must be < --num-workers %d", workerID, numWorkers)
+			}
+
+			// Count items and compute this worker's partition size
+			totalItems, err := dataset.CountGSM8KItems(gsm8kPath)
+			if err != nil {
+				return fmt.Errorf("counting GSM8K items: %w", err)
+			}
+
+			partitionItems := totalItems
+			if numWorkers > 1 {
+				partitionItems = dataset.PartitionSize(totalItems, workerID, numWorkers)
+			}
 
 			slog.Info("GSM8K eval configured",
-				"items", itemCount,
+				"total_items", totalItems,
+				"partition_items", partitionItems,
+				"worker_id", workerID,
+				"num_workers", numWorkers,
 				"concurrency", concurrency,
 				"timeout", timeout,
 				"num_fewshot", numFewShot)
@@ -90,13 +123,15 @@ Example:
 					GSM8KPath:      gsm8kPath,
 					GSM8KTrainPath: gsm8kTrainPath,
 					NumFewShot:     &numFewShot,
+					WorkerID:       workerID,
+					NumWorkers:     numWorkers,
 				},
 				Stages: []config.ScenarioStage{{
 					Name:        "gsm8k-eval",
 					Duration:    timeoutDur,
 					Mode:        "concurrent",
 					Concurrency: concurrency,
-					MaxRequests: itemCount,
+					MaxRequests: partitionItems,
 				}},
 			}
 
@@ -105,6 +140,7 @@ Example:
 				Model:       model,
 				Scenario:    sc,
 				OutputDir:   outputDir,
+				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
 			})
 			if err != nil {
@@ -135,6 +171,8 @@ Example:
 	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from LWS_WORKER_INDEX)")
+	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
 
 	cmd.MarkFlagRequired("target")
 	cmd.MarkFlagRequired("gsm8k-path")
