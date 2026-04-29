@@ -57,7 +57,7 @@ smoke-test:
 deploy NAME TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='base' IMAGE_TAG='latest' LOG_LEVEL='info':
     #!/usr/bin/env bash
     set -euo pipefail
-    kubectl -n {{NAMESPACE}} delete job {{NAME}} --ignore-not-found=true
+    kubectl -n {{NAMESPACE}} delete leaderworkerset {{NAME}} --ignore-not-found=true
     kubectl -n {{NAMESPACE}} delete configmap {{NAME}}-config --ignore-not-found=true
 
     # Create ConfigMap — detect inline JSON vs file path
@@ -189,6 +189,43 @@ query-prometheus CLIENT_JOB DEPLOYMENT='' NAMESPACE='vllm' PROMETHEUS_URL='http:
       ARGS+=(--eval-job {{EVAL_JOB}})
     fi
     python3 scripts/query_prometheus.py "${ARGS[@]}"
+
+# Smoke test with two local processes synchronized via barrier
+smoke-test-multi:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Starting mock server..."
+    go run ./cmd/nyann-bench/ mock-server --addr :9998 --ttft 10ms --itl 2ms --output-tokens 20 &
+    SERVER_PID=$!
+    sleep 0.5
+    SYNC='{"workers":2,"addr":"localhost","timeout":"30s"}'
+    echo "Starting worker 0 (leader)..."
+    go run ./cmd/nyann-bench/ generate \
+        --target http://localhost:9998/v1 \
+        --worker-id 0 \
+        --config '{"warmup":{"duration":"2s"},"load":{"concurrency":2,"duration":"5s"},"workload":{"type":"faker","isl":32,"osl":10}}' \
+        --sync "$SYNC" \
+        --output-dir /tmp/nyann-bench_multi_0 &
+    W0_PID=$!
+    sleep 0.2
+    echo "Starting worker 1..."
+    go run ./cmd/nyann-bench/ generate \
+        --target http://localhost:9998/v1 \
+        --worker-id 1 \
+        --config '{"warmup":{"duration":"2s"},"load":{"concurrency":2,"duration":"5s"},"workload":{"type":"faker","isl":32,"osl":10}}' \
+        --sync "$SYNC" \
+        --output-dir /tmp/nyann-bench_multi_1 &
+    W1_PID=$!
+    wait $W0_PID $W1_PID || true
+    kill $SERVER_PID 2>/dev/null || true
+    echo ""
+    echo "Worker 0 timestamps:"
+    cat /tmp/nyann-bench_multi_0/timestamps_0.json
+    echo ""
+    echo "Worker 1 timestamps:"
+    cat /tmp/nyann-bench_multi_1/timestamps_1.json
+    echo ""
+    echo "Multi-worker smoke test passed."
 
 clean:
     rm -f nyann-bench nyann-bench-linux-amd64 nyann-bench-linux-arm64

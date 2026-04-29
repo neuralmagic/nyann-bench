@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/barrier"
 	"github.com/neuralmagic/nyann-bench/pkg/client"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/loadgen"
@@ -31,6 +32,7 @@ func generateCmd() *cobra.Command {
 		outputDir   string
 		workerID    int
 		metricsAddr string
+		syncFlag    string
 	)
 
 	cmd := &cobra.Command{
@@ -69,9 +71,13 @@ Workload types:
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// Auto-detect worker ID from K8s indexed Job
+			// Auto-detect worker ID from K8s (LWS or indexed Job)
 			if workerID == 0 {
-				if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
+				if idx, ok := os.LookupEnv("LWS_WORKER_INDEX"); ok {
+					if v, err := strconv.Atoi(idx); err == nil {
+						workerID = v
+					}
+				} else if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
 					if v, err := strconv.Atoi(idx); err == nil {
 						workerID = v
 					}
@@ -82,6 +88,36 @@ Workload types:
 			sc, err := config.Parse(cfgInput)
 			if err != nil {
 				return fmt.Errorf("config: %w", err)
+			}
+
+			// Parse --sync flag and configure barrier
+			if syncFlag != "" {
+				syncCfg, err := config.ParseSyncFlag(syncFlag)
+				if err != nil {
+					return err
+				}
+				// Auto-detect barrier address from LWS
+				if syncCfg.Addr == "" {
+					if addr, ok := os.LookupEnv("LWS_LEADER_ADDRESS"); ok {
+						syncCfg.Addr = addr
+					}
+				}
+				// Leader pod connects to itself
+				if workerID == 0 && syncCfg.Addr == "" {
+					syncCfg.Addr = "localhost"
+				}
+				sc.Sync = syncCfg
+
+				// Insert implicit barrier before first measured stage
+				sc.InsertImplicitBarrier()
+
+				// Start barrier server on leader (pod-0)
+				if syncCfg.Workers > 1 && workerID == 0 {
+					srv := barrier.NewServer(syncCfg.Workers, syncCfg.Port)
+					go srv.ListenAndServe(ctx)
+				}
+
+				slog.Info("Sync enabled", "workers", syncCfg.Workers, "addr", syncCfg.Addr, "port", syncCfg.Port)
 			}
 
 			// CLI flags override config-level target/model
@@ -169,7 +205,32 @@ Workload types:
 			}
 
 			var resolved []resolvedStage
-			for _, ss := range sc.Stages {
+			for i, ss := range sc.Stages {
+				if ss.Barrier {
+					// Barrier stages inherit target/model/workload from predecessor
+					// so they don't break run grouping
+					var prevTarget, prevModel string
+					var prevWorkload *config.Workload
+					if i > 0 {
+						prevTarget = resolved[len(resolved)-1].target
+						prevModel = resolved[len(resolved)-1].model
+						prevWorkload = resolved[len(resolved)-1].workload
+					} else {
+						prevTarget = target
+						prevModel = model
+					}
+					resolved = append(resolved, resolvedStage{
+						loadgen: loadgen.Stage{
+							Barrier:      true,
+							BarrierDrain: ss.BarrierDrain,
+						},
+						target:   prevTarget,
+						model:    prevModel,
+						workload: prevWorkload,
+					})
+					continue
+				}
+
 				effectiveTarget := target
 				if ss.Target != "" {
 					effectiveTarget = ss.Target
@@ -181,11 +242,6 @@ Workload types:
 				var effectiveWorkload *config.Workload
 				if ss.Workload != nil {
 					effectiveWorkload = ss.Workload
-				}
-
-				mode := ss.Mode
-				if mode == "" {
-					mode = "concurrent"
 				}
 
 				resolved = append(resolved, resolvedStage{
@@ -237,10 +293,10 @@ Workload types:
 				}
 			}
 
-			// Count total measured (non-warmup) stages for logging
+			// Count total measured (non-warmup, non-barrier) stages for logging
 			totalMeasuredStages := 0
 			for _, rs := range resolved {
-				if !rs.warmup {
+				if !rs.warmup && !rs.loadgen.Barrier {
 					totalMeasuredStages++
 				}
 			}
@@ -250,6 +306,7 @@ Workload types:
 			var stageTimestamps []recorder.StageTimestamp
 			globalStageIdx := 0
 			measuredStageIdx := 0
+			barrierIdx := 0
 			var lastStageStart time.Time
 			var lastConcurrency int
 
@@ -284,12 +341,26 @@ Workload types:
 					}
 				}
 
+				// Find first non-barrier stage in this run for Mode/Rate/MaxInFlight
+				firstStageIdx := globalStageIdx
+				for firstStageIdx < len(sc.Stages) && sc.Stages[firstStageIdx].Barrier {
+					firstStageIdx++
+				}
+				var genMode string
+				var genRate float64
+				var genMaxInFlight int
+				if firstStageIdx < len(sc.Stages) {
+					genMode = sc.Stages[firstStageIdx].Mode
+					genRate = sc.Stages[firstStageIdx].Rate
+					genMaxInFlight = sc.Stages[firstStageIdx].MaxInFlight
+				}
+
 				gen := &loadgen.Generator{
 					Target:      runTarget,
 					Model:       runModel,
-					Mode:        loadgen.Mode(sc.Stages[globalStageIdx].Mode),
-					Rate:        sc.Stages[globalStageIdx].Rate,
-					MaxInFlight: sc.Stages[globalStageIdx].MaxInFlight,
+					Mode:        loadgen.Mode(genMode),
+					Rate:        genRate,
+					MaxInFlight: genMaxInFlight,
 					CacheSalt:   runWorkload.CacheSalt,
 					Dataset:     runDS,
 					Recorder:    rec,
@@ -344,6 +415,24 @@ Workload types:
 					if m != nil {
 						m.Stage.Set(float64(measuredStageIdx - 1))
 					}
+				}, func(i int) {
+					if sc.Sync == nil || sc.Sync.Workers <= 1 {
+						return // no-op in single-pod mode
+					}
+					addr := fmt.Sprintf("%s:%d", sc.Sync.Addr, sc.Sync.Port)
+					t, err := barrier.WaitForStart(ctx, addr, workerID, barrierIdx, sc.Sync.Workers, sc.Sync.Timeout.Duration())
+					if err != nil {
+						slog.Error("Barrier failed", "error", err)
+						cancel()
+						return
+					}
+					// Use barrier time as the start time for timestamps
+					if startTime.IsZero() {
+						startTime = t
+					}
+					slog.Info("Barrier released", "barrier", barrierIdx, "start_time", t)
+					time.Sleep(time.Until(t))
+					barrierIdx++
 				})
 
 				globalStageIdx += len(run.stages)
@@ -410,6 +499,7 @@ Workload types:
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().StringVar(&syncFlag, "sync", "", `Barrier sync config JSON (e.g. '{"workers":4,"timeout":"10m"}')`)
 
 	return cmd
 }

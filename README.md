@@ -29,7 +29,7 @@ At high concurrency, nyann-bench sustains up to **10x more requests per second**
 
 ### Kubernetes-native
 
-The container image is **~5 MB** (single static binary on `scratch`) — no Python runtime, no pip dependencies, no conda environment. It deploys as a Kubernetes [indexed Job](https://kubernetes.io/docs/concepts/workloads/controllers/job/#completion-mode) for horizontal scale-out across multiple pods. Pod-level network tuning (expanded ephemeral port range, `TCP_TW_REUSE`) is built into the Job template.
+The container image is **~5 MB** (single static binary on `scratch`) — no Python runtime, no pip dependencies, no conda environment. It deploys as a Kubernetes [LeaderWorkerSet](https://github.com/kubernetes-sigs/lws) for horizontal scale-out across multiple pods, with built-in barrier synchronization so all pods start their measured stages at the exact same wall-clock time. Pod-level network tuning (expanded ephemeral port range, `TCP_TW_REUSE`) is built into the manifest.
 
 ### Streaming eval
 
@@ -71,6 +71,22 @@ scenario(
 ### Multi-turn conversations
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.
+
+### Synchronized multi-pod start
+
+When running across multiple pods, `--sync '{"workers":N}'` enables barrier synchronization. All pods negotiate a common start time via an HTTP barrier protocol — pod-0 (leader) runs the barrier server, workers discover it via `LWS_LEADER_ADDRESS`. Barriers are first-class in the Starlark DSL:
+
+```python
+scenario(
+    stages=[
+        stage("2m", concurrency=16, warmup=True),
+        barrier(),                                  # implicit one added automatically
+        stage("5m", concurrency=64),
+        barrier(drain=True),                        # drain pool before workload switch
+        stage("5m", concurrency=64, workload=other),
+    ],
+)
+```
 
 ### Ramp-up and warmup
 
@@ -138,7 +154,7 @@ Merging across workers: `cat requests_*.jsonl`.
 just deploy my-benchmark http://vllm-server:8000/v1 config.star 8
 ```
 
-This creates a ConfigMap with your config and launches an indexed Job with 8 parallel pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX`.
+This creates a ConfigMap with your config and launches a LeaderWorkerSet with 8 pods. Each pod auto-detects its worker ID from `LWS_WORKER_INDEX` and the barrier server address from `LWS_LEADER_ADDRESS`. Sync is enabled automatically via `--sync '{"workers":N}'` in the manifest.
 
 ## Installation
 

@@ -14,6 +14,7 @@ import (
 const (
 	starlarkTypeWorkload = "Workload"
 	starlarkTypeStage    = "Stage"
+	starlarkTypeBarrier  = "Barrier"
 )
 
 // ParseStarlark evaluates a .star file and returns the ScenarioConfig
@@ -30,6 +31,7 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 	builtins := starlark.StringDict{
 		"workload": starlark.NewBuiltin("workload", builtinWorkload),
 		"stage":    starlark.NewBuiltin("stage", builtinStage),
+		"barrier":  starlark.NewBuiltin("barrier", builtinBarrier),
 		"scenario": starlark.NewBuiltin("scenario", func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 			if scenarioCalled {
 				return nil, fmt.Errorf("scenario() can only be called once")
@@ -211,6 +213,23 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 	}), nil
 }
 
+// builtinBarrier implements the barrier() Starlark builtin.
+// barrier() marks a synchronization point in the stage list.
+// barrier(drain=True) stops the pool before syncing.
+func builtinBarrier(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var drain bool
+
+	if err := starlark.UnpackArgs("barrier", args, kwargs,
+		"drain?", &drain,
+	); err != nil {
+		return nil, err
+	}
+
+	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeBarrier), starlark.StringDict{
+		"drain": starlark.Bool(drain),
+	}), nil
+}
+
 // parseScenarioCall processes the arguments to scenario().
 func parseScenarioCall(args starlark.Tuple, kwargs []starlark.Tuple) (*ScenarioConfig, error) {
 	var (
@@ -259,21 +278,39 @@ func parseScenarioCall(args starlark.Tuple, kwargs []starlark.Tuple) (*ScenarioC
 		}
 	}
 
-	// Parse stages
+	// Parse stages (accepts both Stage and Barrier structs)
 	iter := stagesList.Iterate()
 	defer iter.Done()
 	var val starlark.Value
 	i := 0
 	for iter.Next(&val) {
 		s, ok := val.(*starlarkstruct.Struct)
-		if !ok || s.Constructor() != starlark.String(starlarkTypeStage) {
-			return nil, fmt.Errorf("stages[%d]: expected Stage, got %s", i, val.Type())
+		if !ok {
+			return nil, fmt.Errorf("stages[%d]: expected Stage or barrier(), got %s", i, val.Type())
 		}
-		stage, err := structToScenarioStage(s)
-		if err != nil {
-			return nil, fmt.Errorf("stages[%d]: %w", i, err)
+
+		switch s.Constructor() {
+		case starlark.String(starlarkTypeStage):
+			stage, err := structToScenarioStage(s)
+			if err != nil {
+				return nil, fmt.Errorf("stages[%d]: %w", i, err)
+			}
+			sc.Stages = append(sc.Stages, *stage)
+
+		case starlark.String(starlarkTypeBarrier):
+			drainVal, _ := s.Attr("drain")
+			drain := false
+			if drainVal != nil && drainVal != starlark.None {
+				drain = bool(drainVal.(starlark.Bool))
+			}
+			sc.Stages = append(sc.Stages, ScenarioStage{
+				Barrier:      true,
+				BarrierDrain: drain,
+			})
+
+		default:
+			return nil, fmt.Errorf("stages[%d]: expected Stage or barrier(), got %s", i, s.Constructor())
 		}
-		sc.Stages = append(sc.Stages, *stage)
 		i++
 	}
 
