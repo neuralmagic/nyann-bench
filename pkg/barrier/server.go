@@ -48,11 +48,19 @@ func NewServer(nWorkers, port int) *Server {
 // ListenAndServe starts the barrier HTTP server. It blocks until the context
 // is cancelled or an error occurs.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve starts the barrier HTTP server on the given listener.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /barrier/ready", s.handleReady)
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
 		Handler: mux,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
@@ -64,8 +72,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		srv.Close()
 	}()
 
-	slog.Info("Barrier server listening", "port", s.port, "workers", s.nWorkers)
-	err := srv.ListenAndServe()
+	slog.Info("Barrier server listening", "addr", ln.Addr(), "workers", s.nWorkers)
+	err := srv.Serve(ln)
 	if err == http.ErrServerClosed {
 		return nil
 	}
@@ -106,7 +114,6 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	allReady := len(b.ready) == s.nWorkers
 
 	if allReady {
-		// All workers are here — compute start time and notify everyone
 		startTime := time.Now().Add(1 * time.Second)
 		for _, wch := range b.ready {
 			wch <- startTime
@@ -114,6 +121,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Barrier released", "barrier_id", req.BarrierID, "start_time", startTime.Format(time.RFC3339Nano))
 	}
 	b.mu.Unlock()
+
+	if allReady {
+		s.mu.Lock()
+		delete(s.barriers, req.BarrierID)
+		s.mu.Unlock()
+	}
 
 	// Block until start time is broadcast (or context cancelled)
 	select {

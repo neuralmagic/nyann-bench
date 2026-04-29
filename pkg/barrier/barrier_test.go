@@ -204,29 +204,24 @@ func TestContextCancel(t *testing.T) {
 }
 
 // startTestServer starts a barrier server on a random port and returns the port.
+// The listener is passed directly to Serve to avoid a TOCTOU port race.
 func startTestServer(t *testing.T, ctx context.Context, srv *Server) int {
 	t.Helper()
 
-	// Use port 0 to get a random free port
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
 
-	srv.port = port
 	go func() {
-		if err := srv.ListenAndServe(ctx); err != nil {
-			// Ignore errors after context cancel
+		if err := srv.Serve(ctx, ln); err != nil {
 			if ctx.Err() == nil {
 				t.Errorf("barrier server error: %v", err)
 			}
 		}
 	}()
 
-	// Wait for server to be ready
-	time.Sleep(50 * time.Millisecond)
 	return port
 }
 

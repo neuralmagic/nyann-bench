@@ -61,8 +61,8 @@ func WaitForStart(ctx context.Context, addr string, workerID, barrierID, nWorker
 			continue
 		}
 
-		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			return time.Time{}, fmt.Errorf("barrier: server returned %d: %s", resp.StatusCode, string(respBody))
