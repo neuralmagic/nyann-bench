@@ -8,11 +8,79 @@ spec:
   replicas: 1
   leaderWorkerTemplate:
     size: ${N_WORKERS}
+    restartPolicy: None
+    leaderTemplate:
+      metadata:
+        labels:
+          app: ${JOB_NAME}
+      spec:
+        restartPolicy: Never
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: kubernetes.io/arch
+                  operator: In
+                  values: ["${ARCH}"]
+
+        # Expand ephemeral port range and enable TIME_WAIT reuse.
+        # High-concurrency load generation can exhaust the default ~28K ports
+        # (32768-60999), especially with TCP connections stuck in TIME_WAIT
+        # for 60s after close. Each pod has its own network namespace,
+        # so these sysctls are scoped per-pod with no node-level side effects.
+        initContainers:
+          - name: sysctl
+            image: public.ecr.aws/docker/library/busybox:1.36
+            command: ["sh", "-c"]
+            args:
+              - |
+                sysctl -w net.ipv4.ip_local_port_range='1024 65535'
+                sysctl -w net.ipv4.tcp_tw_reuse=1
+            securityContext:
+              privileged: true
+
+        containers:
+          - name: nyann-bench
+            image: ghcr.io/neuralmagic/nyann-bench:${IMAGE_TAG}
+            imagePullPolicy: Always
+            resources:
+              limits:
+                cpu: "4"
+                memory: "8Gi"
+            ports:
+              - name: metrics
+                containerPort: 9090
+                protocol: TCP
+              - name: barrier
+                containerPort: 8080
+                protocol: TCP
+            args:
+              - --log-level
+              - ${LOG_LEVEL}
+              - generate
+              - --target
+              - ${TARGET}
+              - --config
+              - /etc/nyann-bench/config.json
+              - --metrics
+              - :9090
+              - --sync
+              - '{"workers":${N_WORKERS}}'
+            volumeMounts:
+              - name: config
+                mountPath: /etc/nyann-bench
+                readOnly: true
+        volumes:
+          - name: config
+            configMap:
+              name: ${JOB_NAME}-config
     workerTemplate:
       metadata:
         labels:
           app: ${JOB_NAME}
       spec:
+        restartPolicy: Never
         affinity:
           nodeAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
@@ -44,9 +112,6 @@ spec:
             ports:
               - name: metrics
                 containerPort: 9090
-                protocol: TCP
-              - name: barrier
-                containerPort: 8080
                 protocol: TCP
             args:
               - --log-level

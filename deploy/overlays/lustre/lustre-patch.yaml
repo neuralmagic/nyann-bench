@@ -1,4 +1,15 @@
 - op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/volumes/-
+  value:
+    name: lustre
+    persistentVolumeClaim:
+      claimName: lustre-pvc-vllm
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/volumeMounts/-
+  value:
+    name: lustre
+    mountPath: /mnt/lustre
+- op: add
   path: /spec/leaderWorkerTemplate/workerTemplate/spec/volumes/-
   value:
     name: lustre
