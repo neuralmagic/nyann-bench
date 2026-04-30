@@ -4,7 +4,7 @@ resources:
   - ../../base
 patches:
   - target:
-      group: leaderworkerset.x-k8s.io
-      version: v1
-      kind: LeaderWorkerSet
+      group: jobset.x-k8s.io
+      version: v1alpha2
+      kind: JobSet
     path: lustre-patch.yaml

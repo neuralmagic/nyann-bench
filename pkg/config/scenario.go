@@ -21,7 +21,7 @@ type SyncConfig struct {
 	Workers int      `json:"workers"`           // expected number of pods
 	Timeout Duration `json:"timeout,omitempty"` // max wait per barrier (default 10m)
 	Port    int      `json:"port,omitempty"`    // barrier server port (default 8080)
-	Addr    string   `json:"addr,omitempty"`    // barrier server address (auto-detected from LWS_LEADER_ADDRESS)
+	Addr    string   `json:"addr,omitempty"`    // barrier server address (auto-detected from BARRIER_ADDR)
 }
 
 // ScenarioStage is a single phase of a benchmark with optional per-stage overrides.

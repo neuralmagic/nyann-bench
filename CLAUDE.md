@@ -40,7 +40,7 @@ go test ./... -v
 
 ## Deployment
 
-Deployed via **LeaderWorkerSet (LWS)** on Kubernetes. Single-worker mode uses LWS with `size: 1`.
+Deployed via **JobSet** on Kubernetes. Single-worker mode uses a JobSet with `completions: 1`.
 
 ```bash
 just deploy my-bench http://vllm:8000/v1 config.json N_WORKERS=4

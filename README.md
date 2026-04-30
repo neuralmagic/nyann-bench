@@ -29,7 +29,7 @@ At high concurrency, nyann-bench sustains up to **10x more requests per second**
 
 ### Kubernetes-native
 
-The container image is **~5 MB** (single static binary on `scratch`) — no Python runtime, no pip dependencies, no conda environment. It deploys as a Kubernetes [LeaderWorkerSet](https://github.com/kubernetes-sigs/lws) for horizontal scale-out across multiple pods, with built-in barrier synchronization so all pods start their measured stages at the exact same wall-clock time. Pod-level network tuning (expanded ephemeral port range, `TCP_TW_REUSE`) is built into the manifest.
+The container image is **~5 MB** (single static binary on `scratch`) — no Python runtime, no pip dependencies, no conda environment. It deploys as a Kubernetes [JobSet](https://github.com/kubernetes-sigs/jobset) for horizontal scale-out across multiple pods, with built-in barrier synchronization so all pods start their measured stages at the exact same wall-clock time. Pod-level network tuning (expanded ephemeral port range, `TCP_TW_REUSE`) is built into the manifest.
 
 ### Streaming eval
 
@@ -74,7 +74,7 @@ Each goroutine stream can run multi-turn conversations, carrying real model resp
 
 ### Synchronized multi-pod start
 
-When running across multiple pods, `--sync '{"workers":N}'` enables barrier synchronization. All pods negotiate a common start time via an HTTP barrier protocol — pod-0 (leader) runs the barrier server, workers discover it via `LWS_LEADER_ADDRESS`. Barriers are first-class in the Starlark DSL:
+When running across multiple pods, `--sync '{"workers":N}'` enables barrier synchronization. All pods negotiate a common start time via an HTTP barrier protocol — pod-0 (leader) runs the barrier server, workers discover it via `BARRIER_ADDR` (set automatically in the JobSet manifest to the leader pod's DNS name). Barriers are first-class in the Starlark DSL:
 
 ```python
 scenario(
@@ -154,7 +154,7 @@ Merging across workers: `cat requests_*.jsonl`.
 just deploy my-benchmark http://vllm-server:8000/v1 config.star 8
 ```
 
-This creates a ConfigMap with your config and launches a LeaderWorkerSet with 8 pods. Each pod auto-detects its worker ID from `LWS_WORKER_INDEX` and the barrier server address from `LWS_LEADER_ADDRESS`. Sync is enabled automatically via `--sync '{"workers":N}'` in the manifest.
+This creates a ConfigMap with your config and launches a JobSet with 8 pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX` and the barrier server address from `BARRIER_ADDR`. Sync is enabled automatically via `--sync '{"workers":N}'` in the manifest.
 
 ## Installation
 

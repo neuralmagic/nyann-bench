@@ -57,7 +57,7 @@ smoke-test:
 deploy NAME TARGET CONFIG N_WORKERS='4' NAMESPACE='vllm' ARCH='arm64' OVERLAY='base' IMAGE_TAG='latest' LOG_LEVEL='info':
     #!/usr/bin/env bash
     set -euo pipefail
-    kubectl -n {{NAMESPACE}} delete leaderworkerset {{NAME}} --ignore-not-found=true
+    kubectl -n {{NAMESPACE}} delete jobset {{NAME}} --ignore-not-found=true
     kubectl -n {{NAMESPACE}} delete configmap {{NAME}}-config --ignore-not-found=true
 
     # Create ConfigMap — detect inline JSON vs file path
