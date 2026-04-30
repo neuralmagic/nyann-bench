@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${JOB_NAME}
+spec:
+  clusterIP: None
+  selector:
+    job-name: ${JOB_NAME}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  labels:
+    app: ${JOB_NAME}
+spec:
+  backoffLimit: 0
+  completions: ${N_WORKERS}
+  parallelism: ${N_WORKERS}
+  completionMode: Indexed
+  template:
+    metadata:
+      labels:
+        app: ${JOB_NAME}
+    spec:
+      restartPolicy: Never
+      subdomain: ${JOB_NAME}
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values: ["${ARCH}"]
+
+      initContainers:
+        - name: sysctl
+          image: public.ecr.aws/docker/library/busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              sysctl -w net.ipv4.ip_local_port_range='1024 65535'
+              sysctl -w net.ipv4.tcp_tw_reuse=1
+          securityContext:
+            privileged: true
+
+      containers:
+        - name: nyann-bench
+          image: ghcr.io/neuralmagic/nyann-bench:${IMAGE_TAG}
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: barrier
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: BARRIER_ADDR
+              value: "${JOB_NAME}-0"
+          args:
+            - --log-level
+            - ${LOG_LEVEL}
+            - generate
+            - --target
+            - ${TARGET}
+            - --config
+            - /etc/nyann-bench/config.json
+            - --metrics
+            - :9090
+            - --sync
+            - '{"workers":${N_WORKERS}}'
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nyann-bench
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: ${JOB_NAME}-config

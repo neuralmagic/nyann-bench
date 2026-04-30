@@ -63,13 +63,9 @@ Workload types:
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// Auto-detect worker ID from K8s (LWS or indexed Job)
+			// Auto-detect worker ID from K8s indexed Job
 			if workerID == 0 {
-				if idx, ok := os.LookupEnv("LWS_WORKER_INDEX"); ok {
-					if v, err := strconv.Atoi(idx); err == nil {
-						workerID = v
-					}
-				} else if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
+				if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
 					if v, err := strconv.Atoi(idx); err == nil {
 						workerID = v
 					}
@@ -89,7 +85,7 @@ Workload types:
 					return err
 				}
 				if syncCfg.Addr == "" {
-					if addr, ok := os.LookupEnv("LWS_LEADER_ADDRESS"); ok {
+					if addr, ok := os.LookupEnv("BARRIER_ADDR"); ok {
 						syncCfg.Addr = addr
 					}
 				}

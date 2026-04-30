@@ -51,9 +51,9 @@ func evalGSM8KCmd() *cobra.Command {
 Sends all GSM8K test problems with few-shot prompting, evaluates
 correctness of model responses, and reports accuracy alongside latency metrics.
 
-For multi-worker scale-out (e.g., LeaderWorkerSet), use --num-workers and
+For multi-worker scale-out (e.g., Indexed Job), use --num-workers and
 --worker-id to partition the dataset across workers. Each worker runs a
-disjoint slice, and --worker-id auto-detects from LWS_WORKER_INDEX.
+disjoint slice, and --worker-id auto-detects from JOB_COMPLETION_INDEX.
 
 Example:
   nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
@@ -79,15 +79,12 @@ Example:
 				return fmt.Errorf("--gsm8k-train-path is required when --num-fewshot > 0")
 			}
 
-			// Auto-detect worker ID from LWS or K8s indexed Job
+			// Auto-detect worker ID from K8s indexed Job
 			if workerID == 0 {
-				for _, env := range []string{"LWS_WORKER_INDEX", "JOB_COMPLETION_INDEX"} {
-					if idx, ok := os.LookupEnv(env); ok {
-						if v, err := strconv.Atoi(idx); err == nil {
-							workerID = v
-							slog.Info("Auto-detected worker ID", "env", env, "worker_id", workerID)
-							break
-						}
+				if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
+					if v, err := strconv.Atoi(idx); err == nil {
+						workerID = v
+						slog.Info("Auto-detected worker ID", "env", "JOB_COMPLETION_INDEX", "worker_id", workerID)
 					}
 				}
 			}
@@ -171,7 +168,7 @@ Example:
 	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
-	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from LWS_WORKER_INDEX)")
+	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
 	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
 
 	cmd.MarkFlagRequired("target")
@@ -229,13 +226,10 @@ Example:
 			}
 
 			if workerID == 0 {
-				for _, env := range []string{"LWS_WORKER_INDEX", "JOB_COMPLETION_INDEX"} {
-					if idx, ok := os.LookupEnv(env); ok {
-						if v, err := strconv.Atoi(idx); err == nil {
-							workerID = v
-							slog.Info("Auto-detected worker ID", "env", env, "worker_id", workerID)
-							break
-						}
+				if idx, ok := os.LookupEnv("JOB_COMPLETION_INDEX"); ok {
+					if v, err := strconv.Atoi(idx); err == nil {
+						workerID = v
+						slog.Info("Auto-detected worker ID", "env", "JOB_COMPLETION_INDEX", "worker_id", workerID)
 					}
 				}
 			}
@@ -313,7 +307,7 @@ Example:
 	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
-	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from LWS_WORKER_INDEX)")
+	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
 	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
 	cmd.Flags().IntVar(&maxTokens, "max-tokens", 0, "Max output tokens per request (0 = default 16384, increase for reasoning models)")
 
