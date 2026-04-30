@@ -916,6 +916,69 @@ func TestGeneratorMaxRequestsZero(t *testing.T) {
 	}
 }
 
+func TestGeneratorGPQAEval(t *testing.T) {
+	addr := startMockServerWithContent(t, "Let me think step by step. First, mitochondria are known as the powerhouse of the cell. The answer is (B).")
+	outDir := t.TempDir()
+
+	rec, err := recorder.New(outDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+
+	ds := &mcEvalDataset{answer: "(B)"}
+
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    2 * time.Second,
+		Dataset:     ds,
+		Recorder:    rec,
+	}
+
+	_, err = gen.Run(context.Background())
+	if err != nil {
+		t.Fatalf("generator run failed: %v", err)
+	}
+
+	rec.Close()
+	records := readRecords(t, filepath.Join(outDir, "requests_0.jsonl"))
+
+	found := false
+	for _, r := range records {
+		if r.Status != "ok" || r.EvalCorrect == nil {
+			continue
+		}
+		found = true
+		if !*r.EvalCorrect {
+			t.Errorf("expected correct eval: expected=%q extracted=%q", r.EvalExpected, r.EvalExtracted)
+		}
+		if r.EvalExtracted != "B" {
+			t.Errorf("expected EvalExtracted='B', got %q", r.EvalExtracted)
+		}
+	}
+	if !found {
+		t.Fatal("no eval records found")
+	}
+}
+
+type mcEvalDataset struct {
+	answer string
+}
+
+func (d *mcEvalDataset) NextConversation() dataset.Conversation {
+	greedy := 0.0
+	return dataset.Conversation{
+		Turns: [][]client.Message{
+			{{Role: "user", Content: "What is the correct answer?\n(A) Wrong\n(B) Right\n(C) Wrong\n(D) Wrong\nExpress your final answer as 'A', 'B', 'C', or 'D'."}},
+		},
+		MaxTokens:      256,
+		Temperature:    &greedy,
+		ExpectedAnswer: d.answer,
+	}
+}
+
 func readRecords(t *testing.T, path string) []recorder.Record {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -71,6 +71,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		gsm8kPath      starlark.Value = starlark.None
 		gsm8kTrainPath starlark.Value = starlark.None
 		numFewshot     = 5
+		gpqaPath       starlark.Value = starlark.None
 		charsPerToken  = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
@@ -86,6 +87,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"gsm8k_path?", &gsm8kPath,
 		"gsm8k_train_path?", &gsm8kTrainPath,
 		"num_fewshot?", &numFewshot,
+		"gpqa_path?", &gpqaPath,
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
@@ -95,9 +97,9 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 
 	// Validate type
 	switch typ {
-	case "synthetic", "faker", "corpus", "gsm8k":
+	case "synthetic", "faker", "corpus", "gsm8k", "gpqa":
 	default:
-		return nil, fmt.Errorf("unknown workload type %q (options: synthetic, faker, corpus, gsm8k)", typ)
+		return nil, fmt.Errorf("unknown workload type %q (options: synthetic, faker, corpus, gsm8k, gpqa)", typ)
 	}
 
 	// Validate type-specific requirements
@@ -110,6 +112,9 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 	if typ == "gsm8k" && numFewshot > 0 && (gsm8kTrainPath == starlark.None || starlarkString(gsm8kTrainPath) == "") {
 		return nil, fmt.Errorf("gsm8k_train_path is required when num_fewshot > 0")
 	}
+	if typ == "gpqa" && (gpqaPath == starlark.None || starlarkString(gpqaPath) == "") {
+		return nil, fmt.Errorf("gpqa_path is required when type is \"gpqa\"")
+	}
 
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeWorkload), starlark.StringDict{
 		"type":            starlark.String(typ),
@@ -121,6 +126,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"gsm8k_path":      gsm8kPath,
 		"gsm8k_train_path": gsm8kTrainPath,
 		"num_fewshot":     starlark.MakeInt(numFewshot),
+		"gpqa_path":       gpqaPath,
 		"chars_per_token": starlark.Float(charsPerToken),
 		"cache_salt":      cacheSalt,
 		"name":            name,
@@ -356,6 +362,9 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 		v := starlarkInt(numFewshot)
 		w.NumFewShot = &v
 	}
+
+	gpqaPathVal, _ := s.Attr("gpqa_path")
+	w.GPQAPath = starlarkString(gpqaPathVal)
 
 	cpt, _ := s.Attr("chars_per_token")
 	w.CharsPerToken = starlarkFloat(cpt)

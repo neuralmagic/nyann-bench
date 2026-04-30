@@ -74,8 +74,14 @@ func buildDataset(w *config.Workload, charsPerToken float64) (dataset.Dataset, e
 			return nil, fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
 		}
 		return dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
+	case "gpqa":
+		if w.GPQAPath == "" {
+			return nil, fmt.Errorf("workload.gpqa_path is required for gpqa type")
+		}
+		w.OSL = 0
+		return dataset.NewGPQA(w.GPQAPath, w.OSL)
 	default:
-		return nil, fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k)", w.Type)
+		return nil, fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k, gpqa)", w.Type)
 	}
 }
 
@@ -152,7 +158,8 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		if workloadName == "" {
 			workloadName = w.Type
 		}
-		m = metrics.New(reg, workloadName, w.Type == "gsm8k")
+		enableEval := w.Type == "gsm8k" || w.Type == "gpqa"
+		m = metrics.New(reg, workloadName, enableEval)
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.Handler(reg))
 		srv := &http.Server{Addr: opts.MetricsAddr, Handler: mux}

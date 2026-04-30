@@ -158,6 +158,59 @@ prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
     kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=120s job/gsm8k-prep \
       && kubectl -n {{NAMESPACE}} logs job/gsm8k-prep
 
+# Download GPQA Diamond dataset (public, 198 questions) for the gpqa dataset type
+prep-gpqa OUTPUT_DIR NAMESPACE='vllm':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl -n {{NAMESPACE}} delete job gpqa-prep --ignore-not-found=true
+    kubectl -n {{NAMESPACE}} apply -f - <<EOF
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: gpqa-prep
+      labels:
+        app: nyann-bench
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu.present
+                        operator: Exists
+          containers:
+            - name: download
+              image: alpine:3.19
+              securityContext:
+                runAsUser: 0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  apk add --no-cache curl jq >/dev/null 2>&1
+                  mkdir -p {{OUTPUT_DIR}}
+                  echo "Downloading GPQA Diamond (198 questions)..."
+                  curl -sf 'https://datasets-server.huggingface.co/rows?dataset=fingertap/GPQA-Diamond&config=default&split=test&offset=0&length=200' \
+                    | jq -c '.rows[].row' \
+                    > {{OUTPUT_DIR}}/gpqa_diamond.jsonl
+                  echo "Done."
+                  wc -l {{OUTPUT_DIR}}/gpqa_diamond.jsonl
+                  head -1 {{OUTPUT_DIR}}/gpqa_diamond.jsonl
+              volumeMounts:
+                - mountPath: /mnt/lustre
+                  name: lustre
+          volumes:
+            - name: lustre
+              persistentVolumeClaim:
+                claimName: lustre-pvc-vllm
+    EOF
+    echo "Waiting for job to complete..."
+    kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=120s job/gpqa-prep \
+      && kubectl -n {{NAMESPACE}} logs job/gpqa-prep
+
 # Collect JSON summaries from completed Job pods (stdout)
 collect NAME NAMESPACE='vllm':
     #!/usr/bin/env bash

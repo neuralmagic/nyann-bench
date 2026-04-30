@@ -69,6 +69,40 @@ func CheckCorrect(expected, extracted string) bool {
 	return normalizeNumber(expected) == normalizeNumber(extracted)
 }
 
+var mcStrictRe = regexp.MustCompile(`(?i)The answer is \(?([A-D])\)?`)
+var mcFlexibleRe = regexp.MustCompile(`\(([A-D])\)`)
+
+// ExtractMCAnswer extracts a multiple-choice answer letter from a model response.
+// Two-tier extraction: "The answer is (X)" first, then first (A)-(D) occurrence.
+func ExtractMCAnswer(response string) string {
+	if m := mcStrictRe.FindStringSubmatch(response); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	if m := mcFlexibleRe.FindStringSubmatch(response); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+// IsMCAnswer returns true if the answer looks like a multiple-choice letter: (A)-(D).
+func IsMCAnswer(answer string) bool {
+	return mcFlexibleRe.MatchString(answer)
+}
+
+// CheckMCCorrect compares expected and extracted multiple-choice answers.
+func CheckMCCorrect(expected, extracted string) bool {
+	if expected == "" || extracted == "" {
+		return false
+	}
+	return normalizeMC(expected) == normalizeMC(extracted)
+}
+
+func normalizeMC(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "()")
+	return strings.ToUpper(s)
+}
+
 // normalizeNumber strips commas and leading zeros from a number string.
 func normalizeNumber(s string) string {
 	s = strings.ReplaceAll(s, ",", "")

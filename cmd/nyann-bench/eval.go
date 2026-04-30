@@ -24,6 +24,7 @@ func evalCmd() *cobra.Command {
 		Long:  "Run standardized evaluation benchmarks against an LLM endpoint.",
 	}
 	cmd.AddCommand(evalGSM8KCmd())
+	cmd.AddCommand(evalGPQACmd())
 	return cmd
 }
 
@@ -175,6 +176,149 @@ Example:
 
 	cmd.MarkFlagRequired("target")
 	cmd.MarkFlagRequired("gsm8k-path")
+
+	return cmd
+}
+
+func evalGPQACmd() *cobra.Command {
+	var (
+		target      string
+		model       string
+		concurrency int
+		gpqaPath    string
+		timeout     string
+		outputDir   string
+		metricsAddr string
+		workerID    int
+		numWorkers  int
+		maxTokens   int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "gpqa",
+		Short: "Evaluate GPQA multiple-choice accuracy under load",
+		Long: `Run the GPQA (Graduate-Level Google-Proof Q&A) evaluation benchmark.
+
+Sends all GPQA questions with chain-of-thought prompting, extracts
+multiple-choice answers, and reports accuracy alongside latency metrics.
+
+Supports two data formats:
+  - Idavidrein/gpqa: separate choice fields (gated, requires HF auth)
+  - fingertap/GPQA-Diamond: choices inline in question (public)
+
+For multi-worker scale-out, use --num-workers and --worker-id.
+
+Example:
+  nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
+    --gpqa-path data/gpqa_diamond.jsonl
+
+  # Scale-out: 4 workers
+  nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
+    --gpqa-path data/gpqa_diamond.jsonl --num-workers 4`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			timeoutDur, err := time.ParseDuration(timeout)
+			if err != nil {
+				return fmt.Errorf("invalid timeout %q: %w", timeout, err)
+			}
+
+			if gpqaPath == "" {
+				return fmt.Errorf("--gpqa-path is required (path to GPQA JSONL)")
+			}
+
+			if workerID == 0 {
+				for _, env := range []string{"LWS_WORKER_INDEX", "JOB_COMPLETION_INDEX"} {
+					if idx, ok := os.LookupEnv(env); ok {
+						if v, err := strconv.Atoi(idx); err == nil {
+							workerID = v
+							slog.Info("Auto-detected worker ID", "env", env, "worker_id", workerID)
+							break
+						}
+					}
+				}
+			}
+
+			if numWorkers > 1 && workerID >= numWorkers {
+				return fmt.Errorf("--worker-id %d must be < --num-workers %d", workerID, numWorkers)
+			}
+
+			gpqaDS, err := dataset.NewGPQA(gpqaPath, maxTokens)
+			if err != nil {
+				return fmt.Errorf("loading GPQA dataset: %w", err)
+			}
+			totalItems := gpqaDS.Len()
+			if numWorkers > 1 {
+				gpqaDS.Partition(workerID, numWorkers)
+			}
+			partitionItems := gpqaDS.Len()
+
+			slog.Info("GPQA eval configured",
+				"total_items", totalItems,
+				"partition_items", partitionItems,
+				"worker_id", workerID,
+				"num_workers", numWorkers,
+				"concurrency", concurrency,
+				"timeout", timeout)
+
+			sc := &config.ScenarioConfig{
+				Target: target,
+				Model:  model,
+				Workload: config.Workload{
+					Type:     "gpqa",
+					GPQAPath: gpqaPath,
+				},
+				Stages: []config.ScenarioStage{{
+					Name:        "gpqa-eval",
+					Duration:    timeoutDur,
+					Mode:        "concurrent",
+					Concurrency: concurrency,
+					MaxRequests: partitionItems,
+				}},
+			}
+
+			summary, err := runScenario(ctx, cancel, scenarioOpts{
+				Target:      target,
+				Model:       model,
+				Scenario:    sc,
+				OutputDir:   outputDir,
+				WorkerID:    workerID,
+				MetricsAddr: metricsAddr,
+				Dataset:     gpqaDS,
+			})
+			if err != nil {
+				return err
+			}
+
+			if summary.TotalRequests > 0 {
+				fmt.Fprint(os.Stderr, "\n")
+				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
+
+				jsonOut, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshalling summary: %w", err)
+				}
+				fmt.Println(string(jsonOut))
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&target, "target", "", "Target endpoint base URL (required)")
+	cmd.Flags().StringVar(&model, "model", "", "Model name (auto-detected if omitted)")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 64, "Number of concurrent streams")
+	cmd.Flags().StringVar(&gpqaPath, "gpqa-path", "", "Path to GPQA JSONL file (required)")
+	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
+	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from LWS_WORKER_INDEX)")
+	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
+	cmd.Flags().IntVar(&maxTokens, "max-tokens", 0, "Max output tokens per request (0 = default 16384, increase for reasoning models)")
+
+	cmd.MarkFlagRequired("target")
+	cmd.MarkFlagRequired("gpqa-path")
 
 	return cmd
 }
