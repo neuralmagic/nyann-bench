@@ -194,9 +194,8 @@ prep-gpqa OUTPUT_DIR NAMESPACE='vllm':
                   apk add --no-cache curl jq >/dev/null 2>&1
                   mkdir -p {{OUTPUT_DIR}}
                   echo "Downloading GPQA Diamond (198 questions)..."
-                  curl -sf 'https://datasets-server.huggingface.co/rows?dataset=fingertap/GPQA-Diamond&config=default&split=test&offset=0&length=200' \
-                    | jq -c '.rows[].row' \
-                    > {{OUTPUT_DIR}}/gpqa_diamond.jsonl
+                  curl -sf 'https://datasets-server.huggingface.co/rows?dataset=fingertap/GPQA-Diamond&config=default&split=test&offset=0&length=100' | jq -c '.rows[].row'  > {{OUTPUT_DIR}}/gpqa_diamond.jsonl
+                  curl -sf 'https://datasets-server.huggingface.co/rows?dataset=fingertap/GPQA-Diamond&config=default&split=test&offset=100&length=100' | jq -c '.rows[].row' >> {{OUTPUT_DIR}}/gpqa_diamond.jsonl
                   echo "Done."
                   wc -l {{OUTPUT_DIR}}/gpqa_diamond.jsonl
                   head -1 {{OUTPUT_DIR}}/gpqa_diamond.jsonl
