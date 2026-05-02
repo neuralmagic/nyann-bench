@@ -32,9 +32,7 @@ func TestKubeConfigDefaults(t *testing.T) {
 	if cfg.Name != "nyann-eval-gsm8k" {
 		t.Errorf("Name = %q, want nyann-eval-gsm8k", cfg.Name)
 	}
-	if cfg.Namespace != "vllm" {
-		t.Errorf("Namespace = %q, want vllm", cfg.Namespace)
-	}
+	// Namespace is intentionally empty when unset — kubectl uses kubeconfig default
 	if cfg.Image != "latest" {
 		t.Errorf("Image = %q, want latest", cfg.Image)
 	}

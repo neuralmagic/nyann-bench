@@ -53,7 +53,7 @@ type Flags struct {
 func RegisterFlags(cmd *cobra.Command, f *Flags) {
 	cmd.Flags().StringVar(&f.Kube, "kube", "", "Deploy to Kubernetes (optional JSON config)")
 	cmd.Flags().StringVar(&f.Name, "kube.name", "", "Job name (auto-generated if omitted)")
-	cmd.Flags().StringVar(&f.Namespace, "kube.namespace", "", "Kubernetes namespace (default: vllm)")
+	cmd.Flags().StringVar(&f.Namespace, "kube.namespace", "", "Kubernetes namespace (default: from kubeconfig)")
 	cmd.Flags().StringVar(&f.Image, "kube.image", "", "Container image tag or full ref (default: latest)")
 	cmd.Flags().StringVar(&f.Arch, "kube.arch", "", "Node architecture (default: arm64)")
 	cmd.Flags().StringVar(&f.Volume, "kube.volume", "", "Volume preset (e.g. lustre)")
@@ -111,9 +111,7 @@ func (cfg *KubeConfig) applyDefaults(defaultName string) {
 			cfg.Name = "nyann-" + defaultName
 		}
 	}
-	if cfg.Namespace == "" {
-		cfg.Namespace = "vllm"
-	}
+	// Namespace intentionally left empty if not set — kubectl will use the kubeconfig default
 	if cfg.Image == "" {
 		cfg.Image = "latest"
 	}
@@ -294,7 +292,11 @@ func renderYAML(p deployParams) (string, error) {
 }
 
 func kubectl(namespace string, args ...string) error {
-	fullArgs := append([]string{"-n", namespace}, args...)
+	var fullArgs []string
+	if namespace != "" {
+		fullArgs = append(fullArgs, "-n", namespace)
+	}
+	fullArgs = append(fullArgs, args...)
 	cmd := exec.Command("kubectl", fullArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -335,15 +337,24 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 		return err
 	}
 
-	cmd := exec.Command("kubectl", "-n", cfg.Namespace, "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(yaml)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	applyArgs := []string{}
+	if cfg.Namespace != "" {
+		applyArgs = append(applyArgs, "-n", cfg.Namespace)
+	}
+	applyArgs = append(applyArgs, "apply", "-f", "-")
+	applyCmd := exec.Command("kubectl", applyArgs...)
+	applyCmd.Stdin = strings.NewReader(yaml)
+	applyCmd.Stdout = os.Stdout
+	applyCmd.Stderr = os.Stderr
+	if err := applyCmd.Run(); err != nil {
 		return fmt.Errorf("kubectl apply: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "\nDeployed. Follow with:\n  kubectl -n %s logs -l app=%s -c nyann-bench --tail=50 -f\n", cfg.Namespace, cfg.Name)
+	nsFlag := ""
+	if cfg.Namespace != "" {
+		nsFlag = "-n " + cfg.Namespace + " "
+	}
+	fmt.Fprintf(os.Stderr, "\nDeployed. Follow with:\n  kubectl %slogs -l app=%s -c nyann-bench --tail=50 -f\n", nsFlag, cfg.Name)
 	return nil
 }
 
