@@ -208,7 +208,18 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 					"completed", state.count.Load(),
 					"target", stage.MaxRequests)
 			case <-state.done:
-				pool.Wait()
+				drainDone := make(chan struct{})
+				go func() { pool.Wait(); close(drainDone) }()
+				select {
+				case <-drainDone:
+				case <-ctx.Done():
+					pool.Stop()
+				case <-time.After(2 * time.Minute):
+					slog.Warn("Timed out waiting for in-flight requests to drain, cancelling",
+						"completed", state.count.Load(),
+						"target", stage.MaxRequests)
+					pool.Stop()
+				}
 			}
 		} else {
 			select {
