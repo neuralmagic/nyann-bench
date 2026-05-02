@@ -205,7 +205,7 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 			case <-ctx.Done():
 			case <-time.After(stage.Duration):
 				slog.Warn("Stage timed out before all requests completed",
-					"completed", state.count.Load(),
+					"dispatched", state.count.Load(),
 					"target", stage.MaxRequests)
 			case <-state.done:
 				drainDone := make(chan struct{})
@@ -216,7 +216,7 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 					pool.Stop()
 				case <-time.After(2 * time.Minute):
 					slog.Warn("Timed out waiting for in-flight requests to drain, cancelling",
-						"completed", state.count.Load(),
+						"dispatched", state.count.Load(),
 						"target", stage.MaxRequests)
 					pool.Stop()
 				}
@@ -393,11 +393,16 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 
 	fill := func() {
 		if state := g.maxReqState.Load(); state != nil && state.limit > 0 {
-			n := state.count.Add(1)
-			if n > state.limit {
-				state.once.Do(func() { close(state.done) })
-				prefetch <- pending{exhausted: true}
-				return
+			for {
+				cur := state.count.Load()
+				if cur >= state.limit {
+					state.once.Do(func() { close(state.done) })
+					prefetch <- pending{exhausted: true}
+					return
+				}
+				if state.count.CompareAndSwap(cur, cur+1) {
+					break
+				}
 			}
 		}
 		conv := g.Dataset.NextConversation()
