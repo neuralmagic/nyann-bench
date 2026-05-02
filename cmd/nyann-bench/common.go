@@ -138,6 +138,23 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		}
 	}
 
+	// For finite eval datasets (gsm8k, gpqa), auto-set MaxRequests on stages
+	// that don't specify it. This prevents infinite wraparound when using the
+	// generate command with an eval workload config.
+	type sizedDataset interface {
+		Len() int
+	}
+	if sd, ok := ds.(sizedDataset); ok {
+		datasetLen := sd.Len()
+		for i := range sc.Stages {
+			if !sc.Stages[i].Barrier && !sc.Stages[i].Warmup && sc.Stages[i].MaxRequests == 0 {
+				sc.Stages[i].MaxRequests = datasetLen
+				slog.Info("Auto-set max_requests from dataset length",
+					"stage", i, "max_requests", datasetLen)
+			}
+		}
+	}
+
 	// Build recorder
 	var rec *recorder.Recorder
 	var err error
