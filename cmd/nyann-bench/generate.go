@@ -13,6 +13,7 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
 	"github.com/neuralmagic/nyann-bench/pkg/barrier"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
+	"github.com/neuralmagic/nyann-bench/pkg/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -23,8 +24,10 @@ func generateCmd() *cobra.Command {
 		cfgInput    string
 		outputDir   string
 		workerID    int
+		numWorkers  int
 		metricsAddr string
 		syncFlag    string
+		kubeFlags   kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -60,6 +63,22 @@ Workload types:
   corpus      Sliding window over real text files
   gsm8k       GSM8K math problems with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if kubeFlags.Enabled(cmd) {
+				cfg, err := kubeFlags.ToConfig()
+				if err != nil {
+					return err
+				}
+				if numWorkers > 1 {
+					cfg.Workers = numWorkers
+				}
+				containerArgs := kube.CollectArgs(cmd, []string{"generate"})
+				containerArgs = append(containerArgs, "--metrics", ":9090")
+				if cfg.Workers > 1 {
+					containerArgs = append(containerArgs, "--sync", fmt.Sprintf(`{"workers":%d}`, cfg.Workers))
+				}
+				return kube.Deploy(cfg, "generate", containerArgs)
+			}
+
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
@@ -144,8 +163,11 @@ Workload types:
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file, inline JSON, or .star file)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
+	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers (sets --sync workers when used with --kube)")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 	cmd.Flags().StringVar(&syncFlag, "sync", "", `Barrier sync config JSON (e.g. '{"workers":4,"timeout":"10m"}')`)
+
+	kube.RegisterFlags(cmd, &kubeFlags)
 
 	return cmd
 }

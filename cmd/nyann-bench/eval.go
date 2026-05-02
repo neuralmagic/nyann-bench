@@ -14,6 +14,7 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +42,7 @@ func evalGSM8KCmd() *cobra.Command {
 		metricsAddr    string
 		workerID       int
 		numWorkers     int
+		kubeFlags      kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +66,19 @@ Example:
     --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl \
     --num-workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if kubeFlags.Enabled(cmd) {
+				cfg, err := kubeFlags.ToConfig()
+				if err != nil {
+					return err
+				}
+				if numWorkers > 1 {
+					cfg.Workers = numWorkers
+				}
+				containerArgs := kube.CollectArgs(cmd, []string{"eval", "gsm8k"})
+				containerArgs = append(containerArgs, "--metrics", ":9090")
+				return kube.Deploy(cfg, "eval-gsm8k", containerArgs)
+			}
+
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
@@ -171,6 +186,8 @@ Example:
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
 	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
 
+	kube.RegisterFlags(cmd, &kubeFlags)
+
 	cmd.MarkFlagRequired("target")
 	cmd.MarkFlagRequired("gsm8k-path")
 
@@ -189,6 +206,7 @@ func evalGPQACmd() *cobra.Command {
 		workerID    int
 		numWorkers  int
 		maxTokens   int
+		kubeFlags   kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -213,6 +231,19 @@ Example:
   nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
     --gpqa-path data/gpqa_diamond.jsonl --num-workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if kubeFlags.Enabled(cmd) {
+				cfg, err := kubeFlags.ToConfig()
+				if err != nil {
+					return err
+				}
+				if numWorkers > 1 {
+					cfg.Workers = numWorkers
+				}
+				containerArgs := kube.CollectArgs(cmd, []string{"eval", "gpqa"})
+				containerArgs = append(containerArgs, "--metrics", ":9090")
+				return kube.Deploy(cfg, "eval-gpqa", containerArgs)
+			}
+
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
@@ -310,6 +341,8 @@ Example:
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
 	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
 	cmd.Flags().IntVar(&maxTokens, "max-tokens", 0, "Max output tokens per request (0 = default 16384, increase for reasoning models)")
+
+	kube.RegisterFlags(cmd, &kubeFlags)
 
 	cmd.MarkFlagRequired("target")
 	cmd.MarkFlagRequired("gpqa-path")
