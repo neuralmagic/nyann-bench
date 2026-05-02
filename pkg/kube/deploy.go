@@ -39,7 +39,8 @@ type VolumeSpec struct {
 
 // Flags holds the raw flag values registered on a cobra command.
 type Flags struct {
-	Kube      string
+	Enabled   bool
+	Config    string
 	Name      string
 	Namespace string
 	Image     string
@@ -51,7 +52,8 @@ type Flags struct {
 
 // RegisterFlags adds --kube and --kube.* flags to a cobra command.
 func RegisterFlags(cmd *cobra.Command, f *Flags) {
-	cmd.Flags().StringVar(&f.Kube, "kube", "", "Deploy to Kubernetes (optional JSON config)")
+	cmd.Flags().BoolVar(&f.Enabled, "kube", false, "Deploy to Kubernetes instead of running locally")
+	cmd.Flags().StringVar(&f.Config, "kube.config", "", "Kubernetes deploy config as JSON")
 	cmd.Flags().StringVar(&f.Name, "kube.name", "", "Job name (auto-generated if omitted)")
 	cmd.Flags().StringVar(&f.Namespace, "kube.namespace", "", "Kubernetes namespace (default: from kubeconfig)")
 	cmd.Flags().StringVar(&f.Image, "kube.image", "", "Container image tag or full ref (default: latest)")
@@ -61,9 +63,9 @@ func RegisterFlags(cmd *cobra.Command, f *Flags) {
 	cmd.Flags().StringVar(&f.Memory, "kube.memory", "", "Memory limit (default: 8Gi)")
 }
 
-// Enabled returns true if any --kube* flag was set.
-func (f *Flags) Enabled(cmd *cobra.Command) bool {
-	for _, name := range []string{"kube", "kube.name", "kube.namespace", "kube.image", "kube.arch", "kube.volume", "kube.cpu", "kube.memory"} {
+// IsEnabled returns true if any --kube* flag was set.
+func (f *Flags) IsEnabled(cmd *cobra.Command) bool {
+	for _, name := range []string{"kube", "kube.config", "kube.name", "kube.namespace", "kube.image", "kube.arch", "kube.volume", "kube.cpu", "kube.memory"} {
 		if cmd.Flags().Changed(name) {
 			return true
 		}
@@ -71,12 +73,12 @@ func (f *Flags) Enabled(cmd *cobra.Command) bool {
 	return false
 }
 
-// ToConfig parses the JSON from --kube (if any) and overlays --kube.* flags.
+// ToConfig parses the JSON from --kube.config (if any) and overlays --kube.* flags.
 func (f *Flags) ToConfig() (KubeConfig, error) {
 	var cfg KubeConfig
-	if f.Kube != "" {
-		if err := json.Unmarshal([]byte(f.Kube), &cfg); err != nil {
-			return cfg, fmt.Errorf("parsing --kube JSON: %w", err)
+	if f.Config != "" {
+		if err := json.Unmarshal([]byte(f.Config), &cfg); err != nil {
+			return cfg, fmt.Errorf("parsing --kube.config JSON: %w", err)
 		}
 	}
 	if f.Name != "" {

@@ -63,7 +63,7 @@ Workload types:
   corpus      Sliding window over real text files
   gsm8k       GSM8K math problems with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if kubeFlags.Enabled(cmd) {
+			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
 					return err

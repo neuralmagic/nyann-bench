@@ -66,7 +66,7 @@ Example:
     --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl \
     --num-workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if kubeFlags.Enabled(cmd) {
+			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
 					return err
@@ -231,7 +231,7 @@ Example:
   nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
     --gpqa-path data/gpqa_diamond.jsonl --num-workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if kubeFlags.Enabled(cmd) {
+			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
 					return err

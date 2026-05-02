@@ -194,7 +194,7 @@ func TestRenderYAMLCustomImage(t *testing.T) {
 
 func TestFlagsToConfig(t *testing.T) {
 	f := Flags{
-		Kube:   `{"namespace": "test-ns", "workers": 2}`,
+		Config: `{"namespace": "test-ns", "workers": 2}`,
 		Image:  "pr-99",
 		Volume: "lustre",
 	}
