@@ -209,6 +209,18 @@ func TestRenderYAMLArgsWithQuotes(t *testing.T) {
 	}
 }
 
+func TestBarrierAddrDNSFormat(t *testing.T) {
+	yaml, err := RenderYAML(KubeConfig{Workers: 4}, "my-bench", []string{"generate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// BARRIER_ADDR must use <job>-0.<service> format for headless service DNS
+	if !strings.Contains(yaml, `"nyann-my-bench-0.nyann-my-bench"`) {
+		t.Errorf("BARRIER_ADDR should be <name>-0.<name> for headless service DNS resolution, got YAML:\n%s", yaml)
+	}
+}
+
 func TestFlagsToConfig(t *testing.T) {
 	f := Flags{
 		Config: `{"namespace": "test-ns", "workers": 2}`,

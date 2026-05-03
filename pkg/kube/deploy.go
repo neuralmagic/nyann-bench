@@ -234,7 +234,7 @@ spec:
               protocol: TCP
           env:
             - name: BARRIER_ADDR
-              value: "{{ .Name }}-0"
+              value: "{{ .Name }}-0.{{ .Name }}"
           args:
 {{- range .Args }}
             - "{{ . | yamlEscape }}"
