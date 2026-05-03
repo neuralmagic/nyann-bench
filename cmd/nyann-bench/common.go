@@ -415,7 +415,6 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			if startTime.IsZero() {
 				startTime = t
 			}
-			slog.Info("Barrier released", "barrier", barrierIdx, "start_time", t)
 			time.Sleep(time.Until(t))
 			barrierIdx++
 		})

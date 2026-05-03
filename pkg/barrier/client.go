@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -38,7 +40,10 @@ func WaitForStart(ctx context.Context, addr string, workerID, barrierID, nWorker
 	// Retry loop for connection errors (leader may not be up yet)
 	backoff := 100 * time.Millisecond
 	maxBackoff := 5 * time.Second
+	dnsFailures := 0
+	attempt := 0
 	for {
+		attempt++
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			return time.Time{}, fmt.Errorf("barrier: creating request: %w", err)
@@ -47,15 +52,34 @@ func WaitForStart(ctx context.Context, addr string, workerID, barrierID, nWorker
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			// Connection error — retry with backoff
 			if ctx.Err() != nil {
-				return time.Time{}, fmt.Errorf("barrier: timed out waiting for barrier server at %s: %w", addr, ctx.Err())
+				return time.Time{}, fmt.Errorf("barrier: timed out waiting for barrier server at %s after %d attempts: %w", addr, attempt, ctx.Err())
 			}
-			slog.Debug("Barrier server not ready, retrying", "error", err, "backoff", backoff)
+
+			// DNS NXDOMAIN — hostname doesn't exist, retrying won't help
+			var dnsErr *net.DNSError
+			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				dnsFailures++
+				if dnsFailures >= 3 {
+					host := addr
+					if h, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
+						host = h
+					}
+					return time.Time{}, fmt.Errorf("barrier: DNS lookup failed for %q — "+
+						"the hostname does not resolve. For Kubernetes Indexed Jobs, BARRIER_ADDR must "+
+						"include the headless service name (e.g. <job>-0.<service>): %w", host, err)
+				}
+				slog.Warn("Barrier DNS lookup failed, retrying", "addr", addr, "attempt", dnsFailures, "max_attempts", 3, "error", err)
+			} else if attempt <= 3 {
+				slog.Debug("Barrier server not ready, retrying", "error", err, "backoff", backoff)
+			} else {
+				slog.Warn("Barrier server not reachable", "addr", addr, "attempt", attempt, "error", err, "backoff", backoff)
+			}
+
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return time.Time{}, fmt.Errorf("barrier: timed out waiting for barrier server at %s: %w", addr, ctx.Err())
+				return time.Time{}, fmt.Errorf("barrier: timed out waiting for barrier server at %s after %d attempts: %w", addr, attempt, ctx.Err())
 			}
 			backoff = min(backoff*2, maxBackoff)
 			continue

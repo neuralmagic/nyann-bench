@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +201,80 @@ func TestContextCancel(t *testing.T) {
 	err := <-errCh
 	if err == nil {
 		t.Fatal("expected error after context cancel, got nil")
+	}
+}
+
+func TestDNSFailureFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Use a hostname that definitely won't resolve
+	addr := "this-host-does-not-exist-barrier-test.invalid:8080"
+
+	start := time.Now()
+	_, err := WaitForStart(ctx, addr, 0, 0, 2, 30*time.Second)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error for unresolvable hostname, got nil")
+	}
+	if !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Errorf("expected DNS failure message, got: %v", err)
+	}
+	// Should fail within a few seconds, not wait for the full 30s timeout
+	if elapsed > 15*time.Second {
+		t.Errorf("DNS failure took %v — should fail fast, not wait for full timeout", elapsed)
+	}
+}
+
+func TestRetryEscalation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Connect to a port where nothing is listening — connection refused, not DNS failure
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	_, err = WaitForStart(ctx, fmt.Sprintf("localhost:%d", port), 0, 0, 2, 3*time.Second)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout message, got: %v", err)
+	}
+}
+
+func TestWorkerRegistrationProgress(t *testing.T) {
+	const nWorkers = 3
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := NewServer(nWorkers, 0)
+	port := startTestServer(t, ctx, srv)
+	addr := addrWithPort(port)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, nWorkers)
+
+	for i := 0; i < nWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			_, err := WaitForStart(ctx, addr, workerID, 0, nWorkers, 10*time.Second)
+			if err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("worker error: %v", err)
 	}
 }
 

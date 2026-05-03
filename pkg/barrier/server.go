@@ -111,7 +111,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 	ch := make(chan time.Time, 1)
 	b.ready[req.WorkerID] = ch
-	allReady := len(b.ready) == s.nWorkers
+	registered := len(b.ready)
+	allReady := registered == s.nWorkers
+
+	slog.Info("Worker registered at barrier",
+		"barrier_id", req.BarrierID, "worker_id", req.WorkerID,
+		"registered", registered, "expected", s.nWorkers)
 
 	if allReady {
 		startTime := time.Now().Add(1 * time.Second)
