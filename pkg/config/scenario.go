@@ -76,6 +76,7 @@ func (c *Config) ToScenarioConfig() *ScenarioConfig {
 			Concurrency: s.Concurrency,
 			Rate:        c.Load.Rate,
 			MaxInFlight: c.Load.MaxInFlight,
+			MaxRequests: s.MaxRequests,
 			Rampup:      c.Load.Rampup.Duration(),
 		})
 	}

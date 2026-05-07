@@ -44,14 +44,69 @@ func startTestServer(t *testing.T) string {
 	return ""
 }
 
-// TestAutoSetMaxRequestsFromDatasetLen verifies that runScenario auto-sets
-// MaxRequests from the dataset's Len() when the config omits max_requests.
-// This is the exact bug path: `generate --config` with a gsm8k workload
-// and no max_requests would cycle through the dataset indefinitely.
-func TestAutoSetMaxRequestsFromDatasetLen(t *testing.T) {
+// TestFiniteDatasetRunsFullDuration verifies that a finite eval dataset
+// with MaxRequests=0 runs for the full stage duration instead of stopping
+// after exhausting the dataset. This is the regression from PR #47 where
+// auto-set MaxRequests caused multi-stage benchmarks to stop early.
+func TestFiniteDatasetRunsFullDuration(t *testing.T) {
 	addr := startTestServer(t)
 
-	// Create a small GSM8K dataset with 5 items
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "gsm8k_test.jsonl")
+	items := `{"question":"What is 1+1?","answer":"1+1=2\n#### 2"}
+{"question":"What is 2+2?","answer":"2+2=4\n#### 4"}
+{"question":"What is 3+3?","answer":"3+3=6\n#### 6"}
+`
+	if err := os.WriteFile(testPath, []byte(items), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ds, err := dataset.NewGSM8K(testPath, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc := &config.ScenarioConfig{
+		Target: "http://" + addr + "/v1",
+		Model:  "test-model",
+		Workload: config.Workload{
+			Type:      "gsm8k",
+			GSM8KPath: testPath,
+		},
+		Stages: []config.ScenarioStage{{
+			Name:        "bench-stage",
+			Duration:    3 * time.Second,
+			Mode:        "concurrent",
+			Concurrency: 4,
+			MaxRequests: 0, // unlimited — should run for full duration
+		}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	summary, err := runScenario(ctx, cancel, scenarioOpts{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Scenario: sc,
+		Dataset:  ds,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With 3 items and 4 concurrent streams over 3s, the dataset wraps
+	// around and we get many more requests than the dataset length.
+	if summary.TotalRequests <= 3 {
+		t.Fatalf("expected more than 3 requests (dataset should wrap around), got %d", summary.TotalRequests)
+	}
+}
+
+// TestExplicitMaxRequestsStopsEarly verifies that setting MaxRequests
+// explicitly on a stage stops it after the configured number of requests.
+func TestExplicitMaxRequestsStopsEarly(t *testing.T) {
+	addr := startTestServer(t)
+
 	dir := t.TempDir()
 	testPath := filepath.Join(dir, "gsm8k_test.jsonl")
 	items := `{"question":"What is 1+1?","answer":"1+1=2\n#### 2"}
@@ -69,11 +124,6 @@ func TestAutoSetMaxRequestsFromDatasetLen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if ds.Len() != 5 {
-		t.Fatalf("expected 5 items, got %d", ds.Len())
-	}
-
-	// Config mirrors what the deploy Justfile produces: no max_requests set.
 	sc := &config.ScenarioConfig{
 		Target: "http://" + addr + "/v1",
 		Model:  "test-model",
@@ -86,7 +136,7 @@ func TestAutoSetMaxRequestsFromDatasetLen(t *testing.T) {
 			Duration:    30 * time.Second,
 			Mode:        "concurrent",
 			Concurrency: 16,
-			MaxRequests: 0, // NOT SET — auto-set should kick in
+			MaxRequests: 5,
 		}},
 	}
 
@@ -103,9 +153,7 @@ func TestAutoSetMaxRequestsFromDatasetLen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Without auto-set, MaxRequests=0 means unlimited — the 30s stage would
-	// cycle through all 5 items many times. With auto-set, it stops at 5.
 	if summary.TotalRequests != 5 {
-		t.Fatalf("expected exactly 5 requests (dataset length), got %d", summary.TotalRequests)
+		t.Fatalf("expected exactly 5 requests, got %d", summary.TotalRequests)
 	}
 }
