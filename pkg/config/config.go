@@ -29,6 +29,7 @@ type Warmup struct {
 type Stage struct {
 	Concurrency int      `json:"concurrency"`
 	Duration    Duration `json:"duration"`
+	MaxRequests int      `json:"max_requests,omitempty"`
 }
 
 // Sweep defines a smooth concurrency ramp from Min to Max over Steps stages.
