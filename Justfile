@@ -218,13 +218,12 @@ smoke-test-multi:
     go run ./cmd/nyann-bench/ mock-server --addr :9998 --ttft 10ms --itl 2ms --output-tokens 20 &
     SERVER_PID=$!
     sleep 0.5
-    SYNC='{"workers":2,"addr":"localhost","timeout":"30s"}'
     echo "Starting worker 0 (leader)..."
     go run ./cmd/nyann-bench/ generate \
         --target http://localhost:9998/v1 \
         --worker-id 0 \
+        --workers 2 \
         --config '{"warmup":{"duration":"2s"},"load":{"concurrency":2,"duration":"5s"},"workload":{"type":"faker","isl":32,"osl":10}}' \
-        --sync "$SYNC" \
         --output-dir /tmp/nyann-bench_multi_0 &
     W0_PID=$!
     sleep 0.2
@@ -232,8 +231,8 @@ smoke-test-multi:
     go run ./cmd/nyann-bench/ generate \
         --target http://localhost:9998/v1 \
         --worker-id 1 \
+        --workers 2 \
         --config '{"warmup":{"duration":"2s"},"load":{"concurrency":2,"duration":"5s"},"workload":{"type":"faker","isl":32,"osl":10}}' \
-        --sync "$SYNC" \
         --output-dir /tmp/nyann-bench_multi_1 &
     W1_PID=$!
     wait $W0_PID $W1_PID || true

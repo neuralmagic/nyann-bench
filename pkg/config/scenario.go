@@ -1,8 +1,6 @@
 package config
 
 import (
-	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -13,7 +11,9 @@ type ScenarioConfig struct {
 	Model    string          // default model (empty = use CLI flag)
 	Workload Workload        // default workload for stages that don't override
 	Stages   []ScenarioStage // ordered stages to execute
-	Sync     *SyncConfig     // barrier sync config (nil = no sync, from --sync CLI flag)
+	Sync     *SyncConfig     // barrier sync config (nil = no sync)
+	Workers  int             // total workers for load division (from --workers flag)
+	WorkerID int             // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
 }
 
 // SyncConfig configures distributed barrier synchronization across pods.
@@ -84,28 +84,30 @@ func (c *Config) ToScenarioConfig() *ScenarioConfig {
 	return sc
 }
 
-// ParseSyncFlag parses the --sync CLI flag JSON into a SyncConfig.
-func ParseSyncFlag(input string) (*SyncConfig, error) {
-	var sc SyncConfig
-	if err := json.Unmarshal([]byte(input), &sc); err != nil {
-		return nil, fmt.Errorf("parsing --sync flag: %w", err)
+// DivideConcurrency returns the concurrency share for workerID out of nWorkers.
+// Remainder is distributed to lower-indexed workers.
+func DivideConcurrency(total, nWorkers, workerID int) int {
+	if nWorkers <= 1 {
+		return total
 	}
-	if sc.Workers < 1 {
-		return nil, fmt.Errorf("--sync: workers must be >= 1, got %d", sc.Workers)
+	base := total / nWorkers
+	if workerID < total%nWorkers {
+		return base + 1
 	}
-	// Apply defaults
-	if sc.Timeout == 0 {
-		sc.Timeout = Duration(10 * time.Minute)
+	return base
+}
+
+// DivideRate returns the rate share for one worker.
+func DivideRate(total float64, nWorkers int) float64 {
+	if nWorkers <= 1 {
+		return total
 	}
-	if sc.Port == 0 {
-		sc.Port = 8080
-	}
-	return &sc, nil
+	return total / float64(nWorkers)
 }
 
 // InsertImplicitBarrier adds a barrier before the first non-warmup stage
-// if one doesn't already exist at that position. This is called when --sync
-// is provided to ensure a sync point even without explicit barrier() calls.
+// if one doesn't already exist at that position. This is called when --workers > 1
+// to ensure a sync point even without explicit barrier() calls.
 func (sc *ScenarioConfig) InsertImplicitBarrier() {
 	// Find the index of the first non-warmup stage
 	firstMeasured := -1

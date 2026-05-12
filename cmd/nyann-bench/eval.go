@@ -41,7 +41,7 @@ func evalGSM8KCmd() *cobra.Command {
 		outputDir      string
 		metricsAddr    string
 		workerID       int
-		numWorkers     int
+		workers        int
 		kubeFlags      kube.Flags
 	)
 
@@ -53,7 +53,7 @@ func evalGSM8KCmd() *cobra.Command {
 Sends all GSM8K test problems with few-shot prompting, evaluates
 correctness of model responses, and reports accuracy alongside latency metrics.
 
-For multi-worker scale-out (e.g., Indexed Job), use --num-workers and
+For multi-worker scale-out (e.g., Indexed Job), use --workers and
 --worker-id to partition the dataset across workers. Each worker runs a
 disjoint slice, and --worker-id auto-detects from JOB_COMPLETION_INDEX.
 
@@ -64,15 +64,15 @@ Example:
   # Scale-out: 4 workers, each runs ~330 items
   nyann-bench eval gsm8k --target http://localhost:8000/v1 --model llama-70b \
     --gsm8k-path data/gsm8k_test.jsonl --gsm8k-train-path data/gsm8k_train.jsonl \
-    --num-workers 4`,
+    --workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
 					return err
 				}
-				if numWorkers > 1 {
-					cfg.Workers = numWorkers
+				if workers > 1 {
+					cfg.Workers = workers
 				}
 				containerArgs := kube.CollectArgs(cmd, []string{"eval", "gsm8k"})
 				containerArgs = append(containerArgs, "--metrics", ":9090")
@@ -104,8 +104,8 @@ Example:
 				}
 			}
 
-			if numWorkers > 1 && workerID >= numWorkers {
-				return fmt.Errorf("--worker-id %d must be < --num-workers %d", workerID, numWorkers)
+			if workers > 1 && workerID >= workers {
+				return fmt.Errorf("--worker-id %d must be < --workers %d", workerID, workers)
 			}
 
 			// Build dataset and partition for this worker
@@ -114,8 +114,8 @@ Example:
 				return fmt.Errorf("loading GSM8K dataset: %w", err)
 			}
 			totalItems := gsm8kDS.Len()
-			if numWorkers > 1 {
-				gsm8kDS.Partition(workerID, numWorkers)
+			if workers > 1 {
+				gsm8kDS.Partition(workerID, workers)
 			}
 			partitionItems := gsm8kDS.Len()
 
@@ -123,7 +123,7 @@ Example:
 				"total_items", totalItems,
 				"partition_items", partitionItems,
 				"worker_id", workerID,
-				"num_workers", numWorkers,
+				"workers", workers,
 				"concurrency", concurrency,
 				"timeout", timeout,
 				"num_fewshot", numFewShot)
@@ -144,6 +144,8 @@ Example:
 					Concurrency: concurrency,
 					MaxRequests: partitionItems,
 				}},
+				Workers:  workers,
+				WorkerID: workerID,
 			}
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
@@ -184,7 +186,7 @@ Example:
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
-	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
+	cmd.Flags().IntVar(&workers, "workers", 1, "Total number of workers (partitions dataset and divides concurrency when > 1)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 
@@ -204,7 +206,7 @@ func evalGPQACmd() *cobra.Command {
 		outputDir   string
 		metricsAddr string
 		workerID    int
-		numWorkers  int
+		workers     int
 		maxTokens   int
 		kubeFlags   kube.Flags
 	)
@@ -221,7 +223,7 @@ Supports two data formats:
   - Idavidrein/gpqa: separate choice fields (gated, requires HF auth)
   - fingertap/GPQA-Diamond: choices inline in question (public)
 
-For multi-worker scale-out, use --num-workers and --worker-id.
+For multi-worker scale-out, use --workers and --worker-id.
 
 Example:
   nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
@@ -229,15 +231,15 @@ Example:
 
   # Scale-out: 4 workers
   nyann-bench eval gpqa --target http://localhost:8000/v1 --model llama-70b \
-    --gpqa-path data/gpqa_diamond.jsonl --num-workers 4`,
+    --gpqa-path data/gpqa_diamond.jsonl --workers 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
 					return err
 				}
-				if numWorkers > 1 {
-					cfg.Workers = numWorkers
+				if workers > 1 {
+					cfg.Workers = workers
 				}
 				containerArgs := kube.CollectArgs(cmd, []string{"eval", "gpqa"})
 				containerArgs = append(containerArgs, "--metrics", ":9090")
@@ -265,8 +267,8 @@ Example:
 				}
 			}
 
-			if numWorkers > 1 && workerID >= numWorkers {
-				return fmt.Errorf("--worker-id %d must be < --num-workers %d", workerID, numWorkers)
+			if workers > 1 && workerID >= workers {
+				return fmt.Errorf("--worker-id %d must be < --workers %d", workerID, workers)
 			}
 
 			gpqaDS, err := dataset.NewGPQA(gpqaPath, maxTokens)
@@ -274,8 +276,8 @@ Example:
 				return fmt.Errorf("loading GPQA dataset: %w", err)
 			}
 			totalItems := gpqaDS.Len()
-			if numWorkers > 1 {
-				gpqaDS.Partition(workerID, numWorkers)
+			if workers > 1 {
+				gpqaDS.Partition(workerID, workers)
 			}
 			partitionItems := gpqaDS.Len()
 
@@ -283,7 +285,7 @@ Example:
 				"total_items", totalItems,
 				"partition_items", partitionItems,
 				"worker_id", workerID,
-				"num_workers", numWorkers,
+				"workers", workers,
 				"concurrency", concurrency,
 				"timeout", timeout)
 
@@ -301,6 +303,8 @@ Example:
 					Concurrency: concurrency,
 					MaxRequests: partitionItems,
 				}},
+				Workers:  workers,
+				WorkerID: workerID,
 			}
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
@@ -339,7 +343,7 @@ Example:
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker index for dataset partitioning (auto-detected from JOB_COMPLETION_INDEX)")
-	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers for dataset partitioning")
+	cmd.Flags().IntVar(&workers, "workers", 1, "Total number of workers (partitions dataset and divides concurrency when > 1)")
 	cmd.Flags().IntVar(&maxTokens, "max-tokens", 0, "Max output tokens per request (0 = default 16384, increase for reasoning models)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)

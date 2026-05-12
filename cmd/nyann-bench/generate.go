@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
 	"github.com/neuralmagic/nyann-bench/pkg/barrier"
@@ -24,9 +25,8 @@ func generateCmd() *cobra.Command {
 		cfgInput    string
 		outputDir   string
 		workerID    int
-		numWorkers  int
+		workers     int
 		metricsAddr string
-		syncFlag    string
 		kubeFlags   kube.Flags
 	)
 
@@ -68,13 +68,13 @@ Workload types:
 				if err != nil {
 					return err
 				}
-				if numWorkers > 1 {
-					cfg.Workers = numWorkers
+				if workers > 1 {
+					cfg.Workers = workers
 				}
 				containerArgs := kube.CollectArgs(cmd, []string{"generate"})
 				containerArgs = append(containerArgs, "--metrics", ":9090")
-				if cfg.Workers > 1 {
-					containerArgs = append(containerArgs, "--sync", fmt.Sprintf(`{"workers":%d}`, cfg.Workers))
+				if cfg.Workers > 1 && !cmd.Flags().Changed("workers") {
+					containerArgs = append(containerArgs, "--workers", strconv.Itoa(cfg.Workers))
 				}
 				return kube.Deploy(cfg, "generate", containerArgs)
 			}
@@ -97,30 +97,30 @@ Workload types:
 				return fmt.Errorf("config: %w", err)
 			}
 
-			// Parse --sync flag and configure barrier
-			if syncFlag != "" {
-				syncCfg, err := config.ParseSyncFlag(syncFlag)
-				if err != nil {
-					return err
+			sc.Workers = workers
+			sc.WorkerID = workerID
+
+			// Configure barrier sync for multi-worker runs
+			if workers > 1 {
+				syncCfg := &config.SyncConfig{
+					Workers: workers,
+					Timeout: config.Duration(10 * time.Minute),
+					Port:    8080,
 				}
-				if syncCfg.Addr == "" {
-					if addr, ok := os.LookupEnv("BARRIER_ADDR"); ok {
-						syncCfg.Addr = addr
-					}
-				}
-				if workerID == 0 && syncCfg.Addr == "" {
+				if addr, ok := os.LookupEnv("BARRIER_ADDR"); ok {
+					syncCfg.Addr = addr
+				} else {
 					syncCfg.Addr = "localhost"
 				}
 				sc.Sync = syncCfg
-
 				sc.InsertImplicitBarrier()
 
-				if syncCfg.Workers > 1 && workerID == 0 {
-					srv := barrier.NewServer(syncCfg.Workers, syncCfg.Port)
+				if workerID == 0 {
+					srv := barrier.NewServer(workers, syncCfg.Port)
 					go srv.ListenAndServe(ctx)
 				}
 
-				slog.Info("Sync enabled", "workers", syncCfg.Workers, "addr", syncCfg.Addr, "port", syncCfg.Port)
+				slog.Info("Sync enabled", "workers", workers, "addr", syncCfg.Addr, "port", syncCfg.Port)
 			}
 
 			// CLI flags override config-level target/model
@@ -163,9 +163,8 @@ Workload types:
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file, inline JSON, or .star file)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
-	cmd.Flags().IntVar(&numWorkers, "num-workers", 1, "Total number of workers (sets --sync workers when used with --kube)")
+	cmd.Flags().IntVar(&workers, "workers", 1, "Total number of workers (enables barrier sync and divides load when > 1)")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
-	cmd.Flags().StringVar(&syncFlag, "sync", "", `Barrier sync config JSON (e.g. '{"workers":4,"timeout":"10m"}')`)
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 

@@ -219,9 +219,20 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			effectiveWorkload = ss.Workload
 		}
 
+		effectiveConcurrency := ss.Concurrency
+		if sc.Workers > 1 {
+			effectiveConcurrency = config.DivideConcurrency(ss.Concurrency, sc.Workers, sc.WorkerID)
+			slog.Info("Load division",
+				"stage", ss.Name,
+				"workers", sc.Workers,
+				"worker_id", sc.WorkerID,
+				"total_concurrency", ss.Concurrency,
+				"worker_concurrency", effectiveConcurrency)
+		}
+
 		resolved = append(resolved, resolvedStage{
 			loadgen: loadgen.Stage{
-				Concurrency: ss.Concurrency,
+				Concurrency: effectiveConcurrency,
 				Duration:    ss.Duration,
 				Rampup:      ss.Rampup,
 				MaxRequests: ss.MaxRequests,
@@ -323,6 +334,10 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			genMode = sc.Stages[firstStageIdx].Mode
 			genRate = sc.Stages[firstStageIdx].Rate
 			genMaxInFlight = sc.Stages[firstStageIdx].MaxInFlight
+		}
+		if sc.Workers > 1 {
+			genRate = config.DivideRate(genRate, sc.Workers)
+			genMaxInFlight = config.DivideConcurrency(genMaxInFlight, sc.Workers, sc.WorkerID)
 		}
 
 		gen := &loadgen.Generator{
