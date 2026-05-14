@@ -182,39 +182,42 @@ func TestParseJSONWithWarmup(t *testing.T) {
 	}
 }
 
-func TestParseSyncFlag(t *testing.T) {
-	sc, err := config.ParseSyncFlag(`{"workers": 4, "timeout": "5m"}`)
-	if err != nil {
-		t.Fatal(err)
+func TestDivideConcurrency(t *testing.T) {
+	tests := []struct {
+		total, workers, id, want int
+	}{
+		{10, 3, 0, 4},
+		{10, 3, 1, 3},
+		{10, 3, 2, 3},
+		{10, 1, 0, 10},
+		{1, 3, 0, 1},
+		{1, 3, 1, 0},
+		{1, 3, 2, 0},
+		{9, 3, 0, 3},
+		{9, 3, 1, 3},
+		{9, 3, 2, 3},
+		{64, 4, 0, 16},
+		{64, 4, 3, 16},
 	}
-	if sc.Workers != 4 {
-		t.Errorf("expected 4 workers, got %d", sc.Workers)
-	}
-	if sc.Timeout.Duration() != 5*time.Minute {
-		t.Errorf("expected 5m timeout, got %v", sc.Timeout.Duration())
-	}
-	if sc.Port != 8080 {
-		t.Errorf("expected default port 8080, got %d", sc.Port)
-	}
-}
-
-func TestParseSyncFlagDefaults(t *testing.T) {
-	sc, err := config.ParseSyncFlag(`{"workers": 2}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sc.Timeout.Duration() != 10*time.Minute {
-		t.Errorf("expected default 10m timeout, got %v", sc.Timeout.Duration())
-	}
-	if sc.Port != 8080 {
-		t.Errorf("expected default port 8080, got %d", sc.Port)
+	for _, tt := range tests {
+		got := config.DivideConcurrency(tt.total, tt.workers, tt.id)
+		if got != tt.want {
+			t.Errorf("DivideConcurrency(%d, %d, %d) = %d, want %d",
+				tt.total, tt.workers, tt.id, got, tt.want)
+		}
 	}
 }
 
-func TestParseSyncFlagInvalid(t *testing.T) {
-	_, err := config.ParseSyncFlag(`{"workers": 0}`)
-	if err == nil {
-		t.Fatal("expected error for workers=0")
+func TestDivideRate(t *testing.T) {
+	got := config.DivideRate(100.0, 3)
+	if got < 33.33 || got > 33.34 {
+		t.Errorf("DivideRate(100, 3) = %f, want ~33.33", got)
+	}
+	if config.DivideRate(100.0, 1) != 100.0 {
+		t.Errorf("DivideRate(100, 1) should return 100")
+	}
+	if config.DivideRate(100.0, 4) != 25.0 {
+		t.Errorf("DivideRate(100, 4) should return 25")
 	}
 }
 
@@ -232,14 +235,14 @@ func TestInsertImplicitBarrier(t *testing.T) {
 	if len(sc.Stages) != 4 {
 		t.Fatalf("expected 4 stages after implicit barrier, got %d", len(sc.Stages))
 	}
-	if !sc.Stages[0].Warmup {
-		t.Error("stage 0: expected warmup")
+	if !sc.Stages[0].Barrier {
+		t.Error("stage 0: expected implicit barrier")
 	}
-	if !sc.Stages[1].Barrier {
-		t.Error("stage 1: expected implicit barrier")
+	if sc.Stages[0].BarrierDrain {
+		t.Error("stage 0: implicit barrier should not have drain")
 	}
-	if !sc.Stages[1].BarrierDrain {
-		t.Error("stage 1: implicit barrier should have drain=true")
+	if !sc.Stages[1].Warmup {
+		t.Error("stage 1: expected warmup")
 	}
 	if sc.Stages[2].Concurrency != 64 {
 		t.Errorf("stage 2: expected concurrency 64, got %d", sc.Stages[2].Concurrency)
@@ -249,8 +252,8 @@ func TestInsertImplicitBarrier(t *testing.T) {
 func TestInsertImplicitBarrierSkipsIfPresent(t *testing.T) {
 	sc := &config.ScenarioConfig{
 		Stages: []config.ScenarioStage{
-			{Warmup: true, Duration: 2 * time.Minute},
 			{Barrier: true},
+			{Warmup: true, Duration: 2 * time.Minute},
 			{Duration: 5 * time.Minute, Concurrency: 64},
 		},
 	}
