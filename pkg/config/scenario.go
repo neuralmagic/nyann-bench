@@ -105,28 +105,19 @@ func DivideRate(total float64, nWorkers int) float64 {
 	return total / float64(nWorkers)
 }
 
-// InsertImplicitBarrier adds a barrier before the first non-warmup stage
-// if one doesn't already exist at that position. This is called when --workers > 1
-// to ensure a sync point even without explicit barrier() calls.
+// InsertImplicitBarrier adds a barrier before all stages so workers sync
+// before warmup begins. This is called when --workers > 1 to ensure a sync
+// point even without explicit barrier() calls.
 func (sc *ScenarioConfig) InsertImplicitBarrier() {
-	// Find the index of the first non-warmup stage
-	firstMeasured := -1
-	for i, s := range sc.Stages {
-		if !s.Warmup && !s.Barrier {
-			firstMeasured = i
-			break
-		}
-	}
-	if firstMeasured < 0 {
-		return // no measured stages
+	if len(sc.Stages) == 0 {
+		return
 	}
 
-	// Check if there's already a barrier right before it
-	if firstMeasured > 0 && sc.Stages[firstMeasured-1].Barrier {
-		return // explicit barrier already present
+	// Check if there's already a barrier at position 0
+	if sc.Stages[0].Barrier {
+		return
 	}
 
-	// Insert implicit barrier with drain=true (clean break after warmup)
-	barrier := ScenarioStage{Barrier: true, BarrierDrain: true}
-	sc.Stages = append(sc.Stages[:firstMeasured], append([]ScenarioStage{barrier}, sc.Stages[firstMeasured:]...)...)
+	barrier := ScenarioStage{Barrier: true}
+	sc.Stages = append([]ScenarioStage{barrier}, sc.Stages...)
 }

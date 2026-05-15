@@ -235,14 +235,14 @@ func TestInsertImplicitBarrier(t *testing.T) {
 	if len(sc.Stages) != 4 {
 		t.Fatalf("expected 4 stages after implicit barrier, got %d", len(sc.Stages))
 	}
-	if !sc.Stages[0].Warmup {
-		t.Error("stage 0: expected warmup")
+	if !sc.Stages[0].Barrier {
+		t.Error("stage 0: expected implicit barrier")
 	}
-	if !sc.Stages[1].Barrier {
-		t.Error("stage 1: expected implicit barrier")
+	if sc.Stages[0].BarrierDrain {
+		t.Error("stage 0: implicit barrier should not have drain")
 	}
-	if !sc.Stages[1].BarrierDrain {
-		t.Error("stage 1: implicit barrier should have drain=true")
+	if !sc.Stages[1].Warmup {
+		t.Error("stage 1: expected warmup")
 	}
 	if sc.Stages[2].Concurrency != 64 {
 		t.Errorf("stage 2: expected concurrency 64, got %d", sc.Stages[2].Concurrency)
@@ -252,8 +252,8 @@ func TestInsertImplicitBarrier(t *testing.T) {
 func TestInsertImplicitBarrierSkipsIfPresent(t *testing.T) {
 	sc := &config.ScenarioConfig{
 		Stages: []config.ScenarioStage{
-			{Warmup: true, Duration: 2 * time.Minute},
 			{Barrier: true},
+			{Warmup: true, Duration: 2 * time.Minute},
 			{Duration: 5 * time.Minute, Concurrency: 64},
 		},
 	}
