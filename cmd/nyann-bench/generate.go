@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -27,6 +28,7 @@ func generateCmd() *cobra.Command {
 		workerID    int
 		workersFlag string
 		metricsAddr string
+		jsonOnly    bool
 		kubeFlags   kube.Flags
 	)
 
@@ -63,6 +65,10 @@ Workload types:
   corpus      Sliding window over real text files
   gsm8k       GSM8K math problems with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOnly {
+				slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			}
+
 			// Parse config early — needed to resolve --workers auto
 			sc, err := config.Parse(cfgInput)
 			if err != nil {
@@ -152,8 +158,10 @@ Workload types:
 			}
 
 			if summary.TotalRequests > 0 {
-				fmt.Fprint(os.Stderr, "\n")
-				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
+				if !jsonOnly {
+					fmt.Fprint(os.Stderr, "\n")
+					fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
+				}
 
 				jsonOut, err := json.MarshalIndent(summary, "", "  ")
 				if err != nil {
@@ -173,6 +181,7 @@ Workload types:
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().BoolVar(&jsonOnly, "json", false, "Output only the JSON summary (suppress logs and human-readable output)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 
