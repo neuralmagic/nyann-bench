@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -103,6 +105,37 @@ func DivideRate(total float64, nWorkers int) float64 {
 		return total
 	}
 	return total / float64(nWorkers)
+}
+
+// MaxConcurrency returns the highest concurrency value across all stages.
+func (sc *ScenarioConfig) MaxConcurrency() int {
+	max := 0
+	for _, s := range sc.Stages {
+		if s.Concurrency > max {
+			max = s.Concurrency
+		}
+	}
+	return max
+}
+
+// ResolveWorkers converts a --workers flag value to an integer.
+// "auto" computes ceil(maxConcurrency / 1024) so each worker handles at most
+// 1024 concurrent streams.
+func ResolveWorkers(flag string, maxConcurrency int) (int, error) {
+	if flag == "auto" {
+		if maxConcurrency <= 0 {
+			return 1, nil
+		}
+		return (maxConcurrency + 1023) / 1024, nil
+	}
+	n, err := strconv.Atoi(flag)
+	if err != nil {
+		return 0, fmt.Errorf("--workers must be a positive integer or \"auto\", got %q", flag)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("--workers must be >= 1, got %d", n)
+	}
+	return n, nil
 }
 
 // InsertImplicitBarrier adds a barrier before all stages so workers sync

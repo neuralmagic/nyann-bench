@@ -221,6 +221,58 @@ func TestDivideRate(t *testing.T) {
 	}
 }
 
+func TestMaxConcurrency(t *testing.T) {
+	sc := &config.ScenarioConfig{
+		Stages: []config.ScenarioStage{
+			{Concurrency: 16, Warmup: true},
+			{Concurrency: 64},
+			{Concurrency: 128},
+			{Concurrency: 32},
+		},
+	}
+	if got := sc.MaxConcurrency(); got != 128 {
+		t.Errorf("MaxConcurrency() = %d, want 128", got)
+	}
+
+	empty := &config.ScenarioConfig{}
+	if got := empty.MaxConcurrency(); got != 0 {
+		t.Errorf("MaxConcurrency() on empty = %d, want 0", got)
+	}
+}
+
+func TestResolveWorkers(t *testing.T) {
+	tests := []struct {
+		flag           string
+		maxConcurrency int
+		want           int
+		wantErr        bool
+	}{
+		{"1", 0, 1, false},
+		{"4", 0, 4, false},
+		{"auto", 0, 1, false},
+		{"auto", 1, 1, false},
+		{"auto", 1024, 1, false},
+		{"auto", 1025, 2, false},
+		{"auto", 2048, 2, false},
+		{"auto", 2049, 3, false},
+		{"auto", 4096, 4, false},
+		{"auto", 10000, 10, false},
+		{"0", 0, 0, true},
+		{"-1", 0, 0, true},
+		{"abc", 0, 0, true},
+	}
+	for _, tt := range tests {
+		got, err := config.ResolveWorkers(tt.flag, tt.maxConcurrency)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ResolveWorkers(%q, %d) error = %v, wantErr %v", tt.flag, tt.maxConcurrency, err, tt.wantErr)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ResolveWorkers(%q, %d) = %d, want %d", tt.flag, tt.maxConcurrency, got, tt.want)
+		}
+	}
+}
+
 func TestInsertImplicitBarrier(t *testing.T) {
 	sc := &config.ScenarioConfig{
 		Stages: []config.ScenarioStage{
