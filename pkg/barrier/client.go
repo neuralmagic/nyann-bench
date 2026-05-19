@@ -56,20 +56,17 @@ func WaitForStart(ctx context.Context, addr string, workerID, barrierID, nWorker
 				return time.Time{}, fmt.Errorf("barrier: timed out waiting for barrier server at %s after %d attempts: %w", addr, attempt, ctx.Err())
 			}
 
-			// DNS NXDOMAIN — hostname doesn't exist, retrying won't help
+			// DNS NXDOMAIN — in Kubernetes, headless service DNS records
+			// take a few seconds to propagate after pod creation, so
+			// NXDOMAIN is expected early on. Keep retrying.
 			var dnsErr *net.DNSError
 			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
 				dnsFailures++
-				if dnsFailures >= 3 {
-					host := addr
-					if h, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-						host = h
-					}
-					return time.Time{}, fmt.Errorf("barrier: DNS lookup failed for %q — "+
-						"the hostname does not resolve. For Kubernetes Indexed Jobs, BARRIER_ADDR must "+
-						"include the headless service name (e.g. <job>-0.<service>): %w", host, err)
+				if dnsFailures <= 3 {
+					slog.Warn("Barrier DNS lookup failed, retrying", "addr", addr, "attempt", dnsFailures, "error", err)
+				} else {
+					slog.Debug("Barrier DNS still not resolved", "addr", addr, "attempt", dnsFailures)
 				}
-				slog.Warn("Barrier DNS lookup failed, retrying", "addr", addr, "attempt", dnsFailures, "max_attempts", 3, "error", err)
 			} else if attempt <= 3 {
 				slog.Debug("Barrier server not ready, retrying", "error", err, "backoff", backoff)
 			} else {

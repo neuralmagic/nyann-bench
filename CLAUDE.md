@@ -36,7 +36,7 @@ go test ./... -v
 - **Client-side recording** — JSONL per worker. One line per completed request with timestamps, TTFT, per-token ITL array, token counts, status. Merging across workers = cat + sort.
 - **Timestamps** — JSON file per worker with start_time, rampup_end_time, end_time. Used to query Prometheus for server-side metrics.
 - **Mock server** — configurable TTFT, ITL, and output token count. Serves streaming SSE responses on `/v1/chat/completions`.
-- **Barrier sync** — multi-pod synchronization via HTTP barrier. Pod-0 (leader) runs a barrier server; all pods negotiate a common start time before measured stages. Configured via `--sync '{"workers":N}'` CLI flag and `barrier()` in Starlark DSL.
+- **Barrier sync** — multi-pod synchronization via HTTP barrier. Pod-0 (leader) runs a barrier server; all pods negotiate a common start time before measured stages. Enabled automatically when `--workers N` (N > 1); concurrency/rate are divided across workers so configs express total load. Use `barrier()` in Starlark DSL for explicit sync points.
 
 ## Deployment
 
@@ -48,13 +48,13 @@ just deploy my-bench http://vllm:8000/v1 config.json N_WORKERS=4
 
 ### Multi-pod synchronization
 
-Use `--sync` to synchronize benchmark start across pods:
+Use `--workers N` to enable barrier sync and automatic load division across pods:
 
 ```bash
-nyann-bench generate --config scenario.star --sync '{"workers":4,"timeout":"10m"}'
+nyann-bench generate --config scenario.star --workers 4 --worker-id 0
 ```
 
-An implicit `barrier()` is inserted before the first measured stage. In Starlark, use explicit `barrier()` for additional sync points:
+Concurrency and rate values in configs express **total** desired load — each worker gets its share automatically. An implicit `barrier()` is inserted before the first measured stage. In Starlark, use explicit `barrier()` for additional sync points:
 
 ```python
 scenario(

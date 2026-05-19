@@ -25,7 +25,7 @@ func generateCmd() *cobra.Command {
 		cfgInput    string
 		outputDir   string
 		workerID    int
-		workers     int
+		workersFlag string
 		metricsAddr string
 		kubeFlags   kube.Flags
 	)
@@ -63,6 +63,20 @@ Workload types:
   corpus      Sliding window over real text files
   gsm8k       GSM8K math problems with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Parse config early — needed to resolve --workers auto
+			sc, err := config.Parse(cfgInput)
+			if err != nil {
+				return fmt.Errorf("config: %w", err)
+			}
+
+			workers, err := config.ResolveWorkers(workersFlag, sc.MaxConcurrency())
+			if err != nil {
+				return err
+			}
+			if workersFlag == "auto" {
+				slog.Info("Auto-resolved workers", "workers", workers, "max_concurrency", sc.MaxConcurrency())
+			}
+
 			if kubeFlags.IsEnabled(cmd) {
 				cfg, err := kubeFlags.ToConfig()
 				if err != nil {
@@ -89,12 +103,6 @@ Workload types:
 						workerID = v
 					}
 				}
-			}
-
-			// Parse config
-			sc, err := config.Parse(cfgInput)
-			if err != nil {
-				return fmt.Errorf("config: %w", err)
 			}
 
 			sc.Workers = workers
@@ -163,7 +171,7 @@ Workload types:
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file, inline JSON, or .star file)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
-	cmd.Flags().IntVar(&workers, "workers", 1, "Total number of workers (enables barrier sync and divides load when > 1)")
+	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)

@@ -72,21 +72,32 @@ scenario(
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.
 
-### Synchronized multi-pod start
+### Synchronized multi-pod start with automatic load division
 
-When running across multiple pods, `--sync '{"workers":N}'` enables barrier synchronization. All pods negotiate a common start time via an HTTP barrier protocol — pod-0 (leader) runs the barrier server, workers discover it via `BARRIER_ADDR` (set automatically in the Job manifest to the leader pod's DNS name). Barriers are first-class in the Starlark DSL:
+When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
+
+```bash
+# Run with 4 workers — each gets 1/4 of the configured concurrency and rate
+nyann-bench generate --target http://vllm:8000/v1 --config scenario.star --workers 4 --worker-id 0
+```
+
+All pods negotiate a common start time via an HTTP barrier protocol — pod-0 (leader) runs the barrier server, workers discover it via `BARRIER_ADDR` (set automatically in the Job manifest to the leader pod's DNS name). An implicit barrier is inserted before the first measured stage. Barriers are first-class in the Starlark DSL:
 
 ```python
 scenario(
     stages=[
         stage("2m", concurrency=16, warmup=True),
-        barrier(),                                  # implicit one added automatically
+        # implicit barrier fires here — all workers sync before measured stages
         stage("5m", concurrency=64),
-        barrier(drain=True),                        # drain pool before workload switch
+        barrier(drain=True),  # explicit: drain pool before workload switch
         stage("5m", concurrency=64, workload=other),
     ],
 )
 ```
+
+With `--workers auto`, the worker count is `ceil(max_concurrency / 1024)`, sized for the **peak** stage. In staircase configs where concurrency ramps up across stages (e.g. `[4, 64, 512, 2048]`), early low-concurrency stages will have some workers with very few or zero streams. Use an explicit `--workers N` if you need tighter control.
+
+With `--workers 1` (the default), no barrier sync or load division occurs.
 
 ### Ramp-up and warmup
 
@@ -154,7 +165,7 @@ Merging across workers: `cat requests_*.jsonl`.
 just deploy my-benchmark http://vllm-server:8000/v1 config.star 8
 ```
 
-This creates a ConfigMap with your config and launches an Indexed Job with 8 pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX` and the barrier server address from `BARRIER_ADDR`. Sync is enabled automatically via `--sync '{"workers":N}'` in the manifest.
+This creates a ConfigMap with your config and launches an Indexed Job with 8 pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX` and the barrier server address from `BARRIER_ADDR`. The manifest passes `--workers N` so barrier sync and load division are enabled automatically.
 
 ## Installation
 
@@ -166,6 +177,21 @@ Or pull the container:
 
 ```bash
 docker pull ghcr.io/neuralmagic/nyann-bench:latest
+```
+
+## Container images
+
+CI pushes multi-platform (`linux/amd64`, `linux/arm64`) images to GitHub Container Registry on every push to `main` and every pull request:
+
+| Event | Tag | Example |
+|-------|-----|---------|
+| Push to `main` | `latest`, `sha-<commit>` | `ghcr.io/neuralmagic/nyann-bench:latest` |
+| Pull request | `pr-<number>` | `ghcr.io/neuralmagic/nyann-bench:pr-47` |
+
+To use a PR image for testing:
+
+```bash
+docker pull ghcr.io/neuralmagic/nyann-bench:pr-47
 ```
 
 ## Development

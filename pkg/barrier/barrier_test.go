@@ -204,26 +204,21 @@ func TestContextCancel(t *testing.T) {
 	}
 }
 
-func TestDNSFailureFails(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func TestDNSFailureRetriesUntilTimeout(t *testing.T) {
+	// DNS NXDOMAIN should be retried (Kubernetes headless service DNS
+	// takes time to propagate), not treated as a permanent failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Use a hostname that definitely won't resolve
 	addr := "this-host-does-not-exist-barrier-test.invalid:8080"
 
-	start := time.Now()
-	_, err := WaitForStart(ctx, addr, 0, 0, 2, 30*time.Second)
-	elapsed := time.Since(start)
+	_, err := WaitForStart(ctx, addr, 0, 0, 2, 3*time.Second)
 
 	if err == nil {
-		t.Fatal("expected error for unresolvable hostname, got nil")
+		t.Fatal("expected timeout error for unresolvable hostname, got nil")
 	}
-	if !strings.Contains(err.Error(), "DNS lookup failed") {
-		t.Errorf("expected DNS failure message, got: %v", err)
-	}
-	// Should fail within a few seconds, not wait for the full 30s timeout
-	if elapsed > 15*time.Second {
-		t.Errorf("DNS failure took %v — should fail fast, not wait for full timeout", elapsed)
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout error, got: %v", err)
 	}
 }
 
