@@ -109,18 +109,19 @@ func DivideRate(total float64, nWorkers int) float64 {
 
 // MaxConcurrency returns the highest concurrency value across all stages.
 func (sc *ScenarioConfig) MaxConcurrency() int {
-	max := 0
+	highest := 0
 	for _, s := range sc.Stages {
-		if s.Concurrency > max {
-			max = s.Concurrency
+		if s.Concurrency > highest {
+			highest = s.Concurrency
 		}
 	}
-	return max
+	return highest
 }
 
 // ResolveWorkers converts a --workers flag value to an integer.
 // "auto" computes ceil(maxConcurrency / 1024) so each worker handles at most
-// 1024 concurrent streams.
+// 1024 concurrent streams — beyond that, goroutine scheduling overhead and
+// per-connection memory become significant on a single pod.
 func ResolveWorkers(flag string, maxConcurrency int) (int, error) {
 	if flag == "auto" {
 		if maxConcurrency <= 0 {

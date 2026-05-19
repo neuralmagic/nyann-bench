@@ -95,6 +95,8 @@ scenario(
 )
 ```
 
+With `--workers auto`, the worker count is `ceil(max_concurrency / 1024)`, sized for the **peak** stage. In staircase configs where concurrency ramps up across stages (e.g. `[4, 64, 512, 2048]`), early low-concurrency stages will have some workers with very few or zero streams. Use an explicit `--workers N` if you need tighter control.
+
 With `--workers 1` (the default), no barrier sync or load division occurs.
 
 ### Ramp-up and warmup
