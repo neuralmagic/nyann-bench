@@ -1029,6 +1029,135 @@ func (d *mcEvalDataset) NextConversation() dataset.Conversation {
 	}
 }
 
+func startErrorServer(t *testing.T) string {
+	t.Helper()
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	return ln.Addr().String()
+}
+
+func TestGeneratorStopsOnConsecutiveErrors(t *testing.T) {
+	addr := startErrorServer(t)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:      "http://" + addr + "/v1",
+		Model:       "test-model",
+		Concurrency: 2,
+		Duration:    30 * time.Second,
+		Dataset:     dataset.NewSynthetic(16, 5, 1, 4.0),
+		Recorder:    rec,
+	}
+
+	start := time.Now()
+	gen.Run(context.Background())
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Errorf("expected fast abort on errors, took %v", elapsed)
+	}
+
+	rec.Close()
+	records := rec.Records()
+	for _, r := range records {
+		if r.Status != "error" {
+			t.Errorf("expected all records to be errors, got %q", r.Status)
+		}
+	}
+}
+
+func TestGeneratorStopsOnConsecutiveErrorsStages(t *testing.T) {
+	addr := startErrorServer(t)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Dataset:  dataset.NewSynthetic(16, 5, 1, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 2, Duration: 30 * time.Second},
+	}
+
+	start := time.Now()
+	gen.RunStages(context.Background(), stages, nil, nil)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Errorf("expected fast abort on errors, took %v", elapsed)
+	}
+}
+
+func TestGeneratorContinuesOnTransientErrors(t *testing.T) {
+	var reqCount atomic.Int64
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := reqCount.Add(1)
+		// Fail every 3rd request — never enough consecutive errors to trigger abort
+		if n%3 == 0 {
+			http.Error(w, "transient error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		Concurrency: 1,
+		Duration:    1 * time.Second,
+		Dataset:     dataset.NewSynthetic(16, 5, 1, 4.0),
+		Recorder:    rec,
+	}
+
+	gen.Run(context.Background())
+
+	rec.Close()
+	records := rec.Records()
+
+	okCount := 0
+	errCount := 0
+	for _, r := range records {
+		if r.Status == "ok" {
+			okCount++
+		} else {
+			errCount++
+		}
+	}
+	if okCount == 0 {
+		t.Fatal("expected some successful requests (transient errors should not abort)")
+	}
+	if errCount == 0 {
+		t.Fatal("expected some error records")
+	}
+}
+
 func readRecords(t *testing.T, path string) []recorder.Record {
 	t.Helper()
 	data, err := os.ReadFile(path)
