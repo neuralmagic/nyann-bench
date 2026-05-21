@@ -47,6 +47,8 @@ type maxRequestsState struct {
 	once  sync.Once
 }
 
+const defaultMaxConsecutiveErrors = 5
+
 type Generator struct {
 	Target      string
 	Model       string
@@ -67,7 +69,10 @@ type Generator struct {
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
 
-	maxReqState atomic.Pointer[maxRequestsState]
+	maxReqState       atomic.Pointer[maxRequestsState]
+	consecutiveErrors atomic.Int64
+	stopFunc          context.CancelFunc
+	stopOnce          sync.Once
 }
 
 // streamPool manages a resizable pool of concurrent streams.
@@ -169,6 +174,10 @@ type Stage struct {
 // The onBarrier callback is called at barrier sync points and should block until
 // the barrier releases. The pool stays alive through non-drain barriers.
 func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	g.stopFunc = cancel
+
 	c := client.New(g.Target)
 	pool := newStreamPool(g, c)
 
@@ -238,6 +247,7 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, g.Duration)
 	defer cancel()
+	g.stopFunc = cancel
 
 	startTime := time.Now()
 	rampupEnd := startTime.Add(g.Rampup)
@@ -472,6 +482,25 @@ func (g *Generator) getRecorder() *recorder.Recorder {
 	return g.Recorder
 }
 
+func (g *Generator) trackRequestStatus(err error) {
+	if err != nil {
+		n := g.consecutiveErrors.Add(1)
+		if int(n) >= defaultMaxConsecutiveErrors {
+			g.stopOnce.Do(func() {
+				slog.Error("Aborting: too many consecutive request errors",
+					"count", n,
+					"threshold", defaultMaxConsecutiveErrors,
+					"last_error", err)
+				if g.stopFunc != nil {
+					g.stopFunc()
+				}
+			})
+		}
+	} else {
+		g.consecutiveErrors.Store(0)
+	}
+}
+
 func (g *Generator) trackInFlight(delta int64) {
 	n := g.inFlight.Add(delta)
 	if g.Metrics != nil {
@@ -493,6 +522,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 	g.trackInFlight(1)
 	result := c.CompletionStream(ctx, req)
 	g.trackInFlight(-1)
+	g.trackRequestStatus(result.Err)
 
 	// Don't record requests cancelled by shutdown
 	if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
@@ -649,6 +679,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		g.trackInFlight(1)
 		result := c.ChatStream(ctx, req)
 		g.trackInFlight(-1)
+		g.trackRequestStatus(result.Err)
 
 		// Don't record requests cancelled by shutdown
 		if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
