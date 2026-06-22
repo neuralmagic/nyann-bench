@@ -69,7 +69,7 @@ func TestCorpusFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(path, 32, 16, 1, 4.0)
+	ds, err := dataset.NewCorpus(path, 32, 16, 1, 4.0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestCorpusFromDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(dir, 32, 16, 1, 4.0)
+	ds, err := dataset.NewCorpus(dir, 32, 16, 1, 4.0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestCorpusSlidingWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ds, err := dataset.NewCorpus(path, 16, 8, 1, 4.0) // 16 tokens * 4 chars = 64 chars per chunk
+	ds, err := dataset.NewCorpus(path, 16, 8, 1, 4.0, nil) // 16 tokens * 4 chars = 64 chars per chunk
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,8 +210,69 @@ func TestCorpusEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := dataset.NewCorpus(path, 32, 16, 1, 4.0)
+	_, err := dataset.NewCorpus(path, 32, 16, 1, 4.0, nil)
 	if err == nil {
 		t.Error("expected error for empty corpus")
 	}
+}
+
+func TestCorpusPreTokenize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+
+	// Create corpus with mixed token density:
+	// - dense region (short words ≈ 2 chars/token)
+	// - sparse region (long words ≈ 6 chars/token)
+	dense := strings.Repeat("a b c d e f g h ", 500)  // ~4000 chars, ~2 chars/tok
+	sparse := strings.Repeat("elephant butterfly caterpillar ", 200) // ~6000 chars, ~6 chars/tok
+	text := dense + sparse
+	if err := os.WriteFile(path, []byte(text), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock token counter: 1 token per whitespace-delimited word
+	wordCounter := func(s string) (int, error) {
+		return len(strings.Fields(s)), nil
+	}
+
+	ds, err := dataset.NewCorpus(path, 100, 50, 1, 4.0, wordCounter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate several conversations and verify token counts are close to 100
+	for i := 0; i < 10; i++ {
+		conv := ds.NextConversation()
+		content := conv.Turns[0][0].Content
+		tokens := len(strings.Fields(content))
+		// With pre-tokenization, should be within ~10% of target
+		if tokens < 80 || tokens > 120 {
+			t.Errorf("iteration %d: expected ~100 tokens, got %d (len=%d chars)", i, tokens, len(content))
+		}
+	}
+
+	// Compare with char-based corpus (no token counter) — should show more variance
+	dsCharBased, err := dataset.NewCorpus(path, 100, 50, 1, 4.0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var charBasedTokens []int
+	for i := 0; i < 10; i++ {
+		conv := dsCharBased.NextConversation()
+		content := conv.Turns[0][0].Content
+		charBasedTokens = append(charBasedTokens, len(strings.Fields(content)))
+	}
+
+	// Char-based should produce the same character count but wildly varying token counts
+	minT, maxT := charBasedTokens[0], charBasedTokens[0]
+	for _, tok := range charBasedTokens {
+		if tok < minT {
+			minT = tok
+		}
+		if tok > maxT {
+			maxT = tok
+		}
+	}
+	t.Logf("Char-based token range: %d-%d (spread=%d)", minT, maxT, maxT-minT)
 }
