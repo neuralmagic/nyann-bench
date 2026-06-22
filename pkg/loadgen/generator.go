@@ -574,6 +574,11 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 	if result.Usage != nil {
 		rec.PromptTokens = result.Usage.PromptTokens
 		rec.OutputTokens = result.Usage.CompletionTokens
+		slog.Debug("Request token usage",
+			"conv", convID,
+			"turn", turn,
+			"prompt_tokens", result.Usage.PromptTokens,
+			"output_tokens", result.Usage.CompletionTokens)
 	}
 
 	// Evaluate response if expected answer is set

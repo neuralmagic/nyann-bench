@@ -79,6 +79,7 @@ func (c *Corpus) preTokenize(counter func(string) (int, error)) error {
 	offsets = append(offsets, tokenOffset{Byte: 0, Tokens: 0})
 
 	cumTokens := 0
+	nChunks := (n + tokenChunkSize - 1) / tokenChunkSize
 	for start := 0; start < n; start += tokenChunkSize {
 		end := start + tokenChunkSize
 		if end > n {
@@ -90,6 +91,15 @@ func (c *Corpus) preTokenize(counter func(string) (int, error)) error {
 		}
 		cumTokens += count
 		offsets = append(offsets, tokenOffset{Byte: end, Tokens: cumTokens})
+
+		chunkIdx := start/tokenChunkSize + 1
+		if chunkIdx%50 == 0 || chunkIdx == nChunks {
+			slog.Debug("Pre-tokenize progress",
+				"chunk", fmt.Sprintf("%d/%d", chunkIdx, nChunks),
+				"bytes", end,
+				"cumulative_tokens", cumTokens,
+				"chunk_chars_per_token", fmt.Sprintf("%.2f", float64(end-start)/float64(count)))
+		}
 	}
 
 	c.tokenOffsets = offsets
@@ -210,6 +220,10 @@ func (c *Corpus) NextConversation() Conversation {
 func (c *Corpus) nextChunk(targetTokens int) string {
 	if c.tokenOffsets == nil {
 		nBytes := int(float64(targetTokens) * c.CharsPerToken)
+		slog.Debug("Corpus chunk (char-based)",
+			"target_tokens", targetTokens,
+			"chars", nBytes,
+			"chars_per_token", c.CharsPerToken)
 		return c.fetchText(nBytes)
 	}
 
@@ -223,6 +237,12 @@ func (c *Corpus) nextChunk(targetTokens int) string {
 	start = start % textLen
 
 	nBytes := c.bytesForTokens(int(start), targetTokens)
+	slog.Debug("Corpus chunk (token-indexed)",
+		"target_tokens", targetTokens,
+		"start_byte", start,
+		"estimated_bytes", estimatedBytes,
+		"actual_bytes", nBytes,
+		"ratio", fmt.Sprintf("%.2f", float64(nBytes)/float64(estimatedBytes)))
 	end := start + uint64(nBytes)
 	if end <= textLen {
 		return c.text[start:end]
