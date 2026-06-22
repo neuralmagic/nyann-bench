@@ -6,22 +6,15 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync/atomic"
 
 	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
 
-// tokenChunkSize is the byte size of each chunk sent to /tokenize during
-// corpus pre-tokenization. Kept small enough that any server handles it
-// quickly, large enough to amortize HTTP overhead.
-const tokenChunkSize = 8192
-
 // Corpus generates conversations by sliding a window over real text files.
-// When a TokenCounter is provided at construction, the corpus is
-// pre-tokenized so that nextChunk slices by exact token boundaries instead
-// of character estimates.
+// When a TokenCounter is set, each chunk is tokenized and trimmed to the
+// exact target token count before being returned.
 type Corpus struct {
 	ISL           int
 	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
@@ -29,18 +22,13 @@ type Corpus struct {
 	Turns         int
 	CharsPerToken float64
 
+	// TokenCounter counts tokens in a string via the server's /tokenize
+	// endpoint. When non-nil, nextChunk overfetches text and trims to the
+	// exact target token count. When nil, falls back to char-based estimate.
+	TokenCounter func(string) (int, error)
+
 	text   string // concatenated corpus text
 	offset atomic.Uint64
-
-	// tokenOffsets maps byte offsets to cumulative token counts.
-	// tokenOffsets[i] = {ByteOffset, CumulativeTokens} for the i-th chunk boundary.
-	// Populated by preTokenize; nil when no TokenCounter was provided.
-	tokenOffsets []tokenOffset
-}
-
-type tokenOffset struct {
-	Byte   int // byte position in corpus text
-	Tokens int // cumulative token count up to this byte position
 }
 
 func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64, tokenCounter func(string) (int, error)) (*Corpus, error) {
@@ -57,127 +45,17 @@ func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64, to
 		return nil, fmt.Errorf("corpus at %s is empty", corpusPath)
 	}
 
-	c := &Corpus{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken, text: text}
+	c := &Corpus{
+		ISL:           isl,
+		OSL:           osl,
+		Turns:         turns,
+		CharsPerToken: charsPerToken,
+		TokenCounter:  tokenCounter,
+		text:          text,
+	}
 	// Start at a random offset so multiple workers don't read the same text
 	c.offset.Store(uint64(rand.Intn(len(text))))
-
-	if tokenCounter != nil {
-		if err := c.preTokenize(tokenCounter); err != nil {
-			slog.Warn("Corpus pre-tokenization failed, falling back to char estimate", "error", err)
-		}
-	}
-
 	return c, nil
-}
-
-// preTokenize splits the corpus into fixed-size chunks, tokenizes each via
-// the provided counter, and builds a cumulative token-offset index.
-func (c *Corpus) preTokenize(counter func(string) (int, error)) error {
-	n := len(c.text)
-	// +1 for the final entry at len(text)
-	offsets := make([]tokenOffset, 0, n/tokenChunkSize+2)
-	offsets = append(offsets, tokenOffset{Byte: 0, Tokens: 0})
-
-	cumTokens := 0
-	nChunks := (n + tokenChunkSize - 1) / tokenChunkSize
-	for start := 0; start < n; start += tokenChunkSize {
-		end := start + tokenChunkSize
-		if end > n {
-			end = n
-		}
-		count, err := counter(c.text[start:end])
-		if err != nil {
-			return fmt.Errorf("tokenizing chunk at offset %d: %w", start, err)
-		}
-		cumTokens += count
-		offsets = append(offsets, tokenOffset{Byte: end, Tokens: cumTokens})
-
-		chunkIdx := start/tokenChunkSize + 1
-		if chunkIdx%50 == 0 || chunkIdx == nChunks {
-			slog.Debug("Pre-tokenize progress",
-				"chunk", fmt.Sprintf("%d/%d", chunkIdx, nChunks),
-				"bytes", end,
-				"cumulative_tokens", cumTokens,
-				"chunk_chars_per_token", fmt.Sprintf("%.2f", float64(end-start)/float64(count)))
-		}
-	}
-
-	c.tokenOffsets = offsets
-	slog.Info("Corpus pre-tokenized",
-		"bytes", n,
-		"tokens", cumTokens,
-		"effective_chars_per_token", fmt.Sprintf("%.2f", float64(n)/float64(cumTokens)))
-	return nil
-}
-
-// bytesForTokens returns how many bytes from position startByte correspond to
-// targetTokens tokens, using the pre-built token offset index.
-func (c *Corpus) bytesForTokens(startByte, targetTokens int) int {
-	n := len(c.text)
-	startByte = startByte % n
-
-	// Find cumulative token count at startByte by interpolating between
-	// the two surrounding index entries.
-	startTokens := c.tokensAtByte(startByte)
-	goalTokens := startTokens + targetTokens
-
-	// Binary search for the byte offset where cumulative tokens reaches goalTokens.
-	// Search within the offset table first.
-	idx := sort.Search(len(c.tokenOffsets), func(i int) bool {
-		return c.tokenOffsets[i].Tokens >= goalTokens
-	})
-
-	if idx >= len(c.tokenOffsets) {
-		// Target exceeds corpus length — return remaining bytes to end.
-		return n - startByte
-	}
-
-	// Interpolate within the chunk to get a tighter estimate.
-	var endByte int
-	if idx == 0 {
-		endByte = 0
-	} else {
-		prev := c.tokenOffsets[idx-1]
-		cur := c.tokenOffsets[idx]
-		chunkTokens := cur.Tokens - prev.Tokens
-		if chunkTokens == 0 {
-			endByte = cur.Byte
-		} else {
-			overshoot := goalTokens - prev.Tokens
-			chunkBytes := cur.Byte - prev.Byte
-			endByte = prev.Byte + chunkBytes*overshoot/chunkTokens
-		}
-	}
-
-	byteLen := endByte - startByte
-	if byteLen < 0 {
-		byteLen = 0
-	}
-	return byteLen
-}
-
-// tokensAtByte returns the interpolated cumulative token count at a byte position.
-func (c *Corpus) tokensAtByte(pos int) int {
-	idx := sort.Search(len(c.tokenOffsets), func(i int) bool {
-		return c.tokenOffsets[i].Byte >= pos
-	})
-	if idx >= len(c.tokenOffsets) {
-		return c.tokenOffsets[len(c.tokenOffsets)-1].Tokens
-	}
-	if c.tokenOffsets[idx].Byte == pos {
-		return c.tokenOffsets[idx].Tokens
-	}
-	if idx == 0 {
-		return 0
-	}
-	prev := c.tokenOffsets[idx-1]
-	cur := c.tokenOffsets[idx]
-	chunkBytes := cur.Byte - prev.Byte
-	if chunkBytes == 0 {
-		return prev.Tokens
-	}
-	frac := float64(pos-prev.Byte) / float64(chunkBytes)
-	return prev.Tokens + int(frac*float64(cur.Tokens-prev.Tokens))
 }
 
 func (c *Corpus) turnISL(t int) int {
@@ -215,45 +93,62 @@ func (c *Corpus) NextConversation() Conversation {
 }
 
 // nextChunk returns targetTokens worth of text from the corpus, advancing the
-// shared offset. When the token-offset index is available, slicing is exact;
-// otherwise it falls back to the character-based estimate.
+// shared offset. When a TokenCounter is available, the chunk is overfetched
+// and trimmed to the exact token count; otherwise falls back to char estimate.
 func (c *Corpus) nextChunk(targetTokens int) string {
-	if c.tokenOffsets == nil {
-		nBytes := int(float64(targetTokens) * c.CharsPerToken)
-		slog.Debug("Corpus chunk (char-based)",
-			"target_tokens", targetTokens,
-			"chars", nBytes,
-			"chars_per_token", c.CharsPerToken)
-		return c.fetchText(nBytes)
-	}
-
-	// Use the char-based estimate to claim a region, then adjust the
-	// returned slice length using the token-offset index. The offset
-	// advances by the estimate — close enough to avoid systematic drift.
 	estimatedBytes := int(float64(targetTokens) * c.CharsPerToken)
-	textLen := uint64(len(c.text))
 
-	start := c.offset.Add(uint64(estimatedBytes)) - uint64(estimatedBytes)
-	start = start % textLen
-
-	nBytes := c.bytesForTokens(int(start), targetTokens)
-	slog.Debug("Corpus chunk (token-indexed)",
-		"target_tokens", targetTokens,
-		"start_byte", start,
-		"estimated_bytes", estimatedBytes,
-		"actual_bytes", nBytes,
-		"ratio", fmt.Sprintf("%.2f", float64(nBytes)/float64(estimatedBytes)))
-	end := start + uint64(nBytes)
-	if end <= textLen {
-		return c.text[start:end]
+	if c.TokenCounter == nil {
+		return c.fetchText(estimatedBytes)
 	}
 
-	var b strings.Builder
-	b.WriteString(c.text[start:])
-	remaining := nBytes - (int(textLen) - int(start))
-	wrapped := uint64(remaining) % textLen
-	b.WriteString(c.text[:wrapped])
-	return b.String()
+	// Overfetch 2x, then binary-search for the exact trim point.
+	text := c.fetchText(estimatedBytes * 2)
+
+	actualTokens, err := c.TokenCounter(text)
+	if err != nil {
+		slog.Debug("TokenCounter failed, using char estimate", "error", err)
+		if estimatedBytes <= len(text) {
+			return text[:estimatedBytes]
+		}
+		return text
+	}
+
+	// If 2x wasn't enough (density much lower than estimated), extend
+	// using the observed density.
+	if actualTokens < targetTokens && actualTokens > 0 {
+		bytesPerToken := float64(len(text)) / float64(actualTokens)
+		extra := int(float64(targetTokens-actualTokens)*bytesPerToken) * 2
+		text += c.fetchText(extra)
+		actualTokens, err = c.TokenCounter(text)
+		if err != nil || actualTokens <= targetTokens {
+			return text
+		}
+	} else if actualTokens <= targetTokens {
+		return text
+	}
+
+	// Binary search for the trim point that yields ~targetTokens.
+	lo, hi := 0, len(text)
+	for hi-lo > 16 {
+		mid := (lo + hi) / 2
+		count, err := c.TokenCounter(text[:mid])
+		if err != nil {
+			break
+		}
+		if count < targetTokens {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+
+	slog.Debug("Corpus chunk trimmed",
+		"target_tokens", targetTokens,
+		"overfetch_tokens", actualTokens,
+		"final_bytes", hi)
+
+	return text[:hi]
 }
 
 // fetchText atomically claims nBytes from the corpus and returns them,
@@ -269,6 +164,7 @@ func (c *Corpus) fetchText(nBytes int) string {
 		return c.text[start:end]
 	}
 
+	// Wrap around
 	var b strings.Builder
 	b.WriteString(c.text[start:])
 	remaining := nBytes - (int(textLen) - int(start))
