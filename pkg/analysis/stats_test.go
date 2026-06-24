@@ -129,6 +129,62 @@ func TestLoadRecordsAndTimestamps(t *testing.T) {
 	}
 }
 
+func TestComputeStages(t *testing.T) {
+	records := []recorder.Record{
+		// Stage 0 (c=10, 100-110s)
+		{RequestID: "s0-r1", ConversationID: "c1", StartTime: 101.0, EndTime: 103.0,
+			TTFT: 50.0, ITLs: []float64{10.0}, TotalLatencyMs: 2000, OutputTokens: 100, Status: "ok"},
+		{RequestID: "s0-r2", ConversationID: "c2", StartTime: 102.0, EndTime: 105.0,
+			TTFT: 40.0, ITLs: []float64{8.0}, TotalLatencyMs: 3000, OutputTokens: 150, Status: "ok"},
+		// Stage 1 (c=20, 110-120s)
+		{RequestID: "s1-r1", ConversationID: "c3", StartTime: 111.0, EndTime: 114.0,
+			TTFT: 30.0, ITLs: []float64{5.0}, TotalLatencyMs: 3000, OutputTokens: 200, Status: "ok"},
+		{RequestID: "s1-r2", ConversationID: "c4", StartTime: 112.0, EndTime: 115.0,
+			TTFT: 35.0, ITLs: []float64{6.0}, TotalLatencyMs: 3000, OutputTokens: 180, Status: "ok"},
+		{RequestID: "s1-err", ConversationID: "c5", StartTime: 113.0, EndTime: 114.5,
+			Status: "error", Error: "timeout"},
+	}
+
+	stages := []recorder.StageTimestamp{
+		{Stage: 0, Concurrency: 10, StartTime: 100.0, EndTime: 110.0},
+		{Stage: 1, Concurrency: 20, StartTime: 110.0, EndTime: 120.0},
+	}
+
+	result := analysis.ComputeStages(records, stages)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(result))
+	}
+
+	// Stage 0
+	if result[0].Concurrency != 10 {
+		t.Errorf("stage 0: expected concurrency 10, got %d", result[0].Concurrency)
+	}
+	if result[0].Requests != 2 {
+		t.Errorf("stage 0: expected 2 requests, got %d", result[0].Requests)
+	}
+	if result[0].TTFTMs.Mean != 45.0 {
+		t.Errorf("stage 0: expected TTFT mean 45.0, got %.1f", result[0].TTFTMs.Mean)
+	}
+
+	// Stage 1
+	if result[1].Concurrency != 20 {
+		t.Errorf("stage 1: expected concurrency 20, got %d", result[1].Concurrency)
+	}
+	if result[1].Requests != 3 {
+		t.Errorf("stage 1: expected 3 requests, got %d", result[1].Requests)
+	}
+	if result[1].ErrorRate != 1.0/3.0 {
+		t.Errorf("stage 1: expected error rate 0.333, got %.3f", result[1].ErrorRate)
+	}
+}
+
+func TestComputeStagesEmpty(t *testing.T) {
+	result := analysis.ComputeStages(nil, nil)
+	if result != nil {
+		t.Errorf("expected nil for empty stages, got %v", result)
+	}
+}
+
 func TestFormatSummary(t *testing.T) {
 	s := &analysis.Summary{
 		TotalRequests:   100,

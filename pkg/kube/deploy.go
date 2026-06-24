@@ -376,7 +376,13 @@ func CollectArgs(cmd *cobra.Command, prefix []string) []string {
 		if strings.HasPrefix(f.Name, "kube") {
 			return
 		}
-		args = append(args, "--"+f.Name, f.Value.String())
+		if f.Value.Type() == "bool" {
+			if f.Value.String() == "true" {
+				args = append(args, "--"+f.Name)
+			}
+		} else {
+			args = append(args, "--"+f.Name, f.Value.String())
+		}
 	})
 	return args
 }

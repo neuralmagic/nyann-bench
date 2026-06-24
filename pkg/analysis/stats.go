@@ -38,7 +38,22 @@ type Summary struct {
 	EvalIncorrect int     `json:"eval_incorrect,omitempty"`
 	EvalAccuracy  float64 `json:"eval_accuracy,omitempty"`
 
+	Stages []StageSummary `json:"stages,omitempty"`
+
 	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
+}
+
+// StageSummary holds per-stage statistics for multi-stage benchmarks (sweeps).
+type StageSummary struct {
+	Stage       int          `json:"stage"`
+	Concurrency int          `json:"concurrency"`
+	DurationS   float64      `json:"duration_seconds"`
+	Requests    int          `json:"requests"`
+	ErrorRate   float64      `json:"error_rate"`
+	OutputTokS  float64      `json:"output_tokens_per_second"`
+	TTFTMs      LatencyStats `json:"ttft_ms"`
+	ITLMs       LatencyStats `json:"itl_ms"`
+	E2EMs       LatencyStats `json:"e2e_latency_ms"`
 }
 
 // LatencyStats holds percentile statistics for a latency metric.
@@ -213,6 +228,34 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 	}
 
 	return s
+}
+
+// ComputeStages computes per-stage summaries by filtering records to each stage's time window.
+func ComputeStages(records []recorder.Record, stages []recorder.StageTimestamp) []StageSummary {
+	if len(stages) == 0 {
+		return nil
+	}
+
+	result := make([]StageSummary, 0, len(stages))
+	for _, st := range stages {
+		s := Compute(records, st.StartTime, st.EndTime)
+		errRate := 0.0
+		if s.TotalRequests > 0 {
+			errRate = float64(s.ErrorRequests) / float64(s.TotalRequests)
+		}
+		result = append(result, StageSummary{
+			Stage:       st.Stage,
+			Concurrency: st.Concurrency,
+			DurationS:   st.EndTime - st.StartTime,
+			Requests:    s.TotalRequests,
+			ErrorRate:   errRate,
+			OutputTokS:  s.OutputTokensPerS,
+			TTFTMs:      s.TTFTMs,
+			ITLMs:       s.ITLMs,
+			E2EMs:       s.E2EMs,
+		})
+	}
+	return result
 }
 
 func computeLatencyStats(values []float64) LatencyStats {
