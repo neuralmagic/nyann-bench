@@ -105,6 +105,28 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestParsePromptSubset(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {"duration": "60s"},
+		"workload": {
+			"type": "gsm8k",
+			"gsm8k_path": "/data/test.jsonl",
+			"gsm8k_train_path": "/data/train.jsonl",
+			"prompt_subset": 50,
+			"prompt_subset_seed": 123
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.PromptSubset != 50 {
+		t.Errorf("expected prompt_subset 50, got %d", sc.Workload.PromptSubset)
+	}
+	if sc.Workload.PromptSubsetSeed != 123 {
+		t.Errorf("expected prompt_subset_seed 123, got %d", sc.Workload.PromptSubsetSeed)
+	}
+}
+
 func TestDurationNumeric(t *testing.T) {
 	sc, err := config.Parse(`{"load": {"duration": 120}}`)
 	if err != nil {

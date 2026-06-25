@@ -254,6 +254,49 @@ func TestGSM8KPartitionSingleWorker(t *testing.T) {
 	}
 }
 
+func TestGSM8KPromptSubsetBeforePartition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gsm8k.jsonl")
+
+	var items []string
+	for i := 1; i <= 10; i++ {
+		items = append(items, fmt.Sprintf(`{"question":"Q%d","answer":"#### %d"}`, i, i))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(items, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	allAnswers := map[string]int{}
+	total := 0
+	for w := 0; w < 3; w++ {
+		ds, err := dataset.NewGSM8K(path, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subset, err := dataset.NewPromptSubset(ds, 5, 123)
+		if err != nil {
+			t.Fatal(err)
+		}
+		subset.Partition(w, 3)
+		total += subset.Len()
+
+		for i := 0; i < subset.Len(); i++ {
+			conv := subset.NextConversation()
+			if prev, ok := allAnswers[conv.ExpectedAnswer]; ok {
+				t.Errorf("subset item %q assigned to both worker %d and worker %d", conv.ExpectedAnswer, prev, w)
+			}
+			allAnswers[conv.ExpectedAnswer] = w
+		}
+	}
+
+	if total != 5 {
+		t.Errorf("expected 5 total partitioned subset items, got %d", total)
+	}
+	if len(allAnswers) != 5 {
+		t.Errorf("expected 5 unique subset items, got %d", len(allAnswers))
+	}
+}
+
 func TestPartitionSize(t *testing.T) {
 	// 1319 items across 4 workers: 330, 330, 330, 329
 	if got := dataset.PartitionSize(1319, 0, 4); got != 330 {

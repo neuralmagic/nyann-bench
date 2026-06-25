@@ -35,7 +35,11 @@ func (f *Faker) turnISL(t int) int {
 
 func (f *Faker) NextConversation() Conversation {
 	seed := f.seq.Add(1)
-	faker := gofakeit.New(seed)
+	return f.ConversationAt(int(seed - 1))
+}
+
+func (f *Faker) ConversationAt(index int) Conversation {
+	faker := gofakeit.New(uint64(index + 1))
 
 	turns := make([][]client.Message, f.Turns)
 	var history []client.Message

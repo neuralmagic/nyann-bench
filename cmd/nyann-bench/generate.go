@@ -61,7 +61,8 @@ Workload types:
   synthetic   Random word padding
   faker       Diverse generated prose (gofakeit)
   corpus      Sliding window over real text files
-  gsm8k       GSM8K math problems with streaming eval`,
+  gsm8k       GSM8K math problems with streaming eval
+  gpqa        GPQA multiple-choice questions with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Parse config early — needed to resolve --workers auto
 			sc, err := config.Parse(cfgInput)

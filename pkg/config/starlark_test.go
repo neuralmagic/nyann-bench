@@ -127,6 +127,25 @@ scenario(
 	}
 }
 
+func TestStarlarkPromptSubset(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("gsm8k", gsm8k_path="/data/test.jsonl", gsm8k_train_path="/data/train.jsonl", prompt_subset=50, prompt_subset_seed=123),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.PromptSubset != 50 {
+		t.Errorf("expected prompt_subset 50, got %d", sc.Workload.PromptSubset)
+	}
+	if sc.Workload.PromptSubsetSeed != 123 {
+		t.Errorf("expected prompt_subset_seed 123, got %d", sc.Workload.PromptSubsetSeed)
+	}
+}
+
 func TestStarlarkPerStageOverrides(t *testing.T) {
 	path := writeStarFile(t, `
 chat = workload("faker", isl=256, osl=512, name="chat")

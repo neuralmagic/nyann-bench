@@ -89,8 +89,14 @@ func (g *GPQA) Partition(workerID, numWorkers int) {
 
 func (g *GPQA) NextConversation() Conversation {
 	idx := g.idx.Add(1) - 1
-	item := g.items[idx%uint64(len(g.items))]
+	return g.ConversationAt(int(idx % uint64(len(g.items))))
+}
 
+func (g *GPQA) ConversationAt(index int) Conversation {
+	if index < 0 {
+		index = 0
+	}
+	item := g.items[index%len(g.items)]
 	var b strings.Builder
 	if item.InlinePrompt {
 		b.WriteString(item.Question)

@@ -20,9 +20,10 @@ type Corpus struct {
 	Turns         int
 	CharsPerToken float64
 
-	text   string // concatenated corpus text
-	mu     sync.RWMutex
-	offset atomic.Uint64
+	text       string // concatenated corpus text
+	mu         sync.RWMutex
+	baseOffset uint64
+	offset     atomic.Uint64
 }
 
 func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64) (*Corpus, error) {
@@ -41,8 +42,19 @@ func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64) (*
 
 	c := &Corpus{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken, text: text}
 	// Start at a random offset so multiple workers don't read the same text
-	c.offset.Store(uint64(rand.Intn(len(text))))
+	c.setBaseOffset(uint64(rand.Intn(len(text))))
 	return c, nil
+}
+
+// SetOffsetSeed makes the starting corpus window deterministic.
+func (c *Corpus) SetOffsetSeed(seed int64) {
+	rng := rand.New(rand.NewSource(seed))
+	c.setBaseOffset(uint64(rng.Intn(len(c.text))))
+}
+
+func (c *Corpus) setBaseOffset(offset uint64) {
+	c.baseOffset = offset
+	c.offset.Store(offset)
 }
 
 func (c *Corpus) turnISL(t int) int {
@@ -53,11 +65,26 @@ func (c *Corpus) turnISL(t int) int {
 }
 
 func (c *Corpus) NextConversation() Conversation {
+	start := c.offset.Add(uint64(c.conversationChars())) - uint64(c.conversationChars())
+	return c.conversationFromOffset(start)
+}
+
+func (c *Corpus) ConversationAt(index int) Conversation {
+	if index < 0 {
+		index = 0
+	}
+	start := c.baseOffset + uint64(index*c.conversationChars())
+	return c.conversationFromOffset(start)
+}
+
+func (c *Corpus) conversationFromOffset(start uint64) Conversation {
 	turns := make([][]client.Message, c.Turns)
 	var history []client.Message
+	cursor := start
 
 	for t := 0; t < c.Turns; t++ {
-		chunk := c.nextChunk(c.turnISL(t))
+		chunk := c.chunkAt(cursor, c.turnISL(t))
+		cursor += uint64(c.targetChars(c.turnISL(t)))
 		userMsg := client.Message{
 			Role:    "user",
 			Content: chunk,
@@ -71,18 +98,41 @@ func (c *Corpus) NextConversation() Conversation {
 		if t < c.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: c.nextChunk(c.OSL),
+				Content: c.chunkAt(cursor, c.OSL),
 			})
+			cursor += uint64(c.targetChars(c.OSL))
 		}
 	}
 
 	return Conversation{Turns: turns, MaxTokens: c.OSL}
 }
 
+func (c *Corpus) conversationChars() int {
+	total := 0
+	for t := 0; t < c.Turns; t++ {
+		total += c.targetChars(c.turnISL(t))
+		if t < c.Turns-1 {
+			total += c.targetChars(c.OSL)
+		}
+	}
+	if total < 1 {
+		return 1
+	}
+	return total
+}
+
+func (c *Corpus) targetChars(targetTokens int) int {
+	targetChars := int(float64(targetTokens) * c.CharsPerToken)
+	if targetChars < 0 {
+		return 0
+	}
+	return targetChars
+}
+
 // nextChunk returns approximately targetTokens worth of text from the corpus,
 // advancing the shared offset. Wraps around when reaching the end.
 func (c *Corpus) nextChunk(targetTokens int) string {
-	targetChars := int(float64(targetTokens) * c.CharsPerToken)
+	targetChars := c.targetChars(targetTokens)
 	textLen := uint64(len(c.text))
 
 	// Atomically claim a range of the corpus
@@ -95,6 +145,24 @@ func (c *Corpus) nextChunk(targetTokens int) string {
 	}
 
 	// Wrap around
+	var b strings.Builder
+	b.WriteString(c.text[start:])
+	remaining := targetChars - (int(textLen) - int(start))
+	wrapped := uint64(remaining) % textLen
+	b.WriteString(c.text[:wrapped])
+	return b.String()
+}
+
+func (c *Corpus) chunkAt(start uint64, targetTokens int) string {
+	targetChars := c.targetChars(targetTokens)
+	textLen := uint64(len(c.text))
+	start = start % textLen
+
+	end := start + uint64(targetChars)
+	if end <= textLen {
+		return c.text[start:end]
+	}
+
 	var b strings.Builder
 	b.WriteString(c.text[start:])
 	remaining := targetChars - (int(textLen) - int(start))
