@@ -234,7 +234,7 @@ func TestPromptSubsetPartitionsGloballyAcrossWorkers(t *testing.T) {
 	seen := map[string]int{}
 	total := 0
 	for workerID := 0; workerID < 3; workerID++ {
-		ds, err := buildDataset(w, 4.0, workerID, 3)
+		ds, err := buildDataset(w, 4.0, nil, workerID, 3)
 		if err != nil {
 			t.Fatal(err)
 		}

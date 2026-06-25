@@ -36,7 +36,9 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 }
 
 // buildDataset constructs a dataset from the workload config.
-func buildDataset(w *config.Workload, charsPerToken float64, workerID, workers int) (dataset.Dataset, error) {
+// tokenCounter is optional; when non-nil the corpus dataset tokenizes each
+// chunk via /tokenize and trims to the exact target token count.
+func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error), workerID, workers int) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
 		subISL = *w.SubsequentISL
@@ -56,7 +58,7 @@ func buildDataset(w *config.Workload, charsPerToken float64, workerID, workers i
 		if w.CorpusPath == "" {
 			return nil, fmt.Errorf("workload.corpus_path is required for corpus type")
 		}
-		c, err := dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken)
+		c, err := dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		if err != nil {
 			return nil, err
 		}
@@ -203,10 +205,14 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 
 	charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
 
+	tokenCounter := func(text string) (int, error) {
+		return c.CountTokens(ctx, text, model)
+	}
+
 	ds := opts.Dataset
 	if ds == nil {
 		var err error
-		ds, err = buildDataset(&w, charsPerToken, sc.WorkerID, sc.Workers)
+		ds, err = buildDataset(&w, charsPerToken, tokenCounter, sc.WorkerID, sc.Workers)
 		if err != nil {
 			return nil, err
 		}
@@ -384,14 +390,18 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		runDS := ds
 		if run.workload != nil {
 			runCharsPerToken := charsPerToken
+			runTokenCounter := tokenCounter
 			if runWorkload.CharsPerToken > 0 {
 				runCharsPerToken = runWorkload.CharsPerToken
 			} else if runTarget != target {
 				runC := client.New(runTarget)
 				runCharsPerToken = calibrateTokenRatio(ctx, runC, runModel, runWorkload.CharsPerToken)
+				runTokenCounter = func(text string) (int, error) {
+					return runC.CountTokens(ctx, text, runModel)
+				}
 			}
 			var err error
-			runDS, err = buildDataset(runWorkload, runCharsPerToken, sc.WorkerID, sc.Workers)
+			runDS, err = buildDataset(runWorkload, runCharsPerToken, runTokenCounter, sc.WorkerID, sc.Workers)
 			if err != nil {
 				return nil, err
 			}

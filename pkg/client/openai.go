@@ -171,30 +171,20 @@ func (c *Client) DetectModel(ctx context.Context) (string, error) {
 	return result.Data[0].ID, nil
 }
 
-// CalibrateTokenRatio sends a sample text to /tokenize and returns the
-// measured chars-per-token ratio. Falls back to 4.0 if the endpoint is unavailable.
-func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model string) (float64, error) {
-	if len(sample) < 100 {
-		return 4.0, nil
-	}
-	// Use a ~2000 char sample for calibration
-	if len(sample) > 2000 {
-		sample = sample[:2000]
-	}
-
+// CountTokens sends text to /tokenize and returns the exact token count.
+func (c *Client) CountTokens(ctx context.Context, text, model string) (int, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":  model,
-		"prompt": sample,
+		"prompt": text,
 	})
 	if err != nil {
-		return 4.0, err
+		return 0, err
 	}
 
-	// Try /tokenize (vLLM endpoint, not under /v1)
 	baseURL := strings.TrimSuffix(c.BaseURL, "/v1")
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/tokenize", bytes.NewReader(body))
 	if err != nil {
-		return 4.0, err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -219,8 +209,25 @@ func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model s
 		return 0, fmt.Errorf("/tokenize returned 0 tokens")
 	}
 
-	ratio := float64(len(sample)) / float64(result.Count)
-	return ratio, nil
+	return result.Count, nil
+}
+
+// CalibrateTokenRatio sends a sample text to /tokenize and returns the
+// measured chars-per-token ratio. Falls back to 4.0 if the endpoint is unavailable.
+func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model string) (float64, error) {
+	if len(sample) < 100 {
+		return 4.0, nil
+	}
+	if len(sample) > 2000 {
+		sample = sample[:2000]
+	}
+
+	count, err := c.CountTokens(ctx, sample, model)
+	if err != nil {
+		return 0, err
+	}
+
+	return float64(len(sample)) / float64(count), nil
 }
 
 // ChatStream sends a streaming chat completion request and returns a Result
