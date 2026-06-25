@@ -164,9 +164,7 @@ func TestExplicitMaxRequestsStopsEarly(t *testing.T) {
 	}
 }
 
-func TestPromptSubsetRunsFullDuration(t *testing.T) {
-	addr := startTestServer(t)
-
+func TestPromptSubsetCyclesBeyondSubsetSize(t *testing.T) {
 	dir := t.TempDir()
 	testPath := filepath.Join(dir, "gsm8k_test.jsonl")
 	items := `{"question":"What is 1+1?","answer":"1+1=2\n#### 2"}
@@ -178,38 +176,27 @@ func TestPromptSubsetRunsFullDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sc := &config.ScenarioConfig{
-		Target: "http://" + addr + "/v1",
-		Model:  "test-model",
-		Workload: config.Workload{
-			Type:         "gsm8k",
-			GSM8KPath:    testPath,
-			NumFewShot:   intPtr(0),
-			PromptSubset: 2,
-		},
-		Stages: []config.ScenarioStage{{
-			Name:        "subset-stage",
-			Duration:    3 * time.Second,
-			Mode:        "concurrent",
-			Concurrency: 4,
-			MaxRequests: 0,
-		}},
+	w := &config.Workload{
+		Type:         "gsm8k",
+		GSM8KPath:    testPath,
+		NumFewShot:   intPtr(0),
+		PromptSubset: 2,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	summary, err := runScenario(ctx, cancel, scenarioOpts{
-		Target:   "http://" + addr + "/v1",
-		Model:    "test-model",
-		Scenario: sc,
-	})
+	ds, err := buildDataset(w, 4.0, nil, 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if summary.TotalRequests <= 2 {
-		t.Fatalf("expected more than 2 requests while cycling subset, got %d", summary.TotalRequests)
+	first := ds.NextConversation().ExpectedAnswer
+	second := ds.NextConversation().ExpectedAnswer
+	third := ds.NextConversation().ExpectedAnswer
+
+	if first == second {
+		t.Fatalf("expected two distinct prompts in subset, got repeated answer %q", first)
+	}
+	if first != third {
+		t.Fatalf("expected subset to cycle after two prompts, got first=%q third=%q", first, third)
 	}
 }
 
