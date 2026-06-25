@@ -636,6 +636,7 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		}
 		for _, itl := range rec.ITLs {
 			g.Metrics.ITLSeconds.Observe(itl / 1000)
+			g.Metrics.ITLSummary.Observe(itl / 1000)
 		}
 		g.Metrics.E2ESeconds.Observe(rec.TotalLatencyMs / 1000)
 		g.Metrics.OutputTokens.Observe(float64(rec.OutputTokens))
