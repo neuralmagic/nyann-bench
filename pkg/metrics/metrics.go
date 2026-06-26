@@ -77,7 +77,7 @@ func New(reg *prometheus.Registry, workloadName string, enableEval bool) *Metric
 			ConstLabels: constLabels,
 			Objectives:  map[float64]float64{0.1: 0.01, 0.5: 0.01, 0.95: 0.01, 0.99: 0.001},
 			MaxAge:      1 * time.Second,
-			AgeBuckets:  2,
+			AgeBuckets:  5,
 		}),
 		E2ESeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:        "nyann_e2e_seconds",
