@@ -98,112 +98,98 @@ func trimStage(start, end time.Time) (time.Time, time.Time) {
 		start.Add(time.Duration(float64(dur) * 0.95))
 }
 
-// QueryServerMetrics queries Prometheus for server-side metrics for each stage
-// and populates the Server field on each StageSummary.
-func QueryServerMetrics(client *prometheus.Client, stages []StageSummary, timestamps []recorder.StageTimestamp, deployName string) {
-	if len(stages) != len(timestamps) {
-		return
-	}
-
+// QueryStageServerMetrics queries Prometheus for server-side metrics for a single stage.
+func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
 	podFilter := deployName + ".*"
+	start := floatToTime(ts.StartTime)
+	end := floatToTime(ts.EndTime)
 
-	var wg sync.WaitGroup
-	for i := range stages {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			ts := timestamps[idx]
-			start := time.Unix(int64(ts.StartTime), int64((ts.StartTime-float64(int64(ts.StartTime)))*1e9))
-			end := time.Unix(int64(ts.EndTime), int64((ts.EndTime-float64(int64(ts.EndTime)))*1e9))
-
-			trimStart, trimEnd := trimStage(start, end)
-			if trimEnd.Sub(trimStart) < 5*time.Second {
-				trimStart, trimEnd = start, end
-			}
-
-			sm := &ServerMetrics{}
-
-			var metricWg sync.WaitGroup
-			metricWg.Add(3)
-
-			go func() {
-				defer metricWg.Done()
-				stats, err := client.HistogramQuantile(
-					"vllm:time_to_first_token_seconds_bucket", podFilter, trimStart, trimEnd)
-				if err != nil {
-					slog.Debug("Failed to query TTFT", "stage", idx, "error", err)
-					return
-				}
-				sm.TTFT = stats
-			}()
-
-			go func() {
-				defer metricWg.Done()
-				stats, err := client.HistogramQuantile(
-					"vllm:inter_token_latency_seconds_bucket", podFilter, trimStart, trimEnd)
-				if err != nil {
-					slog.Debug("Failed to query ITL", "stage", idx, "error", err)
-					return
-				}
-				sm.ITL = stats
-			}()
-
-			go func() {
-				defer metricWg.Done()
-				q := fmt.Sprintf(`sum(rate(vllm:generation_tokens_total{pod=~"%s"}[10s]))`, podFilter)
-				stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
-				if err != nil {
-					slog.Debug("Failed to query TOK/s", "stage", idx, "error", err)
-					return
-				}
-				sm.OutputTokensP50 = stats.P50
-				sm.OutputTokensMax = stats.Max
-			}()
-
-			metricWg.Wait()
-			stages[idx].Server = sm
-		}(i)
+	trimStart, trimEnd := trimStage(start, end)
+	if trimEnd.Sub(trimStart) < 5*time.Second {
+		trimStart, trimEnd = start, end
 	}
+
+	sm := &ServerMetrics{}
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		stats, err := client.HistogramQuantile(
+			"vllm:time_to_first_token_seconds_bucket", podFilter, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query TTFT", "error", err)
+			return
+		}
+		sm.TTFT = stats
+	}()
+
+	go func() {
+		defer wg.Done()
+		stats, err := client.HistogramQuantile(
+			"vllm:inter_token_latency_seconds_bucket", podFilter, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query ITL", "error", err)
+			return
+		}
+		sm.ITL = stats
+	}()
+
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`sum(rate(vllm:generation_tokens_total{pod=~"%s"}[10s]))`, podFilter)
+		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query TOK/s", "error", err)
+			return
+		}
+		sm.OutputTokensP50 = stats.P50
+		sm.OutputTokensMax = stats.Max
+	}()
+
 	wg.Wait()
+	return sm
 }
 
-// FormatStageTable formats per-stage summaries as a table.
-// When server metrics are available, it shows server-side TTFT, ITL, and TOK/s.
-// Otherwise it shows client-side metrics.
-func FormatStageTable(stages []StageSummary) string {
-	if len(stages) == 0 {
-		return ""
-	}
+func floatToTime(f float64) time.Time {
+	sec := int64(f)
+	nsec := int64((f - float64(sec)) * 1e9)
+	return time.Unix(sec, nsec)
+}
 
-	hasServer := stages[0].Server != nil
-
+// FormatStageHeader returns the table header line.
+func FormatStageHeader(hasServer bool) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s",
+		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "TTFT_P50", "ITL_P50", "E2E_P50")
 	if hasServer {
-		fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %10s  %10s  %10s  %10s\n",
-			"CONC", "OK", "ERR", "TOK/S", "TTFT_P50", "TTFT_P99", "ITL_P50", "ITL_P99")
-		b.WriteString(strings.Repeat("-", 82))
-		b.WriteByte('\n')
-		for _, s := range stages {
-			sm := s.Server
-			fmt.Fprintf(&b, "%6d  %6d  %5d  %9.1f  %10s  %10s  %10s  %10s\n",
-				s.Concurrency, s.SuccessRequests, s.ErrorRequests,
-				sm.OutputTokensP50,
-				fmtDuration(sm.TTFT.P50), fmtDuration(sm.TTFT.P99),
-				fmtDuration(sm.ITL.P50), fmtDuration(sm.ITL.P99))
-		}
-	} else {
-		fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s\n",
-			"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "TTFT_P50", "ITL_P50", "E2E_P50")
-		b.WriteString(strings.Repeat("-", 82))
-		b.WriteByte('\n')
-		for _, s := range stages {
-			fmt.Fprintf(&b, "%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s\n",
-				s.Concurrency, s.SuccessRequests, s.ErrorRequests,
-				s.TotalOutputTokens, s.OutputTokensPerS,
-				fmtMs(s.TTFTMs.P50), fmtMs(s.ITLMs.P50), fmtMs(s.E2EMs.P50))
-		}
+		fmt.Fprintf(&b, "  |  %9s  %10s  %10s  %10s  %10s",
+			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL50", "SRV_ITL99")
 	}
+	b.WriteByte('\n')
+	width := 82
+	if hasServer {
+		width = 144
+	}
+	b.WriteString(strings.Repeat("-", width))
+	b.WriteByte('\n')
 	return b.String()
+}
+
+// FormatStageRow returns a single table row for a stage.
+func FormatStageRow(s StageSummary) string {
+	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s",
+		s.Concurrency, s.SuccessRequests, s.ErrorRequests,
+		s.TotalOutputTokens, s.OutputTokensPerS,
+		fmtMs(s.TTFTMs.P50), fmtMs(s.ITLMs.P50), fmtMs(s.E2EMs.P50))
+	if s.Server != nil {
+		sm := s.Server
+		row += fmt.Sprintf("  |  %9.1f  %10s  %10s  %10s  %10s",
+			sm.OutputTokensP50,
+			fmtDuration(sm.TTFT.P50), fmtDuration(sm.TTFT.P99),
+			fmtDuration(sm.ITL.P50), fmtDuration(sm.ITL.P99))
+	}
+	return row + "\n"
 }
 
 func fmtDuration(seconds float64) string {

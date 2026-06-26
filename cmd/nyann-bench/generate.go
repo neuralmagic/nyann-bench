@@ -16,6 +16,7 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
 	"github.com/neuralmagic/nyann-bench/pkg/prometheus"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 	"github.com/spf13/cobra"
 )
 
@@ -142,6 +143,14 @@ Workload types:
 				model = sc.Model
 			}
 
+			var promClient *prometheus.Client
+			if prometheusURL != "" && deployName != "" {
+				promClient = prometheus.NewClient(prometheusURL)
+			}
+
+			headerPrinted := false
+			var serverMetrics []*analysis.ServerMetrics
+
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
 				Target:      target,
 				Model:       model,
@@ -149,25 +158,39 @@ Workload types:
 				OutputDir:   outputDir,
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
+				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) {
+					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
+					if len(stages) == 0 {
+						return
+					}
+					stage := stages[0]
+
+					if promClient != nil {
+						stage.Server = analysis.QueryStageServerMetrics(promClient, ts, deployName)
+						serverMetrics = append(serverMetrics, stage.Server)
+					} else {
+						serverMetrics = append(serverMetrics, nil)
+					}
+
+					if !headerPrinted {
+						fmt.Fprint(os.Stderr, analysis.FormatStageHeader(stage.Server != nil))
+						headerPrinted = true
+					}
+					fmt.Fprint(os.Stderr, analysis.FormatStageRow(stage))
+				},
 			})
 			if err != nil {
 				return err
 			}
 
+			// Merge server metrics into the final summary stages.
+			for i, sm := range serverMetrics {
+				if sm != nil && i < len(summary.Stages) {
+					summary.Stages[i].Server = sm
+				}
+			}
+
 			if summary.TotalRequests > 0 {
-				// Query Prometheus for server-side metrics per stage
-				if prometheusURL != "" && deployName != "" && len(summary.Stages) > 0 && summary.Timestamps != nil {
-					slog.Info("Querying Prometheus for server-side metrics", "url", prometheusURL, "deploy", deployName)
-					promClient := prometheus.NewClient(prometheusURL)
-					analysis.QueryServerMetrics(promClient, summary.Stages, summary.Timestamps.Stages, deployName)
-				}
-
-				// Print per-stage table if stages exist
-				if len(summary.Stages) > 0 {
-					fmt.Fprint(os.Stderr, "\n")
-					fmt.Fprint(os.Stderr, analysis.FormatStageTable(summary.Stages))
-				}
-
 				fmt.Fprint(os.Stderr, "\n")
 				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
 
