@@ -25,9 +25,8 @@ type StageSummary struct {
 	ITLMs             LatencyStats `json:"itl_ms"`
 	E2EMs             LatencyStats `json:"e2e_latency_ms"`
 
-	// Prometheus metrics (populated by QueryStageServerMetrics).
-	ClientITL *prometheus.LatencyStats `json:"client_itl_seconds,omitempty"`
-	Server    *ServerMetrics           `json:"server,omitempty"`
+	// Server-side metrics from Prometheus (populated by QueryStageServerMetrics).
+	Server *ServerMetrics `json:"server,omitempty"`
 }
 
 // ServerMetrics holds server-side metrics queried from Prometheus.
@@ -95,9 +94,8 @@ func trimStage(start, end time.Time) (time.Time, time.Time) {
 		start.Add(time.Duration(float64(dur) * 0.95))
 }
 
-// QueryStageServerMetrics queries Prometheus for both client-side (nyann Summary)
-// and server-side (vLLM histogram) metrics for a single stage.
-func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) (*prometheus.LatencyStats, *ServerMetrics) {
+// QueryStageServerMetrics queries Prometheus for server-side vLLM metrics for a single stage.
+func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
 	podFilter := deployName + ".*"
 	start := floatToTime(ts.StartTime)
 	end := floatToTime(ts.EndTime)
@@ -107,20 +105,9 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		trimStart, trimEnd = start, end
 	}
 
-	var clientITL prometheus.LatencyStats
 	sm := &ServerMetrics{}
 	var wg sync.WaitGroup
-	wg.Add(4)
-
-	go func() {
-		defer wg.Done()
-		stats, err := client.SummaryQuantiles("nyann_itl_summary_seconds", trimStart, trimEnd)
-		if err != nil {
-			slog.Debug("Failed to query client ITL summary", "error", err)
-			return
-		}
-		clientITL = stats
-	}()
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -157,7 +144,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 	}()
 
 	wg.Wait()
-	return &clientITL, sm
+	return sm
 }
 
 // FormatStageHeader returns the table header line.
@@ -181,18 +168,10 @@ func FormatStageHeader(hasServer bool) string {
 
 // FormatStageRow returns a single table row for a stage.
 func FormatStageRow(s StageSummary) string {
-	itlP10, itlP50, itlP95, itlP99 := fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99)
-	if s.ClientITL != nil {
-		itlP10 = fmtDuration(s.ClientITL.P10)
-		itlP50 = fmtDuration(s.ClientITL.P50)
-		itlP95 = fmtDuration(s.ClientITL.P95)
-		itlP99 = fmtDuration(s.ClientITL.P99)
-	}
-
 	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s",
 		s.Concurrency, s.SuccessRequests, s.ErrorRequests,
 		s.TotalOutputTokens, s.OutputTokensPerS,
-		itlP10, itlP50, itlP95, itlP99)
+		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99))
 	if s.Server != nil {
 		sm := s.Server
 		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s",

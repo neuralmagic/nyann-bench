@@ -15,7 +15,7 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/barrier"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
-	"github.com/neuralmagic/nyann-bench/pkg/prometheus"
+	promclient "github.com/neuralmagic/nyann-bench/pkg/prometheus"
 	"github.com/neuralmagic/nyann-bench/pkg/recorder"
 	"github.com/spf13/cobra"
 )
@@ -143,17 +143,13 @@ Workload types:
 				model = sc.Model
 			}
 
-			var promClient *prometheus.Client
+			var promClient *promclient.Client
 			if prometheusURL != "" && deployName != "" {
-				promClient = prometheus.NewClient(prometheusURL)
+				promClient = promclient.NewClient(prometheusURL)
 			}
 
-			type stageMetrics struct {
-				clientITL *prometheus.LatencyStats
-				server    *analysis.ServerMetrics
-			}
 			headerPrinted := false
-			var collected []stageMetrics
+			var collected []*analysis.ServerMetrics
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
 				Target:      target,
@@ -170,12 +166,11 @@ Workload types:
 					stage := stages[0]
 
 					if promClient != nil {
-						clientITL, server := analysis.QueryStageServerMetrics(promClient, ts, deployName)
-						stage.ClientITL = clientITL
+						server := analysis.QueryStageServerMetrics(promClient, ts, deployName)
 						stage.Server = server
-						collected = append(collected, stageMetrics{clientITL: clientITL, server: server})
+						collected = append(collected, server)
 					} else {
-						collected = append(collected, stageMetrics{})
+						collected = append(collected, nil)
 					}
 
 					if !headerPrinted {
@@ -190,10 +185,9 @@ Workload types:
 			}
 
 			// Merge Prometheus metrics into the final summary stages.
-			for i, m := range collected {
+			for i, srv := range collected {
 				if i < len(summary.Stages) {
-					summary.Stages[i].ClientITL = m.clientITL
-					summary.Stages[i].Server = m.server
+					summary.Stages[i].Server = srv
 				}
 			}
 
