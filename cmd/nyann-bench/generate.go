@@ -15,19 +15,22 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/barrier"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
+	"github.com/neuralmagic/nyann-bench/pkg/prometheus"
 	"github.com/spf13/cobra"
 )
 
 func generateCmd() *cobra.Command {
 	var (
-		target      string
-		model       string
-		cfgInput    string
-		outputDir   string
-		workerID    int
-		workersFlag string
-		metricsAddr string
-		kubeFlags   kube.Flags
+		target        string
+		model         string
+		cfgInput      string
+		outputDir     string
+		workerID      int
+		workersFlag   string
+		metricsAddr   string
+		prometheusURL string
+		deployName    string
+		kubeFlags     kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -152,6 +155,19 @@ Workload types:
 			}
 
 			if summary.TotalRequests > 0 {
+				// Query Prometheus for server-side metrics per stage
+				if prometheusURL != "" && deployName != "" && len(summary.Stages) > 0 && summary.Timestamps != nil {
+					slog.Info("Querying Prometheus for server-side metrics", "url", prometheusURL, "deploy", deployName)
+					promClient := prometheus.NewClient(prometheusURL)
+					analysis.QueryServerMetrics(promClient, summary.Stages, summary.Timestamps.Stages, deployName)
+				}
+
+				// Print per-stage table if stages exist
+				if len(summary.Stages) > 0 {
+					fmt.Fprint(os.Stderr, "\n")
+					fmt.Fprint(os.Stderr, analysis.FormatStageTable(summary.Stages))
+				}
+
 				fmt.Fprint(os.Stderr, "\n")
 				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
 
@@ -173,6 +189,8 @@ Workload types:
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
+	cmd.Flags().StringVar(&prometheusURL, "prometheus-url", "", "Prometheus server URL for querying server-side vLLM metrics (e.g. http://prometheus:9090)")
+	cmd.Flags().StringVar(&deployName, "deploy-name", "", "Deployment name prefix for Prometheus pod label filtering (e.g. my-deploy)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 

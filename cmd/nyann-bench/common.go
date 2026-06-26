@@ -468,6 +468,11 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 
 	summary := analysis.Compute(records, 0, 0)
 	summary.Timestamps = timestamps
+
+	if len(stageTimestamps) > 0 {
+		summary.Stages = analysis.ComputePerStage(records, stageTimestamps)
+	}
+
 	return summary, nil
 }
 

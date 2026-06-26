@@ -39,6 +39,9 @@ type Summary struct {
 	EvalAccuracy  float64 `json:"eval_accuracy,omitempty"`
 
 	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
+
+	// Per-stage summaries (populated when benchmark uses multiple stages)
+	Stages []StageSummary `json:"stages,omitempty"`
 }
 
 // LatencyStats holds percentile statistics for a latency metric.
