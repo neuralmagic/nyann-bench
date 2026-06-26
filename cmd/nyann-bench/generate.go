@@ -148,8 +148,12 @@ Workload types:
 				promClient = prometheus.NewClient(prometheusURL)
 			}
 
+			type stageMetrics struct {
+				clientITL *prometheus.LatencyStats
+				server    *analysis.ServerMetrics
+			}
 			headerPrinted := false
-			var serverMetrics []*analysis.ServerMetrics
+			var collected []stageMetrics
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
 				Target:      target,
@@ -166,10 +170,12 @@ Workload types:
 					stage := stages[0]
 
 					if promClient != nil {
-						stage.Server = analysis.QueryStageServerMetrics(promClient, ts, deployName)
-						serverMetrics = append(serverMetrics, stage.Server)
+						clientITL, server := analysis.QueryStageServerMetrics(promClient, ts, deployName)
+						stage.ClientITL = clientITL
+						stage.Server = server
+						collected = append(collected, stageMetrics{clientITL: clientITL, server: server})
 					} else {
-						serverMetrics = append(serverMetrics, nil)
+						collected = append(collected, stageMetrics{})
 					}
 
 					if !headerPrinted {
@@ -183,10 +189,11 @@ Workload types:
 				return err
 			}
 
-			// Merge server metrics into the final summary stages.
-			for i, sm := range serverMetrics {
-				if sm != nil && i < len(summary.Stages) {
-					summary.Stages[i].Server = sm
+			// Merge Prometheus metrics into the final summary stages.
+			for i, m := range collected {
+				if i < len(summary.Stages) {
+					summary.Stages[i].ClientITL = m.clientITL
+					summary.Stages[i].Server = m.server
 				}
 			}
 

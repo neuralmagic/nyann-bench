@@ -47,8 +47,10 @@ type Summary struct {
 // LatencyStats holds percentile statistics for a latency metric.
 type LatencyStats struct {
 	Mean float64 `json:"mean"`
+	P10  float64 `json:"p10"`
 	P50  float64 `json:"p50"`
 	P90  float64 `json:"p90"`
+	P95  float64 `json:"p95"`
 	P99  float64 `json:"p99"`
 	Min  float64 `json:"min"`
 	Max  float64 `json:"max"`
@@ -234,8 +236,10 @@ func computeLatencyStats(values []float64) LatencyStats {
 
 	return LatencyStats{
 		Mean: sum / float64(len(sorted)),
+		P10:  percentile(sorted, 0.10),
 		P50:  percentile(sorted, 0.50),
 		P90:  percentile(sorted, 0.90),
+		P95:  percentile(sorted, 0.95),
 		P99:  percentile(sorted, 0.99),
 		Min:  sorted[0],
 		Max:  sorted[len(sorted)-1],

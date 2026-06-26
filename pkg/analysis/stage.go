@@ -12,7 +12,7 @@ import (
 )
 
 // StageSummary holds per-stage metrics computed from client-side records
-// and optionally enriched with server-side Prometheus metrics.
+// and optionally enriched with Prometheus metrics.
 type StageSummary struct {
 	Concurrency       int          `json:"concurrency"`
 	TotalRequests     int          `json:"total_requests"`
@@ -25,18 +25,17 @@ type StageSummary struct {
 	ITLMs             LatencyStats `json:"itl_ms"`
 	E2EMs             LatencyStats `json:"e2e_latency_ms"`
 
-	// Server-side metrics from Prometheus (populated by QueryServerMetrics).
-	Server *ServerMetrics `json:"server,omitempty"`
+	// Prometheus metrics (populated by QueryStageServerMetrics).
+	ClientITL *prometheus.LatencyStats `json:"client_itl_seconds,omitempty"`
+	Server    *ServerMetrics           `json:"server,omitempty"`
 }
 
 // ServerMetrics holds server-side metrics queried from Prometheus.
 type ServerMetrics struct {
-	TTFT          prometheus.LatencyStats `json:"ttft_seconds"`
-	ITL           prometheus.LatencyStats `json:"itl_seconds"`
-	OutputTokensP50 float64              `json:"output_tokens_per_second_p50"`
-	OutputTokensMax float64              `json:"output_tokens_per_second_max"`
-	DecodeKVP50   float64                `json:"decode_kv_pct_p50,omitempty"`
-	DecodeKVMax   float64                `json:"decode_kv_pct_max,omitempty"`
+	TTFT            prometheus.LatencyStats `json:"ttft_seconds"`
+	ITL             prometheus.LatencyStats `json:"itl_seconds"`
+	OutputTokensP50 float64                `json:"output_tokens_per_second_p50"`
+	OutputTokensMax float64                `json:"output_tokens_per_second_max"`
 }
 
 // ComputePerStage computes client-side statistics for each stage from records.
@@ -90,16 +89,15 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 	return summaries
 }
 
-// trimStage returns the measurement window for a stage, skipping the first 20%
-// (rampup noise) and last 5% (transition artifacts).
 func trimStage(start, end time.Time) (time.Time, time.Time) {
 	dur := end.Sub(start)
 	return start.Add(time.Duration(float64(dur) * 0.20)),
 		start.Add(time.Duration(float64(dur) * 0.95))
 }
 
-// QueryStageServerMetrics queries Prometheus for server-side metrics for a single stage.
-func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
+// QueryStageServerMetrics queries Prometheus for both client-side (nyann Summary)
+// and server-side (vLLM histogram) metrics for a single stage.
+func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) (*prometheus.LatencyStats, *ServerMetrics) {
 	podFilter := deployName + ".*"
 	start := floatToTime(ts.StartTime)
 	end := floatToTime(ts.EndTime)
@@ -109,16 +107,27 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		trimStart, trimEnd = start, end
 	}
 
+	var clientITL prometheus.LatencyStats
 	sm := &ServerMetrics{}
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
+
+	go func() {
+		defer wg.Done()
+		stats, err := client.SummaryQuantiles("nyann_itl_summary_seconds", trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query client ITL summary", "error", err)
+			return
+		}
+		clientITL = stats
+	}()
 
 	go func() {
 		defer wg.Done()
 		stats, err := client.HistogramQuantile(
 			"vllm:time_to_first_token_seconds_bucket", podFilter, trimStart, trimEnd)
 		if err != nil {
-			slog.Debug("Failed to query TTFT", "error", err)
+			slog.Debug("Failed to query server TTFT", "error", err)
 			return
 		}
 		sm.TTFT = stats
@@ -129,7 +138,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		stats, err := client.HistogramQuantile(
 			"vllm:inter_token_latency_seconds_bucket", podFilter, trimStart, trimEnd)
 		if err != nil {
-			slog.Debug("Failed to query ITL", "error", err)
+			slog.Debug("Failed to query server ITL", "error", err)
 			return
 		}
 		sm.ITL = stats
@@ -140,7 +149,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		q := fmt.Sprintf(`sum(rate(vllm:generation_tokens_total{pod=~"%s"}[10s]))`, podFilter)
 		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
 		if err != nil {
-			slog.Debug("Failed to query TOK/s", "error", err)
+			slog.Debug("Failed to query server TOK/s", "error", err)
 			return
 		}
 		sm.OutputTokensP50 = stats.P50
@@ -148,28 +157,22 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 	}()
 
 	wg.Wait()
-	return sm
-}
-
-func floatToTime(f float64) time.Time {
-	sec := int64(f)
-	nsec := int64((f - float64(sec)) * 1e9)
-	return time.Unix(sec, nsec)
+	return &clientITL, sm
 }
 
 // FormatStageHeader returns the table header line.
 func FormatStageHeader(hasServer bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s",
-		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "TTFT_P50", "ITL_P50", "E2E_P50")
+	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s",
+		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99")
 	if hasServer {
-		fmt.Fprintf(&b, "  |  %9s  %10s  %10s  %10s  %10s",
-			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL50", "SRV_ITL99")
+		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s",
+			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99")
 	}
 	b.WriteByte('\n')
-	width := 82
+	width := 96
 	if hasServer {
-		width = 144
+		width = 172
 	}
 	b.WriteString(strings.Repeat("-", width))
 	b.WriteByte('\n')
@@ -178,16 +181,25 @@ func FormatStageHeader(hasServer bool) string {
 
 // FormatStageRow returns a single table row for a stage.
 func FormatStageRow(s StageSummary) string {
-	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s",
+	itlP10, itlP50, itlP95, itlP99 := fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99)
+	if s.ClientITL != nil {
+		itlP10 = fmtDuration(s.ClientITL.P10)
+		itlP50 = fmtDuration(s.ClientITL.P50)
+		itlP95 = fmtDuration(s.ClientITL.P95)
+		itlP99 = fmtDuration(s.ClientITL.P99)
+	}
+
+	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s",
 		s.Concurrency, s.SuccessRequests, s.ErrorRequests,
 		s.TotalOutputTokens, s.OutputTokensPerS,
-		fmtMs(s.TTFTMs.P50), fmtMs(s.ITLMs.P50), fmtMs(s.E2EMs.P50))
+		itlP10, itlP50, itlP95, itlP99)
 	if s.Server != nil {
 		sm := s.Server
-		row += fmt.Sprintf("  |  %9.1f  %10s  %10s  %10s  %10s",
+		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s",
 			sm.OutputTokensP50,
 			fmtDuration(sm.TTFT.P50), fmtDuration(sm.TTFT.P99),
-			fmtDuration(sm.ITL.P50), fmtDuration(sm.ITL.P99))
+			fmtDuration(sm.ITL.P10), fmtDuration(sm.ITL.P50),
+			fmtDuration(sm.ITL.P95), fmtDuration(sm.ITL.P99))
 	}
 	return row + "\n"
 }
@@ -216,4 +228,10 @@ func fmtMs(ms float64) string {
 		return fmt.Sprintf("%.1fms", ms)
 	}
 	return fmt.Sprintf("%.2fs", ms/1000)
+}
+
+func floatToTime(f float64) time.Time {
+	sec := int64(f)
+	nsec := int64((f - float64(sec)) * 1e9)
+	return time.Unix(sec, nsec)
 }

@@ -31,7 +31,9 @@ type DataPoint struct {
 }
 
 type LatencyStats struct {
+	P10 float64 `json:"p10"`
 	P50 float64 `json:"p50"`
+	P95 float64 `json:"p95"`
 	P99 float64 `json:"p99"`
 }
 
@@ -95,9 +97,7 @@ func (c *Client) QueryRange(query string, start, end time.Time, step time.Durati
 	return points, nil
 }
 
-// HistogramQuantile queries a Prometheus histogram bucket for P50 and P99 over a time window.
-// The bucket metric should be a histogram bucket (e.g. "vllm:time_to_first_token_seconds_bucket").
-// The podFilter is used as a regex match on the pod label (e.g. "my-deploy-.*").
+// HistogramQuantile queries a Prometheus histogram bucket for P10/P50/P95/P99.
 func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Time) (LatencyStats, error) {
 	window := int(end.Sub(start).Seconds())
 	if window < 1 {
@@ -105,14 +105,14 @@ func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Tim
 	}
 	windowStr := fmt.Sprintf("%ds", window)
 
-	quantiles := []float64{0.50, 0.99}
-	vals := make([]float64, 2)
+	quantiles := [4]float64{0.10, 0.50, 0.95, 0.99}
+	vals := [4]float64{}
 
 	var wg sync.WaitGroup
 	var firstErr error
 	var errOnce sync.Once
 
-	wg.Add(2)
+	wg.Add(4)
 	for i, q := range quantiles {
 		go func(idx int, quantile float64) {
 			defer wg.Done()
@@ -134,7 +134,58 @@ func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Tim
 	if firstErr != nil {
 		return LatencyStats{}, firstErr
 	}
-	return LatencyStats{P50: vals[0], P99: vals[1]}, nil
+	return LatencyStats{P10: vals[0], P50: vals[1], P95: vals[2], P99: vals[3]}, nil
+}
+
+// SummaryQuantiles queries a Prometheus Summary metric for P10/P50/P95/P99.
+// It averages each quantile's value over the time range (suitable for Summary
+// metrics with short MaxAge like nyann_itl_summary_seconds).
+func (c *Client) SummaryQuantiles(metric string, start, end time.Time) (LatencyStats, error) {
+	window := int(end.Sub(start).Seconds())
+	if window < 1 {
+		return LatencyStats{}, nil
+	}
+	windowStr := fmt.Sprintf("%ds", window)
+
+	type qSpec struct {
+		label string
+		dst   *float64
+	}
+	var stats LatencyStats
+	specs := [4]qSpec{
+		{"0.1", &stats.P10},
+		{"0.5", &stats.P50},
+		{"0.95", &stats.P95},
+		{"0.99", &stats.P99},
+	}
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	wg.Add(4)
+	for _, s := range specs {
+		go func(spec qSpec) {
+			defer wg.Done()
+			query := fmt.Sprintf(
+				`avg(avg_over_time(%s{quantile="%s"}[%s]))`,
+				metric, spec.label, windowStr,
+			)
+			points, err := c.QueryRange(query, end, end, time.Second)
+			if err != nil {
+				errOnce.Do(func() { firstErr = err })
+				return
+			}
+			if len(points) > 0 {
+				*spec.dst = points[0].Value
+			}
+		}(s)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return LatencyStats{}, firstErr
+	}
+	return stats, nil
 }
 
 // QueryGaugeStats queries a Prometheus gauge over a time range and returns P50 and max.
