@@ -196,6 +196,9 @@ spec:
     metadata:
       labels:
         app: {{ .Name }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
     spec:
       restartPolicy: Never
       subdomain: {{ .Name }}
