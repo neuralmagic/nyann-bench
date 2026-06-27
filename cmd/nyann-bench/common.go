@@ -403,17 +403,19 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			lastConcurrency = concurrency
 			measuredStageIdx++
 
-			if stageName != "" {
-				slog.Info("Stage started",
-					"name", stageName,
-					"stage", fmt.Sprintf("%d/%d", measuredStageIdx, totalMeasuredStages),
-					"concurrency", concurrency,
-					"duration", run.stages[i].Duration)
-			} else {
-				slog.Info("Stage started",
-					"stage", fmt.Sprintf("%d/%d", measuredStageIdx, totalMeasuredStages),
-					"concurrency", concurrency,
-					"duration", run.stages[i].Duration)
+			if opts.OnStageComplete == nil {
+				if stageName != "" {
+					slog.Info("Stage started",
+						"name", stageName,
+						"stage", fmt.Sprintf("%d/%d", measuredStageIdx, totalMeasuredStages),
+						"concurrency", concurrency,
+						"duration", run.stages[i].Duration)
+				} else {
+					slog.Info("Stage started",
+						"stage", fmt.Sprintf("%d/%d", measuredStageIdx, totalMeasuredStages),
+						"concurrency", concurrency,
+						"duration", run.stages[i].Duration)
+				}
 			}
 			if m != nil {
 				m.Stage.Set(float64(measuredStageIdx - 1))

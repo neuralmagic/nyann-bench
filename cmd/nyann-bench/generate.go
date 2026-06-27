@@ -193,6 +193,14 @@ Workload types:
 
 			if summary.TotalRequests > 0 {
 				fmt.Fprint(os.Stderr, "\n")
+				if len(summary.Stages) > 0 {
+					hasServer := len(collected) > 0 && collected[0] != nil
+					fmt.Fprint(os.Stderr, analysis.FormatStageHeader(hasServer))
+					for _, s := range summary.Stages {
+						fmt.Fprint(os.Stderr, analysis.FormatStageRow(s))
+					}
+					fmt.Fprint(os.Stderr, "\n")
+				}
 				fmt.Fprint(os.Stderr, analysis.FormatSummary(summary))
 
 				jsonOut, err := json.MarshalIndent(summary, "", "  ")
