@@ -35,6 +35,10 @@ type ServerMetrics struct {
 	ITL             prometheus.LatencyStats `json:"itl_seconds"`
 	OutputTokensP50 float64                `json:"output_tokens_per_second_p50"`
 	OutputTokensMax float64                `json:"output_tokens_per_second_max"`
+	PrefillKVMin    float64                `json:"prefill_kv_min"`
+	PrefillKVMax    float64                `json:"prefill_kv_max"`
+	DecodeKVMin     float64                `json:"decode_kv_min"`
+	DecodeKVMax     float64                `json:"decode_kv_max"`
 }
 
 // ComputePerStage computes client-side statistics for each stage from records.
@@ -107,7 +111,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	sm := &ServerMetrics{}
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(5)
 
 	go func() {
 		defer wg.Done()
@@ -143,6 +147,30 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		sm.OutputTokensMax = stats.Max
 	}()
 
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, podFilter)
+		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query prefill KV$", "error", err)
+			return
+		}
+		sm.PrefillKVMin = stats.Min
+		sm.PrefillKVMax = stats.Max
+	}()
+
+	go func() {
+		defer wg.Done()
+		q := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, podFilter)
+		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query decode KV$", "error", err)
+			return
+		}
+		sm.DecodeKVMin = stats.Min
+		sm.DecodeKVMax = stats.Max
+	}()
+
 	wg.Wait()
 	return sm
 }
@@ -153,13 +181,14 @@ func FormatStageHeader(hasServer bool) string {
 	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s",
 		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99")
 	if hasServer {
-		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s",
-			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99")
+		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %7s  %7s  %7s  %7s",
+			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99",
+			"PKV_MIN", "PKV_MAX", "DKV_MIN", "DKV_MAX")
 	}
 	b.WriteByte('\n')
 	width := 96
 	if hasServer {
-		width = 172
+		width = 208
 	}
 	b.WriteString(strings.Repeat("-", width))
 	b.WriteByte('\n')
@@ -174,11 +203,13 @@ func FormatStageRow(s StageSummary) string {
 		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99))
 	if s.Server != nil {
 		sm := s.Server
-		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s",
+		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %7s  %7s  %7s  %7s",
 			sm.OutputTokensP50,
 			fmtDuration(sm.TTFT.P50), fmtDuration(sm.TTFT.P99),
 			fmtDuration(sm.ITL.P10), fmtDuration(sm.ITL.P50),
-			fmtDuration(sm.ITL.P95), fmtDuration(sm.ITL.P99))
+			fmtDuration(sm.ITL.P95), fmtDuration(sm.ITL.P99),
+			fmtPct(sm.PrefillKVMin), fmtPct(sm.PrefillKVMax),
+			fmtPct(sm.DecodeKVMin), fmtPct(sm.DecodeKVMax))
 	}
 	return row + "\n"
 }
@@ -207,6 +238,13 @@ func fmtMs(ms float64) string {
 		return fmt.Sprintf("%.1fms", ms)
 	}
 	return fmt.Sprintf("%.2fs", ms/1000)
+}
+
+func fmtPct(v float64) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f%%", v*100)
 }
 
 func floatToTime(f float64) time.Time {

@@ -38,6 +38,7 @@ type LatencyStats struct {
 }
 
 type GaugeStats struct {
+	Min float64 `json:"min"`
 	P50 float64 `json:"p50"`
 	Max float64 `json:"max"`
 }
@@ -203,6 +204,7 @@ func (c *Client) QueryGaugeStats(query string, start, end time.Time) (GaugeStats
 	}
 	sort.Float64s(vals)
 	return GaugeStats{
+		Min: vals[0],
 		P50: percentile(vals, 0.50),
 		Max: vals[len(vals)-1],
 	}, nil
