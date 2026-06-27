@@ -184,17 +184,19 @@ Workload types:
 				return err
 			}
 
-			// Merge Prometheus metrics into the final summary stages.
-			for i, srv := range collected {
-				if i < len(summary.Stages) {
-					summary.Stages[i].Server = srv
+			// Requery Prometheus for all stages now that the benchmark is done.
+			if promClient != nil && summary.Timestamps != nil {
+				for i, ts := range summary.Timestamps.Stages {
+					if i < len(summary.Stages) {
+						summary.Stages[i].Server = analysis.QueryStageServerMetrics(promClient, ts, deployName)
+					}
 				}
 			}
 
 			if summary.TotalRequests > 0 {
 				fmt.Fprint(os.Stderr, "\n")
 				if len(summary.Stages) > 0 {
-					hasServer := len(collected) > 0 && collected[0] != nil
+					hasServer := promClient != nil
 					fmt.Fprint(os.Stderr, analysis.FormatStageHeader(hasServer))
 					for _, s := range summary.Stages {
 						fmt.Fprint(os.Stderr, analysis.FormatStageRow(s))
