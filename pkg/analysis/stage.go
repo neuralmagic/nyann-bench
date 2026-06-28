@@ -255,9 +255,6 @@ func fmtMs(ms float64) string {
 }
 
 func fmtPct(v float64) string {
-	if v == 0 {
-		return "-"
-	}
 	return fmt.Sprintf("%.1f%%", v*100)
 }
 
