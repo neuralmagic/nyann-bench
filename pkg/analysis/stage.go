@@ -202,7 +202,7 @@ func FormatStageHeader(hasServer bool) string {
 	b.WriteByte('\n')
 	width := 96
 	if hasServer {
-		width = 208
+		width = 210
 	}
 	b.WriteString(strings.Repeat("-", width))
 	b.WriteByte('\n')
