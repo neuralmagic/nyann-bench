@@ -149,26 +149,38 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	go func() {
 		defer wg.Done()
-		q := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, podFilter)
-		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
+		minQ := `min(vllm:kv_cache_usage_perc{job="vllm-prefill"})`
+		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
 		if err != nil {
-			slog.Debug("Failed to query prefill KV$", "error", err)
+			slog.Debug("Failed to query prefill KV$ min", "error", err)
 			return
 		}
-		sm.PrefillKVMin = stats.Min
-		sm.PrefillKVMax = stats.Max
+		maxQ := `max(vllm:kv_cache_usage_perc{job="vllm-prefill"})`
+		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query prefill KV$ max", "error", err)
+			return
+		}
+		sm.PrefillKVMin = minStats.Min
+		sm.PrefillKVMax = maxStats.Max
 	}()
 
 	go func() {
 		defer wg.Done()
-		q := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, podFilter)
-		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
+		minQ := `min(vllm:kv_cache_usage_perc{job="vllm-decode"})`
+		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
 		if err != nil {
-			slog.Debug("Failed to query decode KV$", "error", err)
+			slog.Debug("Failed to query decode KV$ min", "error", err)
 			return
 		}
-		sm.DecodeKVMin = stats.Min
-		sm.DecodeKVMax = stats.Max
+		maxQ := `max(vllm:kv_cache_usage_perc{job="vllm-decode"})`
+		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
+		if err != nil {
+			slog.Debug("Failed to query decode KV$ max", "error", err)
+			return
+		}
+		sm.DecodeKVMin = minStats.Min
+		sm.DecodeKVMax = maxStats.Max
 	}()
 
 	wg.Wait()
