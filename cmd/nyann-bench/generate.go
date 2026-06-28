@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -146,6 +147,11 @@ Workload types:
 			var promClient *promclient.Client
 			if prometheusURL != "" && deployName != "" {
 				promClient = promclient.NewClient(prometheusURL)
+				prefillDeploy := strings.Replace(deployName, "-decode", "-prefill", 1)
+				slog.Info("Prometheus scrape targets",
+					"url", prometheusURL,
+					"decode_pods", deployName+".*",
+					"prefill_pods", prefillDeploy+".*")
 			}
 
 			headerPrinted := false

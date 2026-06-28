@@ -101,6 +101,8 @@ func trimStage(start, end time.Time) (time.Time, time.Time) {
 // QueryStageServerMetrics queries Prometheus for server-side vLLM metrics for a single stage.
 func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
 	podFilter := deployName + ".*"
+	prefillPodFilter := strings.Replace(deployName, "-decode", "-prefill", 1) + ".*"
+	decodePodFilter := podFilter
 	start := floatToTime(ts.StartTime)
 	end := floatToTime(ts.EndTime)
 
@@ -149,13 +151,13 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	go func() {
 		defer wg.Done()
-		minQ := `min(vllm:kv_cache_usage_perc{job="vllm-prefill"})`
+		minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
 		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query prefill KV$ min", "error", err)
 			return
 		}
-		maxQ := `max(vllm:kv_cache_usage_perc{job="vllm-prefill"})`
+		maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
 		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query prefill KV$ max", "error", err)
@@ -167,13 +169,13 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	go func() {
 		defer wg.Done()
-		minQ := `min(vllm:kv_cache_usage_perc{job="vllm-decode"})`
+		minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, decodePodFilter)
 		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query decode KV$ min", "error", err)
 			return
 		}
-		maxQ := `max(vllm:kv_cache_usage_perc{job="vllm-decode"})`
+		maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, decodePodFilter)
 		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query decode KV$ max", "error", err)
