@@ -41,6 +41,14 @@ type ServerMetrics struct {
 	DecodeKVMax     float64                `json:"decode_kv_max"`
 }
 
+// HasData returns true if any metric field is non-zero.
+func (s *ServerMetrics) HasData() bool {
+	if s == nil {
+		return false
+	}
+	return s.TTFT.P50 != 0 || s.ITL.P50 != 0 || s.OutputTokensP50 != 0 || s.OutputTokensMax != 0
+}
+
 // ComputePerStage computes client-side statistics for each stage from records.
 func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp) []StageSummary {
 	var summaries []StageSummary

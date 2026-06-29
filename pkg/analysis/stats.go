@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/neuralmagic/nyann-bench/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 // Summary holds aggregate statistics from one or more JSONL result files.
@@ -236,29 +236,16 @@ func computeLatencyStats(values []float64) LatencyStats {
 
 	return LatencyStats{
 		Mean: sum / float64(len(sorted)),
-		P10:  percentile(sorted, 0.10),
-		P50:  percentile(sorted, 0.50),
-		P90:  percentile(sorted, 0.90),
-		P95:  percentile(sorted, 0.95),
-		P99:  percentile(sorted, 0.99),
+		P10:  statsutil.Percentile(sorted, 0.10),
+		P50:  statsutil.Percentile(sorted, 0.50),
+		P90:  statsutil.Percentile(sorted, 0.90),
+		P95:  statsutil.Percentile(sorted, 0.95),
+		P99:  statsutil.Percentile(sorted, 0.99),
 		Min:  sorted[0],
 		Max:  sorted[len(sorted)-1],
 	}
 }
 
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := p * float64(len(sorted)-1)
-	lower := int(math.Floor(idx))
-	upper := int(math.Ceil(idx))
-	if lower == upper {
-		return sorted[lower]
-	}
-	frac := idx - float64(lower)
-	return sorted[lower]*(1-frac) + sorted[upper]*frac
-}
 
 // FormatSummary returns a human-readable summary string.
 func FormatSummary(s *Summary) string {

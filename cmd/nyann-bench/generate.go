@@ -202,7 +202,13 @@ Workload types:
 			if summary.TotalRequests > 0 {
 				fmt.Fprint(os.Stderr, "\n")
 				if len(summary.Stages) > 0 {
-					hasServer := promClient != nil
+					hasServer := false
+					for _, s := range summary.Stages {
+						if s.Server.HasData() {
+							hasServer = true
+							break
+						}
+					}
 					fmt.Fprint(os.Stderr, analysis.FormatStageHeader(hasServer))
 					for _, s := range summary.Stages {
 						fmt.Fprint(os.Stderr, analysis.FormatStageRow(s))

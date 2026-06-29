@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 type Client struct {
@@ -138,57 +140,6 @@ func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Tim
 	return LatencyStats{P10: vals[0], P50: vals[1], P95: vals[2], P99: vals[3]}, nil
 }
 
-// SummaryQuantiles queries a Prometheus Summary metric for P10/P50/P95/P99.
-// It averages each quantile's value over the time range (suitable for Summary
-// metrics with short MaxAge like nyann_itl_summary_seconds).
-func (c *Client) SummaryQuantiles(metric string, start, end time.Time) (LatencyStats, error) {
-	window := int(end.Sub(start).Seconds())
-	if window < 1 {
-		return LatencyStats{}, nil
-	}
-	windowStr := fmt.Sprintf("%ds", window)
-
-	type qSpec struct {
-		label string
-		dst   *float64
-	}
-	var stats LatencyStats
-	specs := [4]qSpec{
-		{"0.1", &stats.P10},
-		{"0.5", &stats.P50},
-		{"0.95", &stats.P95},
-		{"0.99", &stats.P99},
-	}
-
-	var wg sync.WaitGroup
-	var firstErr error
-	var errOnce sync.Once
-
-	wg.Add(4)
-	for _, s := range specs {
-		go func(spec qSpec) {
-			defer wg.Done()
-			query := fmt.Sprintf(
-				`avg(avg_over_time(%s{quantile="%s"}[%s]))`,
-				metric, spec.label, windowStr,
-			)
-			points, err := c.QueryRange(query, end, end, time.Second)
-			if err != nil {
-				errOnce.Do(func() { firstErr = err })
-				return
-			}
-			if len(points) > 0 {
-				*spec.dst = points[0].Value
-			}
-		}(s)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return LatencyStats{}, firstErr
-	}
-	return stats, nil
-}
-
 // QueryGaugeStats queries a Prometheus gauge over a time range and returns P50 and max.
 func (c *Client) QueryGaugeStats(query string, start, end time.Time) (GaugeStats, error) {
 	points, err := c.QueryRange(query, start, end, 5*time.Second)
@@ -205,21 +156,8 @@ func (c *Client) QueryGaugeStats(query string, start, end time.Time) (GaugeStats
 	sort.Float64s(vals)
 	return GaugeStats{
 		Min: vals[0],
-		P50: percentile(vals, 0.50),
+		P50: statsutil.Percentile(vals, 0.50),
 		Max: vals[len(vals)-1],
 	}, nil
 }
 
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := p * float64(len(sorted)-1)
-	lo := int(math.Floor(idx))
-	hi := int(math.Ceil(idx))
-	if lo == hi || hi >= len(sorted) {
-		return sorted[lo]
-	}
-	frac := idx - float64(lo)
-	return sorted[lo]*(1-frac) + sorted[hi]*frac
-}
