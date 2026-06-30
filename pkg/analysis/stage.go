@@ -109,8 +109,8 @@ func trimStage(start, end time.Time) (time.Time, time.Time) {
 
 // QueryStageServerMetrics queries Prometheus for server-side vLLM metrics for a single stage.
 // It auto-detects aggregate vs PD mode from the deploy name: if it contains "-decode",
-// PD mode is assumed (separate prefill/decode KV queries); otherwise aggregate mode
-// queries KV cache without a job label filter.
+// PD mode is assumed (separate prefill/decode KV queries); otherwise aggregate mode.
+// All queries include a job label filter to avoid cross-deployment interference.
 func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
 	podFilter := deployName + ".*"
 	isAggregate := !strings.Contains(deployName, "-decode")
@@ -125,6 +125,11 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	sm := &ServerMetrics{Aggregate: isAggregate}
 
+	jobFilter := "vllm-aggregate"
+	if !isAggregate {
+		jobFilter = "vllm-decode"
+	}
+
 	kvQueries := 1
 	if !isAggregate {
 		kvQueries = 2
@@ -135,7 +140,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 	go func() {
 		defer wg.Done()
 		stats, err := client.HistogramQuantile(
-			"vllm:time_to_first_token_seconds_bucket", podFilter, trimStart, trimEnd)
+			"vllm:time_to_first_token_seconds_bucket", podFilter, jobFilter, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query server TTFT", "error", err)
 			return
@@ -146,7 +151,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 	go func() {
 		defer wg.Done()
 		stats, err := client.HistogramQuantile(
-			"vllm:inter_token_latency_seconds_bucket", podFilter, trimStart, trimEnd)
+			"vllm:inter_token_latency_seconds_bucket", podFilter, jobFilter, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query server ITL", "error", err)
 			return
@@ -156,7 +161,7 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 
 	go func() {
 		defer wg.Done()
-		q := fmt.Sprintf(`sum(rate(vllm:generation_tokens_total{pod=~"%s"}[10s]))`, podFilter)
+		q := fmt.Sprintf(`sum(rate(vllm:generation_tokens_total{job="%s", pod=~"%s"}[10s]))`, jobFilter, podFilter)
 		stats, err := client.QueryGaugeStats(q, trimStart, trimEnd)
 		if err != nil {
 			slog.Debug("Failed to query server TOK/s", "error", err)
@@ -169,13 +174,13 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 	if isAggregate {
 		go func() {
 			defer wg.Done()
-			minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{pod=~"%s"})`, podFilter)
+			minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="%s", pod=~"%s"})`, jobFilter, podFilter)
 			minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
 			if err != nil {
 				slog.Debug("Failed to query KV$ min", "error", err)
 				return
 			}
-			maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{pod=~"%s"})`, podFilter)
+			maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="%s", pod=~"%s"})`, jobFilter, podFilter)
 			maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
 			if err != nil {
 				slog.Debug("Failed to query KV$ max", "error", err)

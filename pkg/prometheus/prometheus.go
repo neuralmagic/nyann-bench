@@ -101,12 +101,15 @@ func (c *Client) QueryRange(query string, start, end time.Time, step time.Durati
 }
 
 // HistogramQuantile queries a Prometheus histogram bucket for P10/P50/P95/P99.
-func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Time) (LatencyStats, error) {
+// jobFilter scopes the query to a specific job label (e.g. "vllm-decode").
+func (c *Client) HistogramQuantile(bucket, podFilter, jobFilter string, start, end time.Time) (LatencyStats, error) {
 	window := int(end.Sub(start).Seconds())
 	if window < 1 {
 		return LatencyStats{}, nil
 	}
 	windowStr := fmt.Sprintf("%ds", window)
+
+	labels := fmt.Sprintf(`pod=~"%s", job="%s"`, podFilter, jobFilter)
 
 	quantiles := [4]float64{0.10, 0.50, 0.95, 0.99}
 	vals := [4]float64{}
@@ -120,8 +123,8 @@ func (c *Client) HistogramQuantile(bucket, podFilter string, start, end time.Tim
 		go func(idx int, quantile float64) {
 			defer wg.Done()
 			query := fmt.Sprintf(
-				`histogram_quantile(%g, sum(increase(%s{pod=~"%s"}[%s])) by (le))`,
-				quantile, bucket, podFilter, windowStr,
+				`histogram_quantile(%g, sum(increase(%s{%s}[%s])) by (le))`,
+				quantile, bucket, labels, windowStr,
 			)
 			points, err := c.QueryRange(query, end, end, time.Second)
 			if err != nil {
