@@ -147,11 +147,19 @@ Workload types:
 			var promClient *promclient.Client
 			if prometheusURL != "" && deployName != "" {
 				promClient = promclient.NewClient(prometheusURL)
-				prefillDeploy := strings.Replace(deployName, "-decode", "-prefill", 1)
-				slog.Info("Prometheus scrape targets",
-					"url", prometheusURL,
-					"decode_pods", deployName+".*",
-					"prefill_pods", prefillDeploy+".*")
+				if strings.Contains(deployName, "-decode") {
+					prefillDeploy := strings.Replace(deployName, "-decode", "-prefill", 1)
+					slog.Info("Prometheus scrape targets",
+						"url", prometheusURL,
+						"mode", "pd",
+						"decode_pods", deployName+".*",
+						"prefill_pods", prefillDeploy+".*")
+				} else {
+					slog.Info("Prometheus scrape targets",
+						"url", prometheusURL,
+						"mode", "aggregate",
+						"pods", deployName+".*")
+				}
 			}
 
 			headerPrinted := false
@@ -180,7 +188,7 @@ Workload types:
 					}
 
 					if !headerPrinted {
-						fmt.Fprint(os.Stderr, analysis.FormatStageHeader(stage.Server != nil))
+						fmt.Fprint(os.Stderr, analysis.FormatStageHeader(stage.Server))
 						headerPrinted = true
 					}
 					fmt.Fprint(os.Stderr, analysis.FormatStageRow(stage))
@@ -202,14 +210,14 @@ Workload types:
 			if summary.TotalRequests > 0 {
 				fmt.Fprint(os.Stderr, "\n")
 				if len(summary.Stages) > 0 {
-					hasServer := false
+					var serverRef *analysis.ServerMetrics
 					for _, s := range summary.Stages {
 						if s.Server.HasData() {
-							hasServer = true
+							serverRef = s.Server
 							break
 						}
 					}
-					fmt.Fprint(os.Stderr, analysis.FormatStageHeader(hasServer))
+					fmt.Fprint(os.Stderr, analysis.FormatStageHeader(serverRef))
 					for _, s := range summary.Stages {
 						fmt.Fprint(os.Stderr, analysis.FormatStageRow(s))
 					}

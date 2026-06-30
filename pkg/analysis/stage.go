@@ -31,6 +31,7 @@ type StageSummary struct {
 
 // ServerMetrics holds server-side metrics queried from Prometheus.
 type ServerMetrics struct {
+	Aggregate       bool                   `json:"aggregate,omitempty"`
 	TTFT            prometheus.LatencyStats `json:"ttft_seconds"`
 	ITL             prometheus.LatencyStats `json:"itl_seconds"`
 	OutputTokensP50 float64                `json:"output_tokens_per_second_p50"`
@@ -107,10 +108,13 @@ func trimStage(start, end time.Time) (time.Time, time.Time) {
 }
 
 // QueryStageServerMetrics queries Prometheus for server-side vLLM metrics for a single stage.
+// It auto-detects aggregate vs PD mode from the deploy name: if it contains "-decode",
+// PD mode is assumed (separate prefill/decode KV queries); otherwise aggregate mode
+// queries KV cache without a job label filter.
 func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimestamp, deployName string) *ServerMetrics {
 	podFilter := deployName + ".*"
-	prefillPodFilter := strings.Replace(deployName, "-decode", "-prefill", 1) + ".*"
-	decodePodFilter := podFilter
+	isAggregate := !strings.Contains(deployName, "-decode")
+
 	start := floatToTime(ts.StartTime)
 	end := floatToTime(ts.EndTime)
 
@@ -119,9 +123,14 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		trimStart, trimEnd = start, end
 	}
 
-	sm := &ServerMetrics{}
+	sm := &ServerMetrics{Aggregate: isAggregate}
+
+	kvQueries := 1
+	if !isAggregate {
+		kvQueries = 2
+	}
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(3 + kvQueries)
 
 	go func() {
 		defer wg.Done()
@@ -157,61 +166,87 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 		sm.OutputTokensMax = stats.Max
 	}()
 
-	go func() {
-		defer wg.Done()
-		minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
-		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
-		if err != nil {
-			slog.Debug("Failed to query prefill KV$ min", "error", err)
-			return
-		}
-		maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
-		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
-		if err != nil {
-			slog.Debug("Failed to query prefill KV$ max", "error", err)
-			return
-		}
-		sm.PrefillKVMin = minStats.Min
-		sm.PrefillKVMax = maxStats.Max
-	}()
+	if isAggregate {
+		go func() {
+			defer wg.Done()
+			minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{pod=~"%s"})`, podFilter)
+			minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query KV$ min", "error", err)
+				return
+			}
+			maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{pod=~"%s"})`, podFilter)
+			maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query KV$ max", "error", err)
+				return
+			}
+			sm.DecodeKVMin = minStats.Min
+			sm.DecodeKVMax = maxStats.Max
+		}()
+	} else {
+		prefillPodFilter := strings.Replace(deployName, "-decode", "-prefill", 1) + ".*"
 
-	go func() {
-		defer wg.Done()
-		minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, decodePodFilter)
-		minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
-		if err != nil {
-			slog.Debug("Failed to query decode KV$ min", "error", err)
-			return
-		}
-		maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, decodePodFilter)
-		maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
-		if err != nil {
-			slog.Debug("Failed to query decode KV$ max", "error", err)
-			return
-		}
-		sm.DecodeKVMin = minStats.Min
-		sm.DecodeKVMax = maxStats.Max
-	}()
+		go func() {
+			defer wg.Done()
+			minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
+			minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query prefill KV$ min", "error", err)
+				return
+			}
+			maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-prefill", pod=~"%s"})`, prefillPodFilter)
+			maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query prefill KV$ max", "error", err)
+				return
+			}
+			sm.PrefillKVMin = minStats.Min
+			sm.PrefillKVMax = maxStats.Max
+		}()
+
+		go func() {
+			defer wg.Done()
+			minQ := fmt.Sprintf(`min(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, podFilter)
+			minStats, err := client.QueryGaugeStats(minQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query decode KV$ min", "error", err)
+				return
+			}
+			maxQ := fmt.Sprintf(`max(vllm:kv_cache_usage_perc{job="vllm-decode", pod=~"%s"})`, podFilter)
+			maxStats, err := client.QueryGaugeStats(maxQ, trimStart, trimEnd)
+			if err != nil {
+				slog.Debug("Failed to query decode KV$ max", "error", err)
+				return
+			}
+			sm.DecodeKVMin = minStats.Min
+			sm.DecodeKVMax = maxStats.Max
+		}()
+	}
 
 	wg.Wait()
 	return sm
 }
 
-// FormatStageHeader returns the table header line.
-func FormatStageHeader(hasServer bool) string {
+// FormatStageHeader returns the table header line. Pass a non-nil ServerMetrics
+// to include server-side columns; its Aggregate field controls KV column layout.
+func FormatStageHeader(sm *ServerMetrics) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s",
 		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S", "ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99")
-	if hasServer {
-		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %7s  %7s  %7s  %7s",
-			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99",
-			"PKV_MIN", "PKV_MAX", "DKV_MIN", "DKV_MAX")
+	width := 96
+	if sm != nil {
+		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s",
+			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99")
+		if sm.Aggregate {
+			fmt.Fprintf(&b, "  %7s  %7s", "KV_MIN", "KV_MAX")
+			width = 194
+		} else {
+			fmt.Fprintf(&b, "  %7s  %7s  %7s  %7s", "PKV_MIN", "PKV_MAX", "DKV_MIN", "DKV_MAX")
+			width = 210
+		}
 	}
 	b.WriteByte('\n')
-	width := 96
-	if hasServer {
-		width = 210
-	}
 	b.WriteString(strings.Repeat("-", width))
 	b.WriteByte('\n')
 	return b.String()
@@ -225,13 +260,19 @@ func FormatStageRow(s StageSummary) string {
 		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99))
 	if s.Server != nil {
 		sm := s.Server
-		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %7s  %7s  %7s  %7s",
+		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s",
 			sm.OutputTokensP50,
 			fmtDuration(sm.TTFT.P50), fmtDuration(sm.TTFT.P99),
 			fmtDuration(sm.ITL.P10), fmtDuration(sm.ITL.P50),
-			fmtDuration(sm.ITL.P95), fmtDuration(sm.ITL.P99),
-			fmtPct(sm.PrefillKVMin), fmtPct(sm.PrefillKVMax),
-			fmtPct(sm.DecodeKVMin), fmtPct(sm.DecodeKVMax))
+			fmtDuration(sm.ITL.P95), fmtDuration(sm.ITL.P99))
+		if sm.Aggregate {
+			row += fmt.Sprintf("  %7s  %7s",
+				fmtPct(sm.DecodeKVMin), fmtPct(sm.DecodeKVMax))
+		} else {
+			row += fmt.Sprintf("  %7s  %7s  %7s  %7s",
+				fmtPct(sm.PrefillKVMin), fmtPct(sm.PrefillKVMax),
+				fmtPct(sm.DecodeKVMin), fmtPct(sm.DecodeKVMax))
+		}
 	}
 	return row + "\n"
 }

@@ -1,6 +1,7 @@
 package analysis_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
@@ -84,7 +85,7 @@ func TestFormatStageTable(t *testing.T) {
 		ITLMs:             analysis.LatencyStats{P10: 10, P50: 25, P95: 40, P99: 50},
 	}
 
-	header := analysis.FormatStageHeader(false)
+	header := analysis.FormatStageHeader(nil)
 	if len(header) == 0 {
 		t.Fatal("empty header")
 	}
@@ -93,4 +94,20 @@ func TestFormatStageTable(t *testing.T) {
 	if len(row) == 0 {
 		t.Fatal("empty row")
 	}
+
+	// PD header shows PKV/DKV columns.
+	pdHeader := analysis.FormatStageHeader(&analysis.ServerMetrics{})
+	if !contains(pdHeader, "PKV_MIN") || !contains(pdHeader, "DKV_MIN") {
+		t.Error("PD header should contain PKV_MIN and DKV_MIN")
+	}
+
+	// Aggregate header shows KV_MIN/KV_MAX instead.
+	aggHeader := analysis.FormatStageHeader(&analysis.ServerMetrics{Aggregate: true})
+	if !contains(aggHeader, "KV_MIN") || contains(aggHeader, "PKV_MIN") {
+		t.Error("aggregate header should contain KV_MIN but not PKV_MIN")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) > 0 && len(substr) > 0 && strings.Contains(s, substr)
 }
