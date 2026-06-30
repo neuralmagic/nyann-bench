@@ -139,8 +139,26 @@ Or with a Starlark config file:
 | `faker` | Diverse, realistic generated text (names, locations, phrases) |
 | `corpus` | Sliding window over real text files (ShareGPT, custom corpora) |
 | `gsm8k` | Grade School Math 8K with few-shot prompting and streaming eval |
+| `gpqa` | Graduate-level multiple-choice questions with streaming eval |
 
 All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`.
+
+To debug prefix caching, add `prompt_subset` to a workload to cycle a fixed prompt set for the full stage duration:
+
+```json
+{
+  "load": {"concurrency": 128, "duration": "30m"},
+  "workload": {
+    "type": "gsm8k",
+    "gsm8k_path": "/data/gsm8k_test.jsonl",
+    "gsm8k_train_path": "/data/gsm8k_train.jsonl",
+    "prompt_subset": 50,
+    "prompt_subset_seed": 42
+  }
+}
+```
+
+In multi-worker runs, all workers use the same seed to choose the global subset, then partition it by worker ID, so the workers do not collide by default.
 
 ## Load modes
 

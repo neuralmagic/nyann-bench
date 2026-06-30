@@ -216,6 +216,55 @@ func TestCorpusEmpty(t *testing.T) {
 	}
 }
 
+func TestPromptSubsetCyclesFixedIndices(t *testing.T) {
+	ds := dataset.NewFaker(32, 8, 1, 4.0)
+	subset, err := dataset.NewPromptSubset(ds, 2, dataset.DefaultPromptSubsetSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := subset.NextConversation()
+	second := subset.NextConversation()
+	third := subset.NextConversation()
+
+	if first.Turns[0][0].Content == second.Turns[0][0].Content {
+		t.Fatal("expected prompt subset to contain distinct first two prompts")
+	}
+	if first.Turns[0][0].Content != third.Turns[0][0].Content {
+		t.Fatal("expected prompt subset to cycle back to first prompt")
+	}
+}
+
+func TestCorpusPromptSubsetReplaysByOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "corpus.txt")
+	if err := os.WriteFile(path, []byte(strings.Repeat("abcdefghijklmnopqrstuvwxyz ", 100)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ds, err := dataset.NewCorpus(path, 8, 4, 1, 4.0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds.SetOffsetSeed(123)
+
+	subset, err := dataset.NewPromptSubset(ds, 2, 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := subset.NextConversation()
+	second := subset.NextConversation()
+	third := subset.NextConversation()
+
+	if first.Turns[0][0].Content == second.Turns[0][0].Content {
+		t.Fatal("expected corpus subset to include distinct offsets")
+	}
+	if first.Turns[0][0].Content != third.Turns[0][0].Content {
+		t.Fatal("expected corpus subset to replay the first offset")
+	}
+}
+
 func TestCorpusPreTokenize(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
@@ -223,7 +272,7 @@ func TestCorpusPreTokenize(t *testing.T) {
 	// Create corpus with mixed token density:
 	// - dense region (short words ≈ 2 chars/token)
 	// - sparse region (long words ≈ 6 chars/token)
-	dense := strings.Repeat("a b c d e f g h ", 500)  // ~4000 chars, ~2 chars/tok
+	dense := strings.Repeat("a b c d e f g h ", 500)                 // ~4000 chars, ~2 chars/tok
 	sparse := strings.Repeat("elephant butterfly caterpillar ", 200) // ~6000 chars, ~6 chars/tok
 	text := dense + sparse
 	if err := os.WriteFile(path, []byte(text), 0644); err != nil {

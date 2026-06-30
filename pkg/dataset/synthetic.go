@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync/atomic"
 
 	"github.com/neuralmagic/nyann-bench/pkg/client"
 )
@@ -15,6 +16,7 @@ type Synthetic struct {
 	OSL           int
 	Turns         int
 	CharsPerToken float64
+	seq           atomic.Uint64
 }
 
 func NewSynthetic(isl, osl, turns int, charsPerToken float64) *Synthetic {
@@ -32,6 +34,12 @@ func (s *Synthetic) turnISL(t int) int {
 }
 
 func (s *Synthetic) NextConversation() Conversation {
+	seed := s.seq.Add(1)
+	return s.ConversationAt(int(seed - 1))
+}
+
+func (s *Synthetic) ConversationAt(index int) Conversation {
+	rng := rand.New(rand.NewSource(int64(index + 1)))
 	turns := make([][]client.Message, s.Turns)
 
 	var history []client.Message
@@ -39,7 +47,7 @@ func (s *Synthetic) NextConversation() Conversation {
 		isl := s.turnISL(t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), isl, s.CharsPerToken),
+			Content: padToTokens(rng, fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), isl, s.CharsPerToken),
 		}
 		history = append(history, userMsg)
 
@@ -50,7 +58,7 @@ func (s *Synthetic) NextConversation() Conversation {
 		if t < s.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: padToTokens("This is a simulated assistant response.", s.OSL, s.CharsPerToken),
+				Content: padToTokens(rng, "This is a simulated assistant response.", s.OSL, s.CharsPerToken),
 			})
 		}
 	}
@@ -59,7 +67,7 @@ func (s *Synthetic) NextConversation() Conversation {
 }
 
 // padToTokens pads a string with random words to approximate the target token count.
-func padToTokens(base string, targetTokens int, charsPerToken float64) string {
+func padToTokens(rng *rand.Rand, base string, targetTokens int, charsPerToken float64) string {
 	targetChars := int(float64(targetTokens) * charsPerToken)
 	if len(base) >= targetChars {
 		return base[:targetChars]
@@ -74,7 +82,7 @@ func padToTokens(base string, targetTokens int, charsPerToken float64) string {
 		"what", "all", "were", "when", "we", "there", "can", "been", "has", "more"}
 
 	for b.Len() < targetChars {
-		b.WriteString(words[rand.Intn(len(words))])
+		b.WriteString(words[rng.Intn(len(words))])
 		b.WriteByte(' ')
 	}
 

@@ -66,7 +66,7 @@ func New(dir string, workerID int) (*Recorder, error) {
 		done: make(chan struct{}),
 		file: f,
 	}
-	go r.drain()
+	go r.drain(r.ch)
 	return r, nil
 }
 
@@ -76,13 +76,13 @@ func NewMemory() *Recorder {
 		ch:   make(chan written, 8192),
 		done: make(chan struct{}),
 	}
-	go r.drain()
+	go r.drain(r.ch)
 	return r
 }
 
-func (r *Recorder) drain() {
+func (r *Recorder) drain(ch <-chan written) {
 	defer close(r.done)
-	for w := range r.ch {
+	for w := range ch {
 		r.mu.Lock()
 		r.records = append(r.records, w.record)
 		r.mu.Unlock()
@@ -139,12 +139,12 @@ type StageTimestamp struct {
 
 // Timestamps holds phase timestamps for a single worker.
 type Timestamps struct {
-	StartTime      float64          `json:"start_time"`
-	RampupEndTime  float64          `json:"rampup_end_time"`
-	EndTime        float64          `json:"end_time"`
-	RampupSeconds  float64          `json:"rampup_duration_seconds"`
-	TotalSeconds   float64          `json:"total_duration_seconds"`
-	Stages         []StageTimestamp  `json:"stages,omitempty"`
+	StartTime     float64          `json:"start_time"`
+	RampupEndTime float64          `json:"rampup_end_time"`
+	EndTime       float64          `json:"end_time"`
+	RampupSeconds float64          `json:"rampup_duration_seconds"`
+	TotalSeconds  float64          `json:"total_duration_seconds"`
+	Stages        []StageTimestamp `json:"stages,omitempty"`
 }
 
 func (t *Timestamps) Write(path string) error {

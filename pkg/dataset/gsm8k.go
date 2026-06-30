@@ -16,10 +16,10 @@ import (
 // Uses the completions API (not chat) to match lm_eval's gsm8k task.
 // MaxTokens is deliberately not set — the model must generate freely.
 type GSM8K struct {
-	items    []gsm8kItem
-	fewShot  []gsm8kItem // training examples for few-shot prompting
-	nShot    int
-	idx      atomic.Uint64
+	items   []gsm8kItem
+	fewShot []gsm8kItem // training examples for few-shot prompting
+	nShot   int
+	idx     atomic.Uint64
 }
 
 type gsm8kItem struct {
@@ -126,14 +126,34 @@ func PartitionSize(total, workerID, numWorkers int) int {
 
 func (g *GSM8K) NextConversation() Conversation {
 	idx := g.idx.Add(1) - 1
-	item := g.items[idx%uint64(len(g.items))]
+	itemIdx := int(idx % uint64(len(g.items)))
+	item := g.items[itemIdx]
 
-	prompt := g.buildPrompt(item)
+	prompt := g.buildPrompt(item, nil)
 
 	greedy := 0.0
 	return Conversation{
 		Prompt:         prompt,
 		MaxTokens:      2048, // generous for R1 long-form reasoning; stop sequences end it early
+		Stop:           []string{"Question:", "</s>", "<|im_end|>"},
+		Temperature:    &greedy,
+		ExpectedAnswer: eval.ExtractExpected(item.Answer),
+	}
+}
+
+func (g *GSM8K) ConversationAt(index int) Conversation {
+	if index < 0 {
+		index = 0
+	}
+	itemIdx := index % len(g.items)
+	item := g.items[itemIdx]
+
+	prompt := g.buildPrompt(item, rand.New(rand.NewSource(int64(itemIdx)+1)))
+
+	greedy := 0.0
+	return Conversation{
+		Prompt:         prompt,
+		MaxTokens:      2048,
 		Stop:           []string{"Question:", "</s>", "<|im_end|>"},
 		Temperature:    &greedy,
 		ExpectedAnswer: eval.ExtractExpected(item.Answer),
@@ -150,12 +170,17 @@ func (g *GSM8K) NextConversation() Conversation {
 //	...
 //	Question: <test question>
 //	Answer:
-func (g *GSM8K) buildPrompt(testItem gsm8kItem) string {
+func (g *GSM8K) buildPrompt(testItem gsm8kItem, rng *rand.Rand) string {
 	var b strings.Builder
 
 	// Add few-shot examples from training set
 	if g.nShot > 0 {
-		indices := rand.Perm(len(g.fewShot))[:g.nShot]
+		var indices []int
+		if rng != nil {
+			indices = rng.Perm(len(g.fewShot))[:g.nShot]
+		} else {
+			indices = rand.Perm(len(g.fewShot))[:g.nShot]
+		}
 		for i, idx := range indices {
 			if i > 0 {
 				b.WriteString("\n\n")

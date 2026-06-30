@@ -31,18 +31,20 @@ func evalCmd() *cobra.Command {
 
 func evalGSM8KCmd() *cobra.Command {
 	var (
-		target         string
-		model          string
-		concurrency    int
-		gsm8kPath      string
-		gsm8kTrainPath string
-		numFewShot     int
-		timeout        string
-		outputDir      string
-		metricsAddr    string
-		workerID       int
-		workers        int
-		kubeFlags      kube.Flags
+		target           string
+		model            string
+		concurrency      int
+		gsm8kPath        string
+		gsm8kTrainPath   string
+		numFewShot       int
+		promptSubset     int
+		promptSubsetSeed int64
+		timeout          string
+		outputDir        string
+		metricsAddr      string
+		workerID         int
+		workers          int
+		kubeFlags        kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -114,14 +116,33 @@ Example:
 				return fmt.Errorf("loading GSM8K dataset: %w", err)
 			}
 			totalItems := gsm8kDS.Len()
-			if workers > 1 {
-				gsm8kDS.Partition(workerID, workers)
+			workload := config.Workload{
+				Type:             "gsm8k",
+				GSM8KPath:        gsm8kPath,
+				GSM8KTrainPath:   gsm8kTrainPath,
+				NumFewShot:       &numFewShot,
+				PromptSubset:     promptSubset,
+				PromptSubsetSeed: promptSubsetSeed,
 			}
-			partitionItems := gsm8kDS.Len()
+			ds, err := preparePromptSubset(gsm8kDS, &workload, workerID, workers, true)
+			if err != nil {
+				return err
+			}
+			lenDS, ok := ds.(interface{ Len() int })
+			if !ok {
+				return fmt.Errorf("prepared GSM8K dataset does not expose Len")
+			}
+			partitionItems := lenDS.Len()
+			maxRequests := partitionItems
+			if promptSubset > 0 {
+				maxRequests = 0
+			}
 
 			slog.Info("GSM8K eval configured",
 				"total_items", totalItems,
 				"partition_items", partitionItems,
+				"prompt_subset", promptSubset,
+				"prompt_subset_seed", promptSubsetSeed,
 				"worker_id", workerID,
 				"workers", workers,
 				"concurrency", concurrency,
@@ -129,20 +150,15 @@ Example:
 				"num_fewshot", numFewShot)
 
 			sc := &config.ScenarioConfig{
-				Target: target,
-				Model:  model,
-				Workload: config.Workload{
-					Type:           "gsm8k",
-					GSM8KPath:      gsm8kPath,
-					GSM8KTrainPath: gsm8kTrainPath,
-					NumFewShot:     &numFewShot,
-				},
+				Target:   target,
+				Model:    model,
+				Workload: workload,
 				Stages: []config.ScenarioStage{{
 					Name:        "gsm8k-eval",
 					Duration:    timeoutDur,
 					Mode:        "concurrent",
 					Concurrency: concurrency,
-					MaxRequests: partitionItems,
+					MaxRequests: maxRequests,
 				}},
 				Workers:  workers,
 				WorkerID: workerID,
@@ -155,7 +171,7 @@ Example:
 				OutputDir:   outputDir,
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
-				Dataset:     gsm8kDS,
+				Dataset:     ds,
 			})
 			if err != nil {
 				return err
@@ -182,6 +198,8 @@ Example:
 	cmd.Flags().StringVar(&gsm8kPath, "gsm8k-path", "", "Path to GSM8K test JSONL file (required)")
 	cmd.Flags().StringVar(&gsm8kTrainPath, "gsm8k-train-path", "", "Path to GSM8K train JSONL (for few-shot examples)")
 	cmd.Flags().IntVar(&numFewShot, "num-fewshot", 5, "Number of few-shot examples (0 for zero-shot)")
+	cmd.Flags().IntVar(&promptSubset, "prompt-subset", 0, "Limit prompt variety to a deterministic subset (0 = disabled)")
+	cmd.Flags().Int64Var(&promptSubsetSeed, "prompt-subset-seed", dataset.DefaultPromptSubsetSeed, "Seed for --prompt-subset selection/order")
 	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
@@ -198,17 +216,19 @@ Example:
 
 func evalGPQACmd() *cobra.Command {
 	var (
-		target      string
-		model       string
-		concurrency int
-		gpqaPath    string
-		timeout     string
-		outputDir   string
-		metricsAddr string
-		workerID    int
-		workers     int
-		maxTokens   int
-		kubeFlags   kube.Flags
+		target           string
+		model            string
+		concurrency      int
+		gpqaPath         string
+		promptSubset     int
+		promptSubsetSeed int64
+		timeout          string
+		outputDir        string
+		metricsAddr      string
+		workerID         int
+		workers          int
+		maxTokens        int
+		kubeFlags        kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -276,32 +296,46 @@ Example:
 				return fmt.Errorf("loading GPQA dataset: %w", err)
 			}
 			totalItems := gpqaDS.Len()
-			if workers > 1 {
-				gpqaDS.Partition(workerID, workers)
+			workload := config.Workload{
+				Type:             "gpqa",
+				GPQAPath:         gpqaPath,
+				PromptSubset:     promptSubset,
+				PromptSubsetSeed: promptSubsetSeed,
 			}
-			partitionItems := gpqaDS.Len()
+			ds, err := preparePromptSubset(gpqaDS, &workload, workerID, workers, true)
+			if err != nil {
+				return err
+			}
+			lenDS, ok := ds.(interface{ Len() int })
+			if !ok {
+				return fmt.Errorf("prepared GPQA dataset does not expose Len")
+			}
+			partitionItems := lenDS.Len()
+			maxRequests := partitionItems
+			if promptSubset > 0 {
+				maxRequests = 0
+			}
 
 			slog.Info("GPQA eval configured",
 				"total_items", totalItems,
 				"partition_items", partitionItems,
+				"prompt_subset", promptSubset,
+				"prompt_subset_seed", promptSubsetSeed,
 				"worker_id", workerID,
 				"workers", workers,
 				"concurrency", concurrency,
 				"timeout", timeout)
 
 			sc := &config.ScenarioConfig{
-				Target: target,
-				Model:  model,
-				Workload: config.Workload{
-					Type:     "gpqa",
-					GPQAPath: gpqaPath,
-				},
+				Target:   target,
+				Model:    model,
+				Workload: workload,
 				Stages: []config.ScenarioStage{{
 					Name:        "gpqa-eval",
 					Duration:    timeoutDur,
 					Mode:        "concurrent",
 					Concurrency: concurrency,
-					MaxRequests: partitionItems,
+					MaxRequests: maxRequests,
 				}},
 				Workers:  workers,
 				WorkerID: workerID,
@@ -314,7 +348,7 @@ Example:
 				OutputDir:   outputDir,
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
-				Dataset:     gpqaDS,
+				Dataset:     ds,
 			})
 			if err != nil {
 				return err
@@ -339,6 +373,8 @@ Example:
 	cmd.Flags().StringVar(&model, "model", "", "Model name (auto-detected if omitted)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 64, "Number of concurrent streams")
 	cmd.Flags().StringVar(&gpqaPath, "gpqa-path", "", "Path to GPQA JSONL file (required)")
+	cmd.Flags().IntVar(&promptSubset, "prompt-subset", 0, "Limit prompt variety to a deterministic subset (0 = disabled)")
+	cmd.Flags().Int64Var(&promptSubsetSeed, "prompt-subset-seed", dataset.DefaultPromptSubsetSeed, "Seed for --prompt-subset selection/order")
 	cmd.Flags().StringVar(&timeout, "timeout", "30m", "Hard time cap for the evaluation")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp output files")
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")

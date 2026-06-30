@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,10 @@ func startTestServer(t *testing.T) string {
 	}
 	t.Fatal("server did not start")
 	return ""
+}
+
+func intPtr(v int) *int {
+	return &v
 }
 
 // TestFiniteDatasetRunsFullDuration verifies that a finite eval dataset
@@ -155,5 +161,82 @@ func TestExplicitMaxRequestsStopsEarly(t *testing.T) {
 
 	if summary.TotalRequests != 5 {
 		t.Fatalf("expected exactly 5 requests, got %d", summary.TotalRequests)
+	}
+}
+
+func TestPromptSubsetCyclesBeyondSubsetSize(t *testing.T) {
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "gsm8k_test.jsonl")
+	items := `{"question":"What is 1+1?","answer":"1+1=2\n#### 2"}
+{"question":"What is 2+2?","answer":"2+2=4\n#### 4"}
+{"question":"What is 3+3?","answer":"3+3=6\n#### 6"}
+{"question":"What is 4+4?","answer":"4+4=8\n#### 8"}
+`
+	if err := os.WriteFile(testPath, []byte(items), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &config.Workload{
+		Type:         "gsm8k",
+		GSM8KPath:    testPath,
+		NumFewShot:   intPtr(0),
+		PromptSubset: 2,
+	}
+
+	ds, err := buildDataset(w, 4.0, nil, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := ds.NextConversation().ExpectedAnswer
+	second := ds.NextConversation().ExpectedAnswer
+	third := ds.NextConversation().ExpectedAnswer
+
+	if first == second {
+		t.Fatalf("expected two distinct prompts in subset, got repeated answer %q", first)
+	}
+	if first != third {
+		t.Fatalf("expected subset to cycle after two prompts, got first=%q third=%q", first, third)
+	}
+}
+
+func TestPromptSubsetPartitionsGloballyAcrossWorkers(t *testing.T) {
+	dir := t.TempDir()
+	testPath := filepath.Join(dir, "gsm8k_test.jsonl")
+	var items []string
+	for i := 1; i <= 10; i++ {
+		items = append(items, fmt.Sprintf(`{"question":"Q%d","answer":"#### %d"}`, i, i))
+	}
+	if err := os.WriteFile(testPath, []byte(strings.Join(items, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &config.Workload{
+		Type:         "gsm8k",
+		GSM8KPath:    testPath,
+		NumFewShot:   intPtr(0),
+		PromptSubset: 5,
+	}
+
+	seen := map[string]int{}
+	total := 0
+	for workerID := 0; workerID < 3; workerID++ {
+		ds, err := buildDataset(w, 4.0, nil, workerID, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lenDS := ds.(interface{ Len() int })
+		total += lenDS.Len()
+		for i := 0; i < lenDS.Len(); i++ {
+			conv := ds.NextConversation()
+			if prev, ok := seen[conv.ExpectedAnswer]; ok {
+				t.Fatalf("answer %q assigned to both worker %d and %d", conv.ExpectedAnswer, prev, workerID)
+			}
+			seen[conv.ExpectedAnswer] = workerID
+		}
+	}
+
+	if total != 5 {
+		t.Fatalf("expected 5 total prompts across workers, got %d", total)
 	}
 }

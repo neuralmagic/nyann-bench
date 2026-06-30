@@ -38,31 +38,35 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 // buildDataset constructs a dataset from the workload config.
 // tokenCounter is optional; when non-nil the corpus dataset tokenizes each
 // chunk via /tokenize and trims to the exact target token count.
-func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
+func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error), workerID, workers int) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
 		subISL = *w.SubsequentISL
 	}
 
+	var ds dataset.Dataset
 	switch w.Type {
 	case "synthetic":
-		ds := dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
-		ds.SubsequentISL = subISL
-		return ds, nil
+		s := dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
+		s.SubsequentISL = subISL
+		ds = s
 	case "faker":
-		ds := dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
-		ds.SubsequentISL = subISL
-		return ds, nil
+		f := dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
+		f.SubsequentISL = subISL
+		ds = f
 	case "corpus":
 		if w.CorpusPath == "" {
 			return nil, fmt.Errorf("workload.corpus_path is required for corpus type")
 		}
-		ds, err := dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
+		c, err := dataset.NewCorpus(w.CorpusPath, w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		if err != nil {
 			return nil, err
 		}
-		ds.SubsequentISL = subISL
-		return ds, nil
+		c.SubsequentISL = subISL
+		if w.PromptSubset > 0 {
+			c.SetOffsetSeed(promptSubsetSeed(w))
+		}
+		ds = c
 	case "gsm8k":
 		if w.GSM8KPath == "" {
 			return nil, fmt.Errorf("workload.gsm8k_path is required for gsm8k type")
@@ -75,16 +79,86 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 		if numFewShot > 0 && w.GSM8KTrainPath == "" {
 			return nil, fmt.Errorf("workload.gsm8k_train_path is required when num_fewshot > 0")
 		}
-		return dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
+		g, err := dataset.NewGSM8K(w.GSM8KPath, w.GSM8KTrainPath, numFewShot)
+		if err != nil {
+			return nil, err
+		}
+		ds = g
 	case "gpqa":
 		if w.GPQAPath == "" {
 			return nil, fmt.Errorf("workload.gpqa_path is required for gpqa type")
 		}
 		w.OSL = 0
-		return dataset.NewGPQA(w.GPQAPath, w.OSL)
+		g, err := dataset.NewGPQA(w.GPQAPath, w.OSL)
+		if err != nil {
+			return nil, err
+		}
+		ds = g
 	default:
 		return nil, fmt.Errorf("unknown workload type: %s (options: synthetic, faker, corpus, gsm8k, gpqa)", w.Type)
 	}
+
+	return preparePromptSubset(ds, w, workerID, workers, false)
+}
+
+type partitionableDataset interface {
+	Len() int
+	Partition(workerID, numWorkers int)
+}
+
+func promptSubsetSeed(w *config.Workload) int64 {
+	if w.PromptSubsetSeed != 0 {
+		return w.PromptSubsetSeed
+	}
+	return dataset.DefaultPromptSubsetSeed
+}
+
+func preparePromptSubset(ds dataset.Dataset, w *config.Workload, workerID, workers int, partitionAlways bool) (dataset.Dataset, error) {
+	if workers <= 0 {
+		workers = 1
+	}
+
+	if w.PromptSubset < 0 {
+		return nil, fmt.Errorf("workload.prompt_subset must be >= 0, got %d", w.PromptSubset)
+	}
+
+	subsetEnabled := w.PromptSubset > 0
+	seed := promptSubsetSeed(w)
+
+	if subsetEnabled {
+		indexed, ok := ds.(dataset.IndexedDataset)
+		if !ok {
+			return nil, fmt.Errorf("workload %q cannot replay prompt subsets by index", w.Type)
+		}
+		subset, err := dataset.NewPromptSubset(indexed, w.PromptSubset, seed)
+		if err != nil {
+			return nil, err
+		}
+		ds = subset
+		partitionAlways = true
+	}
+	if subsetEnabled {
+		if p, ok := ds.(partitionableDataset); ok && p.Len() < w.PromptSubset {
+			slog.Warn("Prompt subset clamped to dataset size",
+				"requested", w.PromptSubset,
+				"available", p.Len())
+		}
+	}
+
+	if partitionAlways {
+		p, ok := ds.(partitionableDataset)
+		if !ok {
+			return nil, fmt.Errorf("workload %q cannot be partitioned", w.Type)
+		}
+		if workers > 1 {
+			p.Partition(workerID, workers)
+		}
+		if p.Len() == 0 {
+			return nil, fmt.Errorf("workload.prompt_subset=%d leaves worker %d with no prompts across %d workers", w.PromptSubset, workerID, workers)
+		}
+	}
+
+	return ds, nil
 }
 
 type scenarioOpts struct {
@@ -138,7 +212,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 	ds := opts.Dataset
 	if ds == nil {
 		var err error
-		ds, err = buildDataset(&w, charsPerToken, tokenCounter)
+		ds, err = buildDataset(&w, charsPerToken, tokenCounter, sc.WorkerID, sc.Workers)
 		if err != nil {
 			return nil, err
 		}
@@ -327,7 +401,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 				}
 			}
 			var err error
-			runDS, err = buildDataset(runWorkload, runCharsPerToken, runTokenCounter)
+			runDS, err = buildDataset(runWorkload, runCharsPerToken, runTokenCounter, sc.WorkerID, sc.Workers)
 			if err != nil {
 				return nil, err
 			}
@@ -481,5 +555,7 @@ func workloadEqual(a, b *config.Workload) bool {
 	}
 	return a.Type == b.Type && a.Name == b.Name &&
 		a.ISL == b.ISL && a.OSL == b.OSL && a.Turns == b.Turns &&
-		a.CorpusPath == b.CorpusPath && a.GSM8KPath == b.GSM8KPath
+		a.CorpusPath == b.CorpusPath && a.GSM8KPath == b.GSM8KPath &&
+		a.GSM8KTrainPath == b.GSM8KTrainPath && a.GPQAPath == b.GPQAPath &&
+		a.PromptSubset == b.PromptSubset && a.PromptSubsetSeed == b.PromptSubsetSeed
 }
