@@ -15,13 +15,18 @@ type Synthetic struct {
 	OSL           int
 	Turns         int
 	CharsPerToken float64
+	TokenCounter  TokenCounter
 }
 
 func NewSynthetic(isl, osl, turns int, charsPerToken float64) *Synthetic {
+	return NewSyntheticWithTokenCounter(isl, osl, turns, charsPerToken, nil)
+}
+
+func NewSyntheticWithTokenCounter(isl, osl, turns int, charsPerToken float64, tokenCounter TokenCounter) *Synthetic {
 	if turns < 1 {
 		turns = 1
 	}
-	return &Synthetic{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
+	return &Synthetic{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken, TokenCounter: tokenCounter}
 }
 
 func (s *Synthetic) turnISL(t int) int {
@@ -39,7 +44,7 @@ func (s *Synthetic) NextConversation() Conversation {
 		isl := s.turnISL(t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), isl, s.CharsPerToken),
+			Content: s.padToTokens(fmt.Sprintf("Turn %d: Please respond with approximately %d tokens.", t+1, s.OSL), isl),
 		}
 		history = append(history, userMsg)
 
@@ -50,7 +55,7 @@ func (s *Synthetic) NextConversation() Conversation {
 		if t < s.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: padToTokens("This is a simulated assistant response.", s.OSL, s.CharsPerToken),
+				Content: s.padToTokens("This is a simulated assistant response.", s.OSL),
 			})
 		}
 	}
@@ -58,11 +63,16 @@ func (s *Synthetic) NextConversation() Conversation {
 	return Conversation{Turns: turns, MaxTokens: s.OSL}
 }
 
+func (s *Synthetic) padToTokens(base string, targetTokens int) string {
+	return padToTokens(base, targetTokens, s.CharsPerToken, s.TokenCounter)
+}
+
 // padToTokens pads a string with random words to approximate the target token count.
-func padToTokens(base string, targetTokens int, charsPerToken float64) string {
+func padToTokens(base string, targetTokens int, charsPerToken float64, tokenCounter TokenCounter) string {
 	targetChars := int(float64(targetTokens) * charsPerToken)
 	if len(base) >= targetChars {
-		return base[:targetChars]
+		trimmed, _ := trimToTokenBudget(base[:targetChars], targetTokens, tokenCounter)
+		return trimmed
 	}
 
 	var b strings.Builder
@@ -78,5 +88,6 @@ func padToTokens(base string, targetTokens int, charsPerToken float64) string {
 		b.WriteByte(' ')
 	}
 
-	return b.String()[:targetChars]
+	trimmed, _ := trimToTokenBudget(b.String()[:targetChars], targetTokens, tokenCounter)
+	return trimmed
 }

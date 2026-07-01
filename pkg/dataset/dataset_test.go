@@ -59,6 +59,41 @@ func TestFakerDeterministic(t *testing.T) {
 	}
 }
 
+func TestSyntheticExactTokenTrim(t *testing.T) {
+	counter := fixedCharsPerTokenCounter(4)
+	ds := dataset.NewSyntheticWithTokenCounter(100000, 100, 1, 5.28, counter)
+	conv := ds.NextConversation()
+
+	content := conv.Turns[0][0].Content
+	tokens, err := counter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens > 100000 {
+		t.Fatalf("expected prompt to fit requested ISL, got %d tokens", tokens)
+	}
+
+	withoutTrim := int(float64(100000) * 5.28 / 4.0)
+	if withoutTrim <= 131072 {
+		t.Fatalf("test setup no longer reproduces overshoot: got %d", withoutTrim)
+	}
+}
+
+func TestFakerExactTokenTrim(t *testing.T) {
+	counter := fixedCharsPerTokenCounter(4)
+	ds := dataset.NewFakerWithTokenCounter(100000, 100, 1, 5.28, counter)
+	conv := ds.NextConversation()
+
+	content := conv.Turns[0][0].Content
+	tokens, err := counter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens > 100000 {
+		t.Fatalf("expected prompt to fit requested ISL, got %d tokens", tokens)
+	}
+}
+
 func TestCorpusFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.txt")
@@ -223,7 +258,7 @@ func TestCorpusPreTokenize(t *testing.T) {
 	// Create corpus with mixed token density:
 	// - dense region (short words ≈ 2 chars/token)
 	// - sparse region (long words ≈ 6 chars/token)
-	dense := strings.Repeat("a b c d e f g h ", 500)  // ~4000 chars, ~2 chars/tok
+	dense := strings.Repeat("a b c d e f g h ", 500)                 // ~4000 chars, ~2 chars/tok
 	sparse := strings.Repeat("elephant butterfly caterpillar ", 200) // ~6000 chars, ~6 chars/tok
 	text := dense + sparse
 	if err := os.WriteFile(path, []byte(text), 0644); err != nil {
@@ -275,4 +310,10 @@ func TestCorpusPreTokenize(t *testing.T) {
 		}
 	}
 	t.Logf("Char-based token range: %d-%d (spread=%d)", minT, maxT, maxT-minT)
+}
+
+func fixedCharsPerTokenCounter(charsPerToken int) func(string) (int, error) {
+	return func(s string) (int, error) {
+		return (len(s) + charsPerToken - 1) / charsPerToken, nil
+	}
 }

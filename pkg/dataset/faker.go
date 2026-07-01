@@ -16,14 +16,19 @@ type Faker struct {
 	OSL           int
 	Turns         int
 	CharsPerToken float64
+	TokenCounter  TokenCounter
 	seq           atomic.Uint64
 }
 
 func NewFaker(isl, osl, turns int, charsPerToken float64) *Faker {
+	return NewFakerWithTokenCounter(isl, osl, turns, charsPerToken, nil)
+}
+
+func NewFakerWithTokenCounter(isl, osl, turns int, charsPerToken float64, tokenCounter TokenCounter) *Faker {
 	if turns < 1 {
 		turns = 1
 	}
-	return &Faker{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken}
+	return &Faker{ISL: isl, OSL: osl, Turns: turns, CharsPerToken: charsPerToken, TokenCounter: tokenCounter}
 }
 
 func (f *Faker) turnISL(t int) int {
@@ -44,7 +49,7 @@ func (f *Faker) NextConversation() Conversation {
 		prompt := f.generatePrompt(faker, t)
 		userMsg := client.Message{
 			Role:    "user",
-			Content: padWithFaker(faker, prompt, f.turnISL(t), f.CharsPerToken),
+			Content: f.padWithFaker(faker, prompt, f.turnISL(t)),
 		}
 		history = append(history, userMsg)
 
@@ -55,12 +60,16 @@ func (f *Faker) NextConversation() Conversation {
 		if t < f.Turns-1 {
 			history = append(history, client.Message{
 				Role:    "assistant",
-				Content: padWithFaker(faker, "Here is my response.", f.OSL, f.CharsPerToken),
+				Content: f.padWithFaker(faker, "Here is my response.", f.OSL),
 			})
 		}
 	}
 
 	return Conversation{Turns: turns, MaxTokens: f.OSL}
+}
+
+func (f *Faker) padWithFaker(faker *gofakeit.Faker, base string, targetTokens int) string {
+	return padWithFaker(faker, base, targetTokens, f.CharsPerToken, f.TokenCounter)
 }
 
 // generatePrompt creates a diverse, realistic prompt.
@@ -104,10 +113,11 @@ func (f *Faker) generatePrompt(faker *gofakeit.Faker, turn int) string {
 }
 
 // padWithFaker pads text to target token count using gofakeit paragraphs.
-func padWithFaker(faker *gofakeit.Faker, base string, targetTokens int, charsPerToken float64) string {
+func padWithFaker(faker *gofakeit.Faker, base string, targetTokens int, charsPerToken float64, tokenCounter TokenCounter) string {
 	targetChars := int(float64(targetTokens) * charsPerToken)
 	if len(base) >= targetChars {
-		return base[:targetChars]
+		trimmed, _ := trimToTokenBudget(base[:targetChars], targetTokens, tokenCounter)
+		return trimmed
 	}
 
 	var b strings.Builder
@@ -119,5 +129,6 @@ func padWithFaker(faker *gofakeit.Faker, base string, targetTokens int, charsPer
 		b.WriteByte(' ')
 	}
 
-	return b.String()[:targetChars]
+	trimmed, _ := trimToTokenBudget(b.String()[:targetChars], targetTokens, tokenCounter)
+	return trimmed
 }
