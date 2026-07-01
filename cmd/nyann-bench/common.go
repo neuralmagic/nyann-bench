@@ -46,11 +46,11 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 
 	switch w.Type {
 	case "synthetic":
-		ds := dataset.NewSynthetic(w.ISL, w.OSL, w.Turns, charsPerToken)
+		ds := dataset.NewSyntheticWithTokenCounter(w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		ds.SubsequentISL = subISL
 		return ds, nil
 	case "faker":
-		ds := dataset.NewFaker(w.ISL, w.OSL, w.Turns, charsPerToken)
+		ds := dataset.NewFakerWithTokenCounter(w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		ds.SubsequentISL = subISL
 		return ds, nil
 	case "corpus":

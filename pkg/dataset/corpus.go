@@ -25,13 +25,13 @@ type Corpus struct {
 	// TokenCounter counts tokens in a string via the server's /tokenize
 	// endpoint. When non-nil, nextChunk overfetches text and trims to the
 	// exact target token count. When nil, falls back to char-based estimate.
-	TokenCounter func(string) (int, error)
+	TokenCounter TokenCounter
 
 	text   string // concatenated corpus text
 	offset atomic.Uint64
 }
 
-func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64, tokenCounter func(string) (int, error)) (*Corpus, error) {
+func NewCorpus(corpusPath string, isl, osl, turns int, charsPerToken float64, tokenCounter TokenCounter) (*Corpus, error) {
 	if turns < 1 {
 		turns = 1
 	}
