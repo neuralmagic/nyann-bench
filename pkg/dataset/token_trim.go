@@ -16,16 +16,18 @@ func trimToTokenBudget(text string, targetTokens int, counter TokenCounter) (str
 		return text, false
 	}
 
-	lo, hi := 0, len(text)
+	boundaries := utf8PrefixBoundaries(text)
+	lo, hi := 0, len(boundaries)-1
 	best := 0
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		count, err := counter(text[:mid])
+		prefixLen := boundaries[mid]
+		count, err := counter(text[:prefixLen])
 		if err != nil {
 			break
 		}
 		if count <= targetTokens {
-			best = mid
+			best = prefixLen
 			lo = mid + 1
 		} else {
 			hi = mid - 1
@@ -36,4 +38,15 @@ func trimToTokenBudget(text string, targetTokens int, counter TokenCounter) (str
 		return "", true
 	}
 	return text[:best], true
+}
+
+func utf8PrefixBoundaries(text string) []int {
+	boundaries := make([]int, 0, len(text)+1)
+	boundaries = append(boundaries, 0)
+	for i := range text {
+		if i > 0 {
+			boundaries = append(boundaries, i)
+		}
+	}
+	return append(boundaries, len(text))
 }
