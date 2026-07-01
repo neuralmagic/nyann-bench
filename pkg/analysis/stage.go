@@ -237,20 +237,20 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 // to include server-side columns; its Aggregate field controls KV column layout.
 func FormatStageHeader(sm *ServerMetrics) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
+	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
 		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S",
-		"TTFT_AVG", "TTFT_P50", "TTFT_P95", "TTFT_P99",
+		"TTFT_AVG", "TTFT_P10", "TTFT_P50", "TTFT_P95", "TTFT_P99",
 		"ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99")
-	width := 144
+	width := 156
 	if sm != nil {
 		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s",
 			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99")
 		if sm.Aggregate {
 			fmt.Fprintf(&b, "  %7s  %7s", "KV_MIN", "KV_MAX")
-			width = 242
+			width = 254
 		} else {
 			fmt.Fprintf(&b, "  %7s  %7s  %7s  %7s", "PKV_MIN", "PKV_MAX", "DKV_MIN", "DKV_MAX")
-			width = 258
+			width = 270
 		}
 	}
 	b.WriteByte('\n')
@@ -261,10 +261,10 @@ func FormatStageHeader(sm *ServerMetrics) string {
 
 // FormatStageRow returns a single table row for a stage.
 func FormatStageRow(s StageSummary) string {
-	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
+	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
 		s.Concurrency, s.SuccessRequests, s.ErrorRequests,
 		s.TotalOutputTokens, s.OutputTokensPerS,
-		fmtMs(s.TTFTMs.Mean), fmtMs(s.TTFTMs.P50), fmtMs(s.TTFTMs.P95), fmtMs(s.TTFTMs.P99),
+		fmtMs(s.TTFTMs.Mean), fmtMs(s.TTFTMs.P10), fmtMs(s.TTFTMs.P50), fmtMs(s.TTFTMs.P95), fmtMs(s.TTFTMs.P99),
 		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99))
 	if s.Server != nil {
 		sm := s.Server
