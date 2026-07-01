@@ -295,7 +295,8 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -306,12 +307,13 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 		}
 
 		if len(chunk.Choices) > 0 {
-			if chunk.Choices[0].Delta.Content != "" {
+			delta := chunk.Choices[0].Delta
+			if delta.Content != "" || delta.Reasoning != "" {
 				if result.FirstToken.IsZero() {
 					result.FirstToken = now
 				}
 				result.TokenTimes = append(result.TokenTimes, now)
-				content.WriteString(chunk.Choices[0].Delta.Content)
+				content.WriteString(delta.Content)
 			}
 			if chunk.Choices[0].FinishReason != nil {
 				result.FinishReason = *chunk.Choices[0].FinishReason
