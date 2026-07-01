@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -18,6 +19,7 @@ type Metrics struct {
 	Stage           prometheus.Gauge
 	TTFTSeconds     prometheus.Histogram
 	ITLSeconds      prometheus.Histogram
+	ITLSummary      prometheus.Summary
 	E2ESeconds      prometheus.Histogram
 	OutputTokens    prometheus.Histogram
 	PromptTokens    prometheus.Histogram
@@ -69,6 +71,14 @@ func New(reg *prometheus.Registry, workloadName string, enableEval bool) *Metric
 			ConstLabels: constLabels,
 			Buckets:     prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms to ~16s
 		}),
+		ITLSummary: prometheus.NewSummary(prometheus.SummaryOpts{
+			Name:        "nyann_itl_summary_seconds",
+			Help:        "Inter-token latency (exact quantiles)",
+			ConstLabels: constLabels,
+			Objectives:  map[float64]float64{0.1: 0.01, 0.5: 0.01, 0.95: 0.01, 0.99: 0.001},
+			MaxAge:      1 * time.Second,
+			AgeBuckets:  5,
+		}),
 		E2ESeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:        "nyann_e2e_seconds",
 			Help:        "End-to-end request latency",
@@ -92,7 +102,7 @@ func New(reg *prometheus.Registry, workloadName string, enableEval bool) *Metric
 	reg.MustRegister(
 		m.RequestsTotal, m.FinishReasons,
 		m.Concurrency, m.Stage,
-		m.TTFTSeconds, m.ITLSeconds, m.E2ESeconds,
+		m.TTFTSeconds, m.ITLSeconds, m.ITLSummary, m.E2ESeconds,
 		m.OutputTokens, m.PromptTokens,
 	)
 

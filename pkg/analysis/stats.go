@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/neuralmagic/nyann-bench/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 // Summary holds aggregate statistics from one or more JSONL result files.
@@ -39,13 +39,18 @@ type Summary struct {
 	EvalAccuracy  float64 `json:"eval_accuracy,omitempty"`
 
 	Timestamps *recorder.Timestamps `json:"timestamps,omitempty"`
+
+	// Per-stage summaries (populated when benchmark uses multiple stages)
+	Stages []StageSummary `json:"stages,omitempty"`
 }
 
 // LatencyStats holds percentile statistics for a latency metric.
 type LatencyStats struct {
 	Mean float64 `json:"mean"`
+	P10  float64 `json:"p10"`
 	P50  float64 `json:"p50"`
 	P90  float64 `json:"p90"`
+	P95  float64 `json:"p95"`
 	P99  float64 `json:"p99"`
 	Min  float64 `json:"min"`
 	Max  float64 `json:"max"`
@@ -231,27 +236,16 @@ func computeLatencyStats(values []float64) LatencyStats {
 
 	return LatencyStats{
 		Mean: sum / float64(len(sorted)),
-		P50:  percentile(sorted, 0.50),
-		P90:  percentile(sorted, 0.90),
-		P99:  percentile(sorted, 0.99),
+		P10:  statsutil.Percentile(sorted, 0.10),
+		P50:  statsutil.Percentile(sorted, 0.50),
+		P90:  statsutil.Percentile(sorted, 0.90),
+		P95:  statsutil.Percentile(sorted, 0.95),
+		P99:  statsutil.Percentile(sorted, 0.99),
 		Min:  sorted[0],
 		Max:  sorted[len(sorted)-1],
 	}
 }
 
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := p * float64(len(sorted)-1)
-	lower := int(math.Floor(idx))
-	upper := int(math.Ceil(idx))
-	if lower == upper {
-		return sorted[lower]
-	}
-	frac := idx - float64(lower)
-	return sorted[lower]*(1-frac) + sorted[upper]*frac
-}
 
 // FormatSummary returns a human-readable summary string.
 func FormatSummary(s *Summary) string {
