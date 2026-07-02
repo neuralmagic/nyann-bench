@@ -231,22 +231,33 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		}
 
 		effectiveConcurrency := ss.Concurrency
+		effectiveConversationPoolSize := ss.ConversationPoolSize
+		if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
+			effectiveConversationPoolSize = effectiveConcurrency
+		}
 		if sc.Workers > 1 {
 			effectiveConcurrency = config.DivideConcurrency(ss.Concurrency, sc.Workers, sc.WorkerID)
+			effectiveConversationPoolSize = config.DivideConcurrency(ss.ConversationPoolSize, sc.Workers, sc.WorkerID)
+			if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
+				effectiveConversationPoolSize = effectiveConcurrency
+			}
 			slog.Info("Load division",
 				"stage", ss.Name,
 				"workers", sc.Workers,
 				"worker_id", sc.WorkerID,
 				"total_concurrency", ss.Concurrency,
-				"worker_concurrency", effectiveConcurrency)
+				"worker_concurrency", effectiveConcurrency,
+				"total_conversation_pool_size", ss.ConversationPoolSize,
+				"worker_conversation_pool_size", effectiveConversationPoolSize)
 		}
 
 		resolved = append(resolved, resolvedStage{
 			loadgen: loadgen.Stage{
-				Concurrency: effectiveConcurrency,
-				Duration:    ss.Duration,
-				Rampup:      ss.Rampup,
-				MaxRequests: ss.MaxRequests,
+				Concurrency:          effectiveConcurrency,
+				ConversationPoolSize: effectiveConversationPoolSize,
+				Duration:             ss.Duration,
+				Rampup:               ss.Rampup,
+				MaxRequests:          ss.MaxRequests,
 			},
 			target:   effectiveTarget,
 			model:    effectiveModel,
@@ -356,15 +367,16 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		}
 
 		gen := &loadgen.Generator{
-			Target:      runTarget,
-			Model:       runModel,
-			Mode:        loadgen.Mode(genMode),
-			Rate:        genRate,
-			MaxInFlight: genMaxInFlight,
-			CacheSalt:   runWorkload.CacheSalt,
-			Dataset:     runDS,
-			Recorder:    rec,
-			Metrics:     m,
+			Target:               runTarget,
+			Model:                runModel,
+			Mode:                 loadgen.Mode(genMode),
+			Rate:                 genRate,
+			MaxInFlight:          genMaxInFlight,
+			ConversationPoolSize: run.stages[0].ConversationPoolSize,
+			CacheSalt:            runWorkload.CacheSalt,
+			Dataset:              runDS,
+			Recorder:             rec,
+			Metrics:              m,
 		}
 
 		gen.RunStages(ctx, run.stages, func(i, concurrency int) {

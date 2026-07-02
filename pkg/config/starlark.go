@@ -56,6 +56,10 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 		return nil, fmt.Errorf("%s: no scenario() call found", path)
 	}
 
+	if err := result.Validate(); err != nil {
+		return nil, err
+	}
+
 	return result, nil
 }
 
@@ -63,16 +67,16 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var (
 		typ            string
-		isl            = 128
-		osl            = 256
-		turns          = 1
+		isl                           = 128
+		osl                           = 256
+		turns                         = 1
 		subsequentISL  starlark.Value = starlark.None
 		corpusPath     starlark.Value = starlark.None
 		gsm8kPath      starlark.Value = starlark.None
 		gsm8kTrainPath starlark.Value = starlark.None
-		numFewshot     = 5
+		numFewshot                    = 5
 		gpqaPath       starlark.Value = starlark.None
-		charsPerToken  = 0.0
+		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
 	)
@@ -117,42 +121,44 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 	}
 
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeWorkload), starlark.StringDict{
-		"type":            starlark.String(typ),
-		"isl":             starlark.MakeInt(isl),
-		"osl":             starlark.MakeInt(osl),
-		"turns":           starlark.MakeInt(turns),
-		"subsequent_isl":  subsequentISL,
-		"corpus_path":     corpusPath,
-		"gsm8k_path":      gsm8kPath,
+		"type":             starlark.String(typ),
+		"isl":              starlark.MakeInt(isl),
+		"osl":              starlark.MakeInt(osl),
+		"turns":            starlark.MakeInt(turns),
+		"subsequent_isl":   subsequentISL,
+		"corpus_path":      corpusPath,
+		"gsm8k_path":       gsm8kPath,
 		"gsm8k_train_path": gsm8kTrainPath,
-		"num_fewshot":     starlark.MakeInt(numFewshot),
-		"gpqa_path":       gpqaPath,
-		"chars_per_token": starlark.Float(charsPerToken),
-		"cache_salt":      cacheSalt,
-		"name":            name,
+		"num_fewshot":      starlark.MakeInt(numFewshot),
+		"gpqa_path":        gpqaPath,
+		"chars_per_token":  starlark.Float(charsPerToken),
+		"cache_salt":       cacheSalt,
+		"name":             name,
 	}), nil
 }
 
 // builtinStage implements the stage() Starlark builtin.
 func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var (
-		durationVal starlark.Value
-		concurrency = 10
-		rate        starlark.Value = starlark.None
-		mode        = "concurrent"
-		maxInFlight = 0
-		maxRequests = 0
-		rampup      starlark.Value = starlark.None
-		workload    starlark.Value = starlark.None
-		target      starlark.Value = starlark.None
-		model       starlark.Value = starlark.None
-		name        starlark.Value = starlark.None
-		warmup      = false
+		durationVal          starlark.Value
+		concurrency                         = 10
+		conversationPoolSize                = 0
+		rate                 starlark.Value = starlark.None
+		mode                                = "concurrent"
+		maxInFlight                         = 0
+		maxRequests                         = 0
+		rampup               starlark.Value = starlark.None
+		workload             starlark.Value = starlark.None
+		target               starlark.Value = starlark.None
+		model                starlark.Value = starlark.None
+		name                 starlark.Value = starlark.None
+		warmup                              = false
 	)
 
 	if err := starlark.UnpackArgs("stage", args, kwargs,
 		"duration", &durationVal,
 		"concurrency?", &concurrency,
+		"conversation_pool_size?", &conversationPoolSize,
 		"rate?", &rate,
 		"mode?", &mode,
 		"max_inflight?", &maxInFlight,
@@ -175,9 +181,9 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 
 	// Validate mode
 	switch mode {
-	case "concurrent", "constant", "poisson":
+	case "concurrent", "conversation_pool", "constant", "poisson":
 	default:
-		return nil, fmt.Errorf("unknown mode %q (options: concurrent, constant, poisson)", mode)
+		return nil, fmt.Errorf("unknown mode %q (options: concurrent, conversation_pool, constant, poisson)", mode)
 	}
 
 	// Validate mutual exclusivity: if rate is set, concurrency must be default
@@ -207,18 +213,19 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 	}
 
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeStage), starlark.StringDict{
-		"duration":     starlark.String(dur.String()),
-		"concurrency":  starlark.MakeInt(concurrency),
-		"rate":         rate,
-		"mode":         starlark.String(mode),
-		"max_inflight": starlark.MakeInt(maxInFlight),
-		"max_requests": starlark.MakeInt(maxRequests),
-		"rampup":       rampup,
-		"workload":     workload,
-		"target":       target,
-		"model":        model,
-		"name":         name,
-		"warmup":       starlark.Bool(warmup),
+		"duration":               starlark.String(dur.String()),
+		"concurrency":            starlark.MakeInt(concurrency),
+		"conversation_pool_size": starlark.MakeInt(conversationPoolSize),
+		"rate":                   rate,
+		"mode":                   starlark.String(mode),
+		"max_inflight":           starlark.MakeInt(maxInFlight),
+		"max_requests":           starlark.MakeInt(maxRequests),
+		"rampup":                 rampup,
+		"workload":               workload,
+		"target":                 target,
+		"model":                  model,
+		"name":                   name,
+		"warmup":                 starlark.Bool(warmup),
 	}), nil
 }
 
@@ -394,6 +401,9 @@ func structToScenarioStage(s *starlarkstruct.Struct) (*ScenarioStage, error) {
 
 	conc, _ := s.Attr("concurrency")
 	stage.Concurrency = starlarkInt(conc)
+
+	conversationPoolSize, _ := s.Attr("conversation_pool_size")
+	stage.ConversationPoolSize = starlarkInt(conversationPoolSize)
 
 	rate, _ := s.Attr("rate")
 	if rate != starlark.None {

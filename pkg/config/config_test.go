@@ -105,6 +105,65 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestParseConversationPoolJSON(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"conversation_pool_size": 256,
+			"duration": "5m"
+		},
+		"workload": {
+			"type": "faker",
+			"turns": 3
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].Mode != "conversation_pool" {
+		t.Errorf("expected conversation_pool mode, got %s", sc.Stages[0].Mode)
+	}
+	if sc.Stages[0].Concurrency != 16 {
+		t.Errorf("expected concurrency 16, got %d", sc.Stages[0].Concurrency)
+	}
+	if sc.Stages[0].ConversationPoolSize != 256 {
+		t.Errorf("expected conversation_pool_size 256, got %d", sc.Stages[0].ConversationPoolSize)
+	}
+}
+
+func TestConversationPoolJSONDefaultsToConcurrency(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"duration": "5m"
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].ConversationPoolSize != 16 {
+		t.Errorf("expected conversation_pool_size to default to concurrency 16, got %d", sc.Stages[0].ConversationPoolSize)
+	}
+}
+
+func TestConversationPoolJSONRejectsPoolSmallerThanConcurrency(t *testing.T) {
+	_, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"conversation_pool_size": 8,
+			"duration": "5m"
+		}
+	}`)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestDurationNumeric(t *testing.T) {
 	sc, err := config.Parse(`{"load": {"duration": 120}}`)
 	if err != nil {

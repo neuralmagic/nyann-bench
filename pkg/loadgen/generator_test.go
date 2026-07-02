@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -588,12 +589,12 @@ func TestCacheSaltAppearsInRequest(t *testing.T) {
 
 	rec := recorder.NewMemory()
 	gen := &loadgen.Generator{
-		Target:    "http://" + ln.Addr().String() + "/v1",
-		Model:     "test-model",
-		CacheSalt: &config.CacheSalt{Mode: "fixed", Value: "test-salt-abc"},
-		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
-		Recorder:  rec,
-		Duration:  500 * time.Millisecond,
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		CacheSalt:   &config.CacheSalt{Mode: "fixed", Value: "test-salt-abc"},
+		Dataset:     dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:    rec,
+		Duration:    500 * time.Millisecond,
 		Concurrency: 1,
 	}
 
@@ -695,13 +696,13 @@ func TestRandomCacheSaltUnique(t *testing.T) {
 
 	rec := recorder.NewMemory()
 	gen := &loadgen.Generator{
-		Target:    "http://" + ln.Addr().String() + "/v1",
-		Model:     "test-model",
-		CacheSalt: &config.CacheSalt{Mode: "random"},
-		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
-		Recorder:        rec,
-		Duration:        1 * time.Second,
-		Concurrency:     1,
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		CacheSalt:   &config.CacheSalt{Mode: "random"},
+		Dataset:     dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:    rec,
+		Duration:    1 * time.Second,
+		Concurrency: 1,
 	}
 
 	gen.Run(context.Background())
@@ -926,6 +927,163 @@ type countingDataset struct {
 func (d *countingDataset) NextConversation() dataset.Conversation {
 	atomic.AddInt64(&d.draws, 1)
 	return d.inner.NextConversation()
+}
+
+func startTrackingServer(t *testing.T, delay time.Duration) (addr string, maxInFlight *atomic.Int64) {
+	t.Helper()
+	var inFlight atomic.Int64
+	maxInFlight = &atomic.Int64{}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			max := maxInFlight.Load()
+			if cur <= max || maxInFlight.CompareAndSwap(max, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	return ln.Addr().String(), maxInFlight
+}
+
+func TestConversationPoolHonorsHotConcurrencyAndPoolSize(t *testing.T) {
+	addr, maxInFlight := startTrackingServer(t, 20*time.Millisecond)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:               "http://" + addr + "/v1",
+		Model:                "test-model",
+		Mode:                 loadgen.ModeConversationPool,
+		Dataset:              dataset.NewSynthetic(16, 4, 3, 4.0),
+		Recorder:             rec,
+		ConversationPoolSize: 5,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 2, ConversationPoolSize: 5, Duration: 30 * time.Second, MaxRequests: 10},
+	}
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	if len(records) != 10 {
+		t.Fatalf("expected exactly 10 records, got %d", len(records))
+	}
+	if got := maxInFlight.Load(); got > 2 {
+		t.Fatalf("max in-flight = %d, want <= 2", got)
+	}
+
+	convIDs := map[string]bool{}
+	for _, r := range records {
+		convIDs[r.ConversationID] = true
+	}
+	if len(convIDs) != 5 {
+		t.Fatalf("expected 5 active conversations in the working set, got %d (%v)", len(convIDs), convIDs)
+	}
+}
+
+func TestConversationPoolLRUOrder(t *testing.T) {
+	addr, _ := startTrackingServer(t, 0)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  dataset.NewSynthetic(16, 4, 2, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 1, ConversationPoolSize: 3, Duration: 30 * time.Second, MaxRequests: 6},
+	}
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].StartTime < records[j].StartTime
+	})
+
+	if len(records) != 6 {
+		t.Fatalf("expected 6 records, got %d", len(records))
+	}
+	want := []struct {
+		conv string
+		turn int
+	}{
+		{"pool-c0", 0},
+		{"pool-c1", 0},
+		{"pool-c2", 0},
+		{"pool-c0", 1},
+		{"pool-c1", 1},
+		{"pool-c2", 1},
+	}
+	for i, w := range want {
+		if records[i].ConversationID != w.conv || records[i].Turn != w.turn {
+			t.Fatalf("record %d = (%s, turn %d), want (%s, turn %d)",
+				i, records[i].ConversationID, records[i].Turn, w.conv, w.turn)
+		}
+	}
+}
+
+func TestConversationPoolMaxRequestsHighConcurrency(t *testing.T) {
+	addr := startMockServer(t)
+
+	rec := recorder.NewMemory()
+	ds := &countingDataset{inner: dataset.NewSynthetic(32, 10, 1, 4.0)}
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  ds,
+		Recorder: rec,
+	}
+
+	const maxReqs = 20
+	stages := []loadgen.Stage{
+		{Concurrency: 128, ConversationPoolSize: 128, Duration: 30 * time.Second, MaxRequests: maxReqs},
+	}
+
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	if len(records) != maxReqs {
+		t.Fatalf("expected exactly %d records, got %d", maxReqs, len(records))
+	}
+
+	draws := atomic.LoadInt64(&ds.draws)
+	if draws != maxReqs {
+		t.Fatalf("expected exactly %d dataset draws, got %d", maxReqs, draws)
+	}
 }
 
 func TestGeneratorMaxRequestsHighConcurrency(t *testing.T) {

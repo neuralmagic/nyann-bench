@@ -27,9 +27,10 @@ type Warmup struct {
 
 // Stage defines one step in a multi-stage sweep.
 type Stage struct {
-	Concurrency int      `json:"concurrency"`
-	Duration    Duration `json:"duration"`
-	MaxRequests int      `json:"max_requests,omitempty"`
+	Concurrency          int      `json:"concurrency"`
+	ConversationPoolSize int      `json:"conversation_pool_size,omitempty"`
+	Duration             Duration `json:"duration"`
+	MaxRequests          int      `json:"max_requests,omitempty"`
 }
 
 // Sweep defines a smooth concurrency ramp from Min to Max over Steps stages.
@@ -42,29 +43,30 @@ type Sweep struct {
 
 // Load defines how requests are scheduled.
 type Load struct {
-	Mode        string   `json:"mode"`         // concurrent, constant, poisson
-	Concurrency int      `json:"concurrency"`  // concurrent mode: number of streams
-	Rate        float64  `json:"rate"`          // constant/poisson mode: requests per second
-	MaxInFlight int      `json:"max_inflight"`  // constant/poisson mode: cap on concurrent requests (0=unlimited)
-	Rampup      Duration `json:"rampup"`        // stagger streams or ramp rate
-	Duration    Duration `json:"duration"`      // total benchmark duration
+	Mode                 string   `json:"mode"`                             // concurrent, conversation_pool, constant, poisson
+	Concurrency          int      `json:"concurrency"`                      // concurrent modes: hot running requests
+	ConversationPoolSize int      `json:"conversation_pool_size,omitempty"` // conversation_pool mode: active conversation working set
+	Rate                 float64  `json:"rate"`                             // constant/poisson mode: requests per second
+	MaxInFlight          int      `json:"max_inflight"`                     // constant/poisson mode: cap on concurrent requests (0=unlimited)
+	Rampup               Duration `json:"rampup"`                           // stagger streams or ramp rate
+	Duration             Duration `json:"duration"`                         // total benchmark duration
 }
 
 // Workload defines the dataset and request parameters.
 type Workload struct {
-	Type          string  `json:"type"`                    // synthetic, faker, corpus, gsm8k
-	Name          string  `json:"name,omitempty"`          // human-readable name for this workload (shown in Prometheus/Grafana)
-	ISL           int     `json:"isl"`                     // input sequence length (tokens)
-	SubsequentISL *int    `json:"subsequent_isl,omitempty"` // ISL for turns > 0 (defaults to ISL)
-	OSL           int     `json:"osl"`                     // output sequence length (tokens)
-	Turns         int     `json:"turns"`                   // turns per conversation
-	CorpusPath    string  `json:"corpus_path,omitempty"`   // path to corpus file/directory
-	GSM8KPath      string `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
-	GSM8KTrainPath string `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)
-	NumFewShot     *int   `json:"num_fewshot,omitempty"`       // number of few-shot examples (default: 5, requires gsm8k_train_path)
-	GPQAPath       string `json:"gpqa_path,omitempty"`         // path to GPQA JSONL file
-	CharsPerToken float64 `json:"chars_per_token"`         // override auto-calibrated ratio (0 = auto)
-	CacheSalt *CacheSalt `json:"cache_salt,omitempty"` // prefix cache isolation config
+	Type           string     `json:"type"`                       // synthetic, faker, corpus, gsm8k
+	Name           string     `json:"name,omitempty"`             // human-readable name for this workload (shown in Prometheus/Grafana)
+	ISL            int        `json:"isl"`                        // input sequence length (tokens)
+	SubsequentISL  *int       `json:"subsequent_isl,omitempty"`   // ISL for turns > 0 (defaults to ISL)
+	OSL            int        `json:"osl"`                        // output sequence length (tokens)
+	Turns          int        `json:"turns"`                      // turns per conversation
+	CorpusPath     string     `json:"corpus_path,omitempty"`      // path to corpus file/directory
+	GSM8KPath      string     `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
+	GSM8KTrainPath string     `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)
+	NumFewShot     *int       `json:"num_fewshot,omitempty"`      // number of few-shot examples (default: 5, requires gsm8k_train_path)
+	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
+	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
+	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
 }
 
 // CacheSalt configures vLLM prefix cache isolation.
@@ -90,7 +92,11 @@ func Parse(input string) (*ScenarioConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cfg.ToScenarioConfig(), nil
+	sc := cfg.ToScenarioConfig()
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
+	return sc, nil
 }
 
 // parseJSON reads a config from a JSON string or file path.
@@ -169,8 +175,9 @@ func (c *Config) EffectiveStages() []Stage {
 		return c.Stages
 	}
 	return []Stage{{
-		Concurrency: c.Load.Concurrency,
-		Duration:    c.Load.Duration,
+		Concurrency:          c.Load.Concurrency,
+		ConversationPoolSize: c.Load.ConversationPoolSize,
+		Duration:             c.Load.Duration,
 	}}
 }
 

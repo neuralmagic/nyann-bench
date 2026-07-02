@@ -72,6 +72,18 @@ scenario(
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.
 
+For KV-cache working-set experiments, use `mode="conversation_pool"` to decouple HOT active requests from the total number of active conversations. In this mode, `concurrency` controls the number of actively running inference requests, while `conversation_pool_size` controls how many conversations are kept in rotation. Completed turns resume the least recently used ready conversation; completed conversations are replaced with fresh ones.
+
+```python
+scenario(
+    stages = [
+        stage("5m", mode="conversation_pool", concurrency=128, conversation_pool_size=n)
+        for n in [128, 512, 2048, 8192]
+    ],
+    workload = workload("faker", isl=1024, subsequent_isl=64, osl=256, turns=3),
+)
+```
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
@@ -147,6 +159,7 @@ All workload types support configurable ISL (input sequence length), OSL (output
 | Mode | Description |
 |------|-------------|
 | `concurrent` | Fixed number of goroutine streams, each sending requests back-to-back |
+| `conversation_pool` | Fixed HOT active requests over a configurable active conversation working set |
 | `constant` | Fixed request rate (req/s) with deterministic inter-arrival times |
 | `poisson` | Fixed request rate with exponential inter-arrival times (realistic traffic) |
 

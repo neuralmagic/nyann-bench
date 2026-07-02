@@ -59,6 +59,7 @@ conditionals, and per-stage workload/target overrides:
 
 Load modes:
   concurrent  Fixed number of streams, each fires next request on completion (default)
+  conversation_pool  Fixed hot request concurrency over a larger conversation working set
   constant    Requests arrive at a fixed rate (evenly spaced)
   poisson     Requests arrive at a target rate with exponential inter-arrival times
 

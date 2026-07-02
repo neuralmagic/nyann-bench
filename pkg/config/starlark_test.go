@@ -304,6 +304,7 @@ func TestStarlarkModes(t *testing.T) {
 scenario(
     stages = [
         stage("60s", concurrency=10, mode="concurrent"),
+        stage("60s", concurrency=16, conversation_pool_size=256, mode="conversation_pool"),
         stage("60s", rate=50.0, mode="constant"),
         stage("60s", rate=50.0, mode="poisson", max_inflight=100),
     ],
@@ -317,17 +318,51 @@ scenario(
 	if sc.Stages[0].Mode != "concurrent" {
 		t.Errorf("stage 0: expected concurrent, got %s", sc.Stages[0].Mode)
 	}
-	if sc.Stages[1].Mode != "constant" {
-		t.Errorf("stage 1: expected constant, got %s", sc.Stages[1].Mode)
+	if sc.Stages[1].Mode != "conversation_pool" {
+		t.Errorf("stage 1: expected conversation_pool, got %s", sc.Stages[1].Mode)
 	}
-	if sc.Stages[1].Rate != 50.0 {
-		t.Errorf("stage 1: expected rate 50, got %f", sc.Stages[1].Rate)
+	if sc.Stages[1].ConversationPoolSize != 256 {
+		t.Errorf("stage 1: expected conversation_pool_size 256, got %d", sc.Stages[1].ConversationPoolSize)
 	}
-	if sc.Stages[2].Mode != "poisson" {
-		t.Errorf("stage 2: expected poisson, got %s", sc.Stages[2].Mode)
+	if sc.Stages[2].Mode != "constant" {
+		t.Errorf("stage 2: expected constant, got %s", sc.Stages[2].Mode)
 	}
-	if sc.Stages[2].MaxInFlight != 100 {
-		t.Errorf("stage 2: expected max_inflight 100, got %d", sc.Stages[2].MaxInFlight)
+	if sc.Stages[2].Rate != 50.0 {
+		t.Errorf("stage 2: expected rate 50, got %f", sc.Stages[2].Rate)
+	}
+	if sc.Stages[3].Mode != "poisson" {
+		t.Errorf("stage 3: expected poisson, got %s", sc.Stages[3].Mode)
+	}
+	if sc.Stages[3].MaxInFlight != 100 {
+		t.Errorf("stage 3: expected max_inflight 100, got %d", sc.Stages[3].MaxInFlight)
+	}
+}
+
+func TestStarlarkConversationPoolDefaultsToConcurrency(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", concurrency=32, mode="conversation_pool")],
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].ConversationPoolSize != 32 {
+		t.Errorf("expected conversation_pool_size to default to 32, got %d", sc.Stages[0].ConversationPoolSize)
+	}
+}
+
+func TestStarlarkConversationPoolRejectsSmallPool(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", concurrency=32, conversation_pool_size=16, mode="conversation_pool")],
+)
+`)
+	_, err := config.ParseStarlark(path)
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 
