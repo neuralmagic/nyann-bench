@@ -24,6 +24,7 @@ type StageSummary struct {
 	TTFTMs            LatencyStats `json:"ttft_ms"`
 	ITLMs             LatencyStats `json:"itl_ms"`
 	E2EMs             LatencyStats `json:"e2e_latency_ms"`
+	InterTurnWait     LatencyStats `json:"inter_turn_wait_ms,omitempty"`
 
 	// Server-side metrics from Prometheus (populated by QueryStageServerMetrics).
 	Server *ServerMetrics `json:"server,omitempty"`
@@ -54,7 +55,7 @@ func (s *ServerMetrics) HasData() bool {
 func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp) []StageSummary {
 	var summaries []StageSummary
 	for _, stage := range stages {
-		var ttfts, e2es, allITLs []float64
+		var ttfts, e2es, allITLs, interTurnWaits []float64
 		totalOK, totalErr, totalOutTok := 0, 0, 0
 		minT, maxT := stage.EndTime, stage.StartTime
 
@@ -70,6 +71,9 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 				totalOutTok += r.OutputTokens
 			} else {
 				totalErr++
+			}
+			if r.InterTurnWaitMs > 0 {
+				interTurnWaits = append(interTurnWaits, r.InterTurnWaitMs)
 			}
 			if r.StartTime < minT {
 				minT = r.StartTime
@@ -96,6 +100,7 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 			TTFTMs:            computeLatencyStats(ttfts),
 			ITLMs:             computeLatencyStats(allITLs),
 			E2EMs:             computeLatencyStats(e2es),
+			InterTurnWait:     computeLatencyStats(interTurnWaits),
 		})
 	}
 	return summaries
@@ -237,20 +242,21 @@ func QueryStageServerMetrics(client *prometheus.Client, ts recorder.StageTimesta
 // to include server-side columns; its Aggregate field controls KV column layout.
 func FormatStageHeader(sm *ServerMetrics) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
+	fmt.Fprintf(&b, "%6s  %6s  %5s  %9s  %9s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
 		"CONC", "OK", "ERR", "TOT_TOK", "TOK/S",
 		"TTFT_AVG", "TTFT_P10", "TTFT_P50", "TTFT_P95", "TTFT_P99",
-		"ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99")
-	width := 156
+		"ITL_P10", "ITL_P50", "ITL_P95", "ITL_P99",
+		"ITW_P50", "ITW_P99")
+	width := 180
 	if sm != nil {
 		fmt.Fprintf(&b, "  %9s  %10s  %10s  %10s  %10s  %10s  %10s",
 			"SRV_TOK/S", "SRV_TTFT50", "SRV_TTFT99", "SRV_ITL10", "SRV_ITL50", "SRV_ITL95", "SRV_ITL99")
 		if sm.Aggregate {
 			fmt.Fprintf(&b, "  %7s  %7s", "KV_MIN", "KV_MAX")
-			width = 254
+			width = 278
 		} else {
 			fmt.Fprintf(&b, "  %7s  %7s  %7s  %7s", "PKV_MIN", "PKV_MAX", "DKV_MIN", "DKV_MAX")
-			width = 270
+			width = 294
 		}
 	}
 	b.WriteByte('\n')
@@ -261,11 +267,12 @@ func FormatStageHeader(sm *ServerMetrics) string {
 
 // FormatStageRow returns a single table row for a stage.
 func FormatStageRow(s StageSummary) string {
-	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
+	row := fmt.Sprintf("%6d  %6d  %5d  %9d  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s  %10s",
 		s.Concurrency, s.SuccessRequests, s.ErrorRequests,
 		s.TotalOutputTokens, s.OutputTokensPerS,
 		fmtMs(s.TTFTMs.Mean), fmtMs(s.TTFTMs.P10), fmtMs(s.TTFTMs.P50), fmtMs(s.TTFTMs.P95), fmtMs(s.TTFTMs.P99),
-		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99))
+		fmtMs(s.ITLMs.P10), fmtMs(s.ITLMs.P50), fmtMs(s.ITLMs.P95), fmtMs(s.ITLMs.P99),
+		fmtMs(s.InterTurnWait.P50), fmtMs(s.InterTurnWait.P99))
 	if s.Server != nil {
 		sm := s.Server
 		row += fmt.Sprintf("  %9.1f  %10s  %10s  %10s  %10s  %10s  %10s",

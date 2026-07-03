@@ -26,21 +26,28 @@ func analyzeCmd() *cobra.Command {
 				return err
 			}
 
-			// Determine measurement window from timestamps
+			// Load full timestamps (stages + window).
 			var startTime, endTime float64
-			tsStart, tsEnd, err := analysis.LoadTimestamps(dir)
-			if err == nil {
-				startTime = tsStart + warmupBuffer
-				endTime = tsEnd
+			ts, tsErr := analysis.LoadFullTimestamps(dir)
+			if tsErr == nil {
+				startTime = ts.RampupEndTime + warmupBuffer
+				endTime = ts.EndTime
 				slog.Info("Measurement window",
 					"window_s", endTime-startTime,
-					"after_rampup_s", tsEnd-tsStart,
+					"after_rampup_s", ts.EndTime-ts.RampupEndTime,
 					"warmup_buffer_s", warmupBuffer)
 			} else {
 				slog.Info("No timestamps found, using all records")
 			}
 
 			summary := analysis.Compute(records, startTime, endTime)
+
+			if ts != nil {
+				summary.Timestamps = ts
+				if len(ts.Stages) > 0 {
+					summary.Stages = analysis.ComputePerStage(records, ts.Stages)
+				}
+			}
 
 			if jsonOutput {
 				enc := json.NewEncoder(os.Stdout)
@@ -49,6 +56,13 @@ func analyzeCmd() *cobra.Command {
 			}
 
 			fmt.Print(analysis.FormatSummary(summary))
+			if len(summary.Stages) > 0 {
+				fmt.Print("\n")
+				fmt.Print(analysis.FormatStageHeader(nil))
+				for _, s := range summary.Stages {
+					fmt.Print(analysis.FormatStageRow(s))
+				}
+			}
 			return nil
 		},
 	}

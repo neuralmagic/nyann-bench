@@ -4,19 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/neuralmagic/nyann-bench/pkg/client"
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
+	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 type pooledConversation struct {
-	id      int
-	convID  string
-	conv    dataset.Conversation
-	history []client.Message
-	turn    int
+	id                  int
+	convID              string
+	conv                dataset.Conversation
+	history             []client.Message
+	turn                int
+	prevTurnEnd         time.Time // when the previous turn's last token arrived
+	lastInterTurnWaitMs float64   // inter-turn wait for the current turn (recorded alongside result)
 }
 
 type conversationPoolScheduler struct {
@@ -29,6 +34,38 @@ type conversationPoolScheduler struct {
 	convs   map[int]*pooledConversation
 	nextID  int
 	stopped bool
+
+	prefetch chan dataset.Conversation // pre-generated conversations ready for pool insertion
+	stopCh   chan struct{}             // signals prefetch worker to exit
+
+	// inter-turn wait tracking: time from turn N's last token to turn N+1's request submission
+	interTurnMu      sync.Mutex
+	interTurnWaitsMs []float64
+}
+
+func (s *conversationPoolScheduler) recordInterTurnWait(ms float64) {
+	s.interTurnMu.Lock()
+	s.interTurnWaitsMs = append(s.interTurnWaitsMs, ms)
+	s.interTurnMu.Unlock()
+}
+
+func (s *conversationPoolScheduler) logInterTurnStats() {
+	s.interTurnMu.Lock()
+	waits := make([]float64, len(s.interTurnWaitsMs))
+	copy(waits, s.interTurnWaitsMs)
+	s.interTurnMu.Unlock()
+
+	if len(waits) == 0 {
+		return
+	}
+	sort.Float64s(waits)
+	slog.Info("inter-turn wait (time between turn N last token → turn N+1 request submitted)",
+		"samples", len(waits),
+		"p50_ms", statsutil.Percentile(waits, 0.50),
+		"p90_ms", statsutil.Percentile(waits, 0.90),
+		"p99_ms", statsutil.Percentile(waits, 0.99),
+		"max_ms", waits[len(waits)-1],
+	)
 }
 
 func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolScheduler {
@@ -39,28 +76,110 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 		g:        g,
 		poolSize: poolSize,
 		convs:    make(map[int]*pooledConversation, poolSize),
+		prefetch: make(chan dataset.Conversation, poolSize),
+		stopCh:   make(chan struct{}),
 	}
+
+	// Generate one base conversation with full tokenizer accuracy. All
+	// subsequent conversations are cheap clones with only the first ~512
+	// bytes of the first user message randomised — enough to guarantee a
+	// unique prefix-cache key per conversation without repeated expensive
+	// tokenizer round-trips.
+	slog.Info("Generating base conversation for pool")
+	base := g.Dataset.NextConversation()
+
+	// Background worker: produces varied conversations from the base so that
+	// conversation replacement in complete() is a fast channel receive.
+	go func() {
+		for {
+			conv := varyConversation(base)
+			select {
+			case s.prefetch <- conv:
+			case <-s.stopCh:
+				return
+			}
+		}
+	}()
 
 	initial := poolSize
 	if state := g.maxReqState.Load(); state != nil && state.limit > 0 && int64(initial) > state.limit {
 		initial = int(state.limit)
 	}
+
+	// Fill the initial pool sequentially — varyConversation is a cheap
+	// in-memory operation (no I/O), so parallelism gives no meaningful gain.
+	slog.Info("Preparing conversation pool", "size", initial)
+	step := max(1, initial/4)
 	for i := 0; i < initial; i++ {
-		s.addConversationLocked()
+		s.addConversationWithConv(varyConversation(base))
+		if (i+1)%step == 0 || i+1 == initial {
+			slog.Info("Conversation pool progress", "done", i+1, "total", initial)
+		}
 	}
+	slog.Info("Conversation pool ready", "size", initial)
 	return s
 }
 
-func (s *conversationPoolScheduler) addConversationLocked() {
+func (s *conversationPoolScheduler) addConversationWithConv(conv dataset.Conversation) {
 	id := s.nextID
 	s.nextID++
 	pc := &pooledConversation{
 		id:     id,
 		convID: fmt.Sprintf("pool-c%d", id),
-		conv:   s.g.Dataset.NextConversation(),
+		conv:   conv,
 	}
 	s.convs[id] = pc
 	s.pushReadyLocked(id)
+}
+
+// varyConversation clones base and replaces the first ~512 characters of the
+// first user message with random text. This gives each pooled conversation a
+// unique prefix-cache key without expensive tokenizer round-trips: only the
+// opening block differs, so cross-conversation prefix cache hits are avoided
+// while within-conversation turn caching is preserved.
+func varyConversation(base dataset.Conversation) dataset.Conversation {
+	const variationChars = 512
+
+	turns := make([][]client.Message, len(base.Turns))
+	for i, turn := range base.Turns {
+		msgs := make([]client.Message, len(turn))
+		copy(msgs, turn)
+		turns[i] = msgs
+	}
+
+	if len(turns) > 0 && len(turns[0]) > 0 {
+		orig := turns[0][0].Content
+		varLen := min(variationChars, len(orig))
+		turns[0][0].Content = randomPrefix(varLen) + orig[varLen:]
+	}
+
+	return dataset.Conversation{
+		Turns:          turns,
+		Prompt:         base.Prompt,
+		MaxTokens:      base.MaxTokens,
+		IgnoreEOS:      base.IgnoreEOS,
+		Stop:           base.Stop,
+		Temperature:    base.Temperature,
+		ExpectedAnswer: base.ExpectedAnswer,
+	}
+}
+
+var (
+	poolRNG   = rand.New(rand.NewSource(time.Now().UnixNano()))
+	poolRNGMu sync.Mutex
+)
+
+// randomPrefix generates n random lowercase ASCII characters (letters and
+// spaces) suitable for use as a varied conversation prefix.
+func randomPrefix(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyz "
+	b := make([]byte, n)
+	poolRNGMu.Lock()
+	for i := range b {
+		b[i] = charset[poolRNG.Intn(len(charset))]
+	}
+	poolRNGMu.Unlock()
+	return string(b)
 }
 
 func (s *conversationPoolScheduler) pushReadyLocked(id int) {
@@ -117,20 +236,46 @@ func (s *conversationPoolScheduler) next() (*pooledConversation, bool) {
 
 func (s *conversationPoolScheduler) complete(pc *pooledConversation, replace bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	delete(s.convs, pc.id)
-	if s.stopped {
+	stopped := s.stopped
+	needNew := replace && !stopped && len(s.convs) < s.poolSize && s.canCreateConversationLocked()
+	s.mu.Unlock()
+
+	if stopped {
 		return
 	}
-	if replace {
-		if len(s.convs) < s.poolSize && s.canCreateConversationLocked() {
-			s.addConversationLocked()
+	if !replace {
+		s.mu.Lock()
+		s.convs[pc.id] = pc
+		s.pushReadyLocked(pc.id)
+		s.mu.Unlock()
+		return
+	}
+	if !needNew {
+		return
+	}
+
+	// Receive a pre-generated conversation outside the lock so the CPU-bound
+	// text generation (done by the background worker) never blocks the pool.
+	var conv dataset.Conversation
+	select {
+	case conv = <-s.prefetch:
+	case <-s.stopCh:
+		return
+	}
+
+	s.mu.Lock()
+	if !s.stopped && len(s.convs) < s.poolSize { // re-check: another goroutine may have filled the slot
+		id := s.nextID
+		s.nextID++
+		s.convs[id] = &pooledConversation{
+			id:     id,
+			convID: fmt.Sprintf("pool-c%d", id),
+			conv:   conv,
 		}
-		return
+		s.pushReadyLocked(id)
 	}
-	s.convs[pc.id] = pc
-	s.pushReadyLocked(pc.id)
+	s.mu.Unlock()
 }
 
 func (s *conversationPoolScheduler) canCreateConversationLocked() bool {
@@ -140,8 +285,9 @@ func (s *conversationPoolScheduler) canCreateConversationLocked() bool {
 
 func (s *conversationPoolScheduler) stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.stopped = true
+	s.mu.Unlock()
+	close(s.stopCh) // unblocks the prefetch worker
 }
 
 func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
@@ -171,11 +317,20 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 			onStage(i, stage.Concurrency)
 		}
 
+		// Build the pool before starting the stage timer so that
+		// conversation generation does not eat into benchmark duration.
+		poolSize := stage.ConversationPoolSize
+		if poolSize <= 0 {
+			poolSize = stage.Concurrency
+		}
+		scheduler := newConversationPoolScheduler(g, poolSize)
+
 		stageCtx, stageCancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			g.runConversationPool(stageCtx, c, stage.Concurrency, stage.ConversationPoolSize, stage.Rampup)
+			defer scheduler.stop()
+			g.runConversationPoolWorkers(stageCtx, c, scheduler, stage.Concurrency, stage.Rampup)
 		}()
 
 		if stage.MaxRequests > 0 {
@@ -204,6 +359,8 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 	g.recordWG.Wait()
 }
 
+// runConversationPool is used by the single-stage Run path. It creates its own
+// scheduler (preparation time counts against the overall run duration there).
 func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, concurrency, poolSize int, rampup time.Duration) {
 	if concurrency <= 0 {
 		return
@@ -211,9 +368,18 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 	if poolSize <= 0 {
 		poolSize = concurrency
 	}
-
 	scheduler := newConversationPoolScheduler(g, poolSize)
 	defer scheduler.stop()
+	g.runConversationPoolWorkers(ctx, c, scheduler, concurrency, rampup)
+}
+
+// runConversationPoolWorkers runs the worker goroutines against an already-prepared
+// scheduler. Called by runConversationPoolStages after pool setup, so that
+// conversation generation does not count against the stage timer.
+func (g *Generator) runConversationPoolWorkers(ctx context.Context, c *client.Client, scheduler *conversationPoolScheduler, concurrency int, rampup time.Duration) {
+	if concurrency <= 0 {
+		return
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -241,7 +407,7 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 				if !ok {
 					return
 				}
-				replace := g.runPooledConversationTurn(ctx, c, streamID, pc)
+				replace := g.runPooledConversationTurn(ctx, c, streamID, pc, scheduler)
 				if ctx.Err() != nil {
 					return
 				}
@@ -250,11 +416,12 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 		}(i, delay)
 	}
 	wg.Wait()
+	scheduler.logInterTurnStats()
 }
 
 // runPooledConversationTurn runs exactly one request from pc.
 // It returns true when the conversation should be retired and replaced.
-func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Client, streamID int, pc *pooledConversation) bool {
+func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Client, streamID int, pc *pooledConversation, scheduler *conversationPoolScheduler) bool {
 	if pc.conv.Prompt != "" {
 		return g.runPooledCompletionTurn(ctx, c, streamID, pc)
 	}
@@ -278,7 +445,19 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		Messages:  messages,
 		Stream:    true,
 		MaxTokens: pc.conv.MaxTokens,
+		IgnoreEOS: pc.conv.IgnoreEOS,
 		CacheSalt: g.cacheSalt(),
+	}
+
+	// Record inter-turn wait: time from previous turn's last token to this
+	// request being submitted. Captures how long the conversation sat in the
+	// pool queue waiting for a concurrency slot — a proxy for the minimum
+	// think-time / tool-call latency the system needs at this {C, N} config.
+	submitTime := time.Now()
+	pc.lastInterTurnWaitMs = 0
+	if turnIdx > 0 && !pc.prevTurnEnd.IsZero() {
+		pc.lastInterTurnWaitMs = float64(submitTime.Sub(pc.prevTurnEnd).Microseconds()) / 1000.0
+		scheduler.recordInterTurnWait(pc.lastInterTurnWaitMs)
 	}
 
 	g.trackInFlight(1)
@@ -286,20 +465,36 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 	g.trackInFlight(-1)
 	g.trackRequestStatus(result.Err)
 
+	promptTokens, completionTokens := 0, result.OutputTokens()
+	if result.Usage != nil {
+		promptTokens = result.Usage.PromptTokens
+		completionTokens = result.Usage.CompletionTokens
+	}
+	slog.Info("turn token counts",
+		"conv_id", pc.convID,
+		"turn", turnIdx,
+		"prompt_tokens", promptTokens,
+		"completion_tokens", completionTokens,
+		"content_chars", len(result.Content),
+		"finish_reason", result.FinishReason,
+	)
+
 	if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
 		return true
 	}
 
+	interTurnWaitMs := pc.lastInterTurnWaitMs
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
-		g.recordResult(result, streamID, pc.convID, turnIdx, pc.conv)
+		g.recordResult(result, streamID, pc.convID, turnIdx, pc.conv, interTurnWaitMs)
 	}()
 
 	if result.Err != nil {
 		return true
 	}
 
+	pc.prevTurnEnd = result.EndTime
 	pc.history = append(pc.history, client.Message{
 		Role:    "assistant",
 		Content: result.Content,
@@ -314,6 +509,7 @@ func (g *Generator) runPooledCompletionTurn(ctx context.Context, c *client.Clien
 		Prompt:      pc.conv.Prompt,
 		Stream:      true,
 		MaxTokens:   pc.conv.MaxTokens,
+		IgnoreEOS:   pc.conv.IgnoreEOS,
 		Stop:        pc.conv.Stop,
 		Temperature: pc.conv.Temperature,
 		CacheSalt:   g.cacheSalt(),

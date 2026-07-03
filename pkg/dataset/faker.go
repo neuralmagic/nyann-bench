@@ -15,6 +15,7 @@ type Faker struct {
 	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
+	IgnoreEOS     bool
 	CharsPerToken float64
 	TokenCounter  TokenCounter
 	seq           atomic.Uint64
@@ -65,7 +66,7 @@ func (f *Faker) NextConversation() Conversation {
 		}
 	}
 
-	return Conversation{Turns: turns, MaxTokens: f.OSL}
+	return Conversation{Turns: turns, MaxTokens: f.OSL, IgnoreEOS: f.IgnoreEOS}
 }
 
 func (f *Faker) padWithFaker(faker *gofakeit.Faker, base string, targetTokens int) string {

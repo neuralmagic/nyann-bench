@@ -20,6 +20,7 @@ type Corpus struct {
 	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
+	IgnoreEOS     bool
 	CharsPerToken float64
 
 	// TokenCounter counts tokens in a string via the server's /tokenize
@@ -89,7 +90,7 @@ func (c *Corpus) NextConversation() Conversation {
 		}
 	}
 
-	return Conversation{Turns: turns, MaxTokens: c.OSL}
+	return Conversation{Turns: turns, MaxTokens: c.OSL, IgnoreEOS: c.IgnoreEOS}
 }
 
 // nextChunk returns targetTokens worth of text from the corpus, advancing the
