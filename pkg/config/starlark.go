@@ -70,7 +70,6 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		isl                           = 128
 		osl                           = 256
 		turns                         = 1
-		ignoreEOS                     = false
 		subsequentISL  starlark.Value = starlark.None
 		corpusPath     starlark.Value = starlark.None
 		gsm8kPath      starlark.Value = starlark.None
@@ -87,7 +86,6 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"isl?", &isl,
 		"osl?", &osl,
 		"turns?", &turns,
-		"ignore_eos?", &ignoreEOS,
 		"subsequent_isl?", &subsequentISL,
 		"corpus_path?", &corpusPath,
 		"gsm8k_path?", &gsm8kPath,
@@ -127,7 +125,6 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"isl":              starlark.MakeInt(isl),
 		"osl":              starlark.MakeInt(osl),
 		"turns":            starlark.MakeInt(turns),
-		"ignore_eos":       starlark.Bool(ignoreEOS),
 		"subsequent_isl":   subsequentISL,
 		"corpus_path":      corpusPath,
 		"gsm8k_path":       gsm8kPath,
@@ -352,9 +349,6 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 	turns, _ := s.Attr("turns")
 	w.Turns = starlarkInt(turns)
 
-	ignoreEOS, _ := s.Attr("ignore_eos")
-	w.IgnoreEOS = starlarkBool(ignoreEOS)
-
 	subISL, _ := s.Attr("subsequent_isl")
 	if subISL != starlark.None {
 		v := starlarkInt(subISL)
@@ -531,14 +525,4 @@ func starlarkFloat(v starlark.Value) float64 {
 		return float64(i)
 	}
 	return 0
-}
-
-func starlarkBool(v starlark.Value) bool {
-	if v == nil || v == starlark.None {
-		return false
-	}
-	if b, ok := v.(starlark.Bool); ok {
-		return bool(b)
-	}
-	return false
 }

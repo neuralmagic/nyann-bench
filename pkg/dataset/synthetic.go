@@ -14,7 +14,6 @@ type Synthetic struct {
 	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
 	OSL           int
 	Turns         int
-	IgnoreEOS     bool
 	CharsPerToken float64
 	TokenCounter  TokenCounter
 }
@@ -61,7 +60,7 @@ func (s *Synthetic) NextConversation() Conversation {
 		}
 	}
 
-	return Conversation{Turns: turns, MaxTokens: s.OSL, IgnoreEOS: s.IgnoreEOS}
+	return Conversation{Turns: turns, MaxTokens: s.OSL}
 }
 
 func (s *Synthetic) padToTokens(base string, targetTokens int) string {

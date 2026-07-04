@@ -527,7 +527,6 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 		Prompt:      conv.Prompt,
 		Stream:      true,
 		MaxTokens:   conv.MaxTokens,
-		IgnoreEOS:   conv.IgnoreEOS,
 		Stop:        conv.Stop,
 		Temperature: conv.Temperature,
 		CacheSalt:   g.cacheSalt(),
@@ -696,7 +695,6 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 			Messages:  messages,
 			Stream:    true,
 			MaxTokens: conv.MaxTokens,
-			IgnoreEOS: conv.IgnoreEOS,
 			CacheSalt: g.cacheSalt(),
 		}
 

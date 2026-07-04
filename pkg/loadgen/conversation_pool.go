@@ -106,8 +106,6 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 		initial = int(state.limit)
 	}
 
-	// Fill the initial pool sequentially — varyConversation is a cheap
-	// in-memory operation (no I/O), so parallelism gives no meaningful gain.
 	slog.Info("Preparing conversation pool", "size", initial)
 	step := max(1, initial/4)
 	for i := 0; i < initial; i++ {
@@ -157,7 +155,6 @@ func varyConversation(base dataset.Conversation) dataset.Conversation {
 		Turns:          turns,
 		Prompt:         base.Prompt,
 		MaxTokens:      base.MaxTokens,
-		IgnoreEOS:      base.IgnoreEOS,
 		Stop:           base.Stop,
 		Temperature:    base.Temperature,
 		ExpectedAnswer: base.ExpectedAnswer,
@@ -445,7 +442,6 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		Messages:  messages,
 		Stream:    true,
 		MaxTokens: pc.conv.MaxTokens,
-		IgnoreEOS: pc.conv.IgnoreEOS,
 		CacheSalt: g.cacheSalt(),
 	}
 
@@ -464,20 +460,6 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 	result := c.ChatStream(ctx, req)
 	g.trackInFlight(-1)
 	g.trackRequestStatus(result.Err)
-
-	promptTokens, completionTokens := 0, result.OutputTokens()
-	if result.Usage != nil {
-		promptTokens = result.Usage.PromptTokens
-		completionTokens = result.Usage.CompletionTokens
-	}
-	slog.Info("turn token counts",
-		"conv_id", pc.convID,
-		"turn", turnIdx,
-		"prompt_tokens", promptTokens,
-		"completion_tokens", completionTokens,
-		"content_chars", len(result.Content),
-		"finish_reason", result.FinishReason,
-	)
 
 	if ctx.Err() != nil && result.Err == nil && result.FinishReason == "" {
 		return true
@@ -509,7 +491,6 @@ func (g *Generator) runPooledCompletionTurn(ctx context.Context, c *client.Clien
 		Prompt:      pc.conv.Prompt,
 		Stream:      true,
 		MaxTokens:   pc.conv.MaxTokens,
-		IgnoreEOS:   pc.conv.IgnoreEOS,
 		Stop:        pc.conv.Stop,
 		Temperature: pc.conv.Temperature,
 		CacheSalt:   g.cacheSalt(),

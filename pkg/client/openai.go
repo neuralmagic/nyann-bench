@@ -21,9 +21,7 @@ type Request struct {
 	Model         string            `json:"model"`
 	Messages      []Message         `json:"messages"`
 	Stream        bool              `json:"stream"`
-	StreamOptions map[string]any    `json:"stream_options,omitempty"`
 	MaxTokens     int               `json:"max_tokens,omitempty"`
-	IgnoreEOS     bool              `json:"ignore_eos,omitempty"`
 	CacheSalt     string            `json:"cache_salt,omitempty"`
 	ExtraHeaders  map[string]string `json:"-"` // Applied as HTTP headers, not serialized
 }
@@ -33,7 +31,6 @@ type CompletionRequest struct {
 	Prompt      string    `json:"prompt"`
 	Stream      bool      `json:"stream"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
-	IgnoreEOS   bool      `json:"ignore_eos,omitempty"`
 	Stop        []string  `json:"stop,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
 	CacheSalt   string    `json:"cache_salt,omitempty"`
@@ -237,7 +234,6 @@ func (c *Client) CalibrateTokenRatio(ctx context.Context, sample string, model s
 // with token-level timing.
 func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 	req.Stream = true
-	req.StreamOptions = map[string]any{"include_usage": true}
 	result := &Result{RequestStart: time.Now()}
 
 	body, err := json.Marshal(req)

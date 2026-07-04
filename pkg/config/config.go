@@ -60,7 +60,6 @@ type Workload struct {
 	SubsequentISL  *int       `json:"subsequent_isl,omitempty"`   // ISL for turns > 0 (defaults to ISL)
 	OSL            int        `json:"osl"`                        // output sequence length (tokens)
 	Turns          int        `json:"turns"`                      // turns per conversation
-	IgnoreEOS      bool       `json:"ignore_eos,omitempty"`       // suppress EOS so model generates exactly OSL tokens
 	CorpusPath     string     `json:"corpus_path,omitempty"`      // path to corpus file/directory
 	GSM8KPath      string     `json:"gsm8k_path,omitempty"`       // path to GSM8K test JSONL file
 	GSM8KTrainPath string     `json:"gsm8k_train_path,omitempty"` // path to GSM8K training JSONL (for few-shot examples)

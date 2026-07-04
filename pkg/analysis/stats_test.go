@@ -117,15 +117,15 @@ func TestLoadRecordsAndTimestamps(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", len(loaded))
 	}
 
-	start, end, err := analysis.LoadTimestamps(dir)
+	ts, err := analysis.LoadTimestamps(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start != 95.0 {
-		t.Errorf("expected start=95.0 (rampup end), got %f", start)
+	if ts.RampupEndTime != 95.0 {
+		t.Errorf("expected start=95.0 (rampup end), got %f", ts.RampupEndTime)
 	}
-	if end != 200.0 {
-		t.Errorf("expected end=200.0, got %f", end)
+	if ts.EndTime != 200.0 {
+		t.Errorf("expected end=200.0, got %f", ts.EndTime)
 	}
 }
 

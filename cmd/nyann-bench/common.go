@@ -48,12 +48,10 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 	case "synthetic":
 		ds := dataset.NewSyntheticWithTokenCounter(w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		ds.SubsequentISL = subISL
-		ds.IgnoreEOS = w.IgnoreEOS
 		return ds, nil
 	case "faker":
 		ds := dataset.NewFakerWithTokenCounter(w.ISL, w.OSL, w.Turns, charsPerToken, tokenCounter)
 		ds.SubsequentISL = subISL
-		ds.IgnoreEOS = w.IgnoreEOS
 		return ds, nil
 	case "corpus":
 		if w.CorpusPath == "" {
@@ -64,7 +62,6 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 			return nil, err
 		}
 		ds.SubsequentISL = subISL
-		ds.IgnoreEOS = w.IgnoreEOS
 		return ds, nil
 	case "gsm8k":
 		if w.GSM8KPath == "" {

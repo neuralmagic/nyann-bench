@@ -104,11 +104,11 @@ func loadJSONL(path string) ([]recorder.Record, error) {
 	return records, nil
 }
 
-// LoadFullTimestamps reads timestamp files and returns the merged Timestamps struct.
+// LoadTimestamps reads timestamp files and returns the merged Timestamps struct.
 // Stage boundaries and metadata are taken from the first (lowest-numbered) worker's
 // file, which is always valid for single-worker runs. The overall start/end window
 // is intersected across all workers (latest rampup-end, earliest end-time).
-func LoadFullTimestamps(dir string) (*recorder.Timestamps, error) {
+func LoadTimestamps(dir string) (*recorder.Timestamps, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "timestamps_*.json"))
 	if err != nil {
 		return nil, err
@@ -147,41 +147,6 @@ func LoadFullTimestamps(dir string) (*recorder.Timestamps, error) {
 	return &merged, nil
 }
 
-// LoadTimestamps reads all timestamp files and returns the merged measurement window.
-func LoadTimestamps(dir string) (startTime, endTime float64, err error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "timestamps_*.json"))
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(matches) == 0 {
-		return 0, 0, fmt.Errorf("no timestamps_*.json files found in %s", dir)
-	}
-
-	first := true
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return 0, 0, err
-		}
-		var ts recorder.Timestamps
-		if err := json.Unmarshal(data, &ts); err != nil {
-			return 0, 0, err
-		}
-		if first {
-			startTime = ts.RampupEndTime
-			endTime = ts.EndTime
-			first = false
-		} else {
-			if ts.RampupEndTime > startTime {
-				startTime = ts.RampupEndTime
-			}
-			if ts.EndTime < endTime {
-				endTime = ts.EndTime
-			}
-		}
-	}
-	return startTime, endTime, nil
-}
 
 // Compute generates summary statistics from records.
 // If startTime/endTime are non-zero, only records within that window are included.

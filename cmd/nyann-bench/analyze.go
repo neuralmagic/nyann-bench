@@ -28,7 +28,7 @@ func analyzeCmd() *cobra.Command {
 
 			// Load full timestamps (stages + window).
 			var startTime, endTime float64
-			ts, tsErr := analysis.LoadFullTimestamps(dir)
+			ts, tsErr := analysis.LoadTimestamps(dir)
 			if tsErr == nil {
 				startTime = ts.RampupEndTime + warmupBuffer
 				endTime = ts.EndTime
