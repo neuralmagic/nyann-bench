@@ -88,13 +88,14 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 }
 
 type scenarioOpts struct {
-	Target      string
-	Model       string
-	Scenario    *config.ScenarioConfig
-	OutputDir   string
-	WorkerID    int
-	MetricsAddr string
-	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
+	Target       string
+	Model        string
+	Scenario     *config.ScenarioConfig
+	OutputDir    string
+	WorkerID     int
+	MetricsAddr  string
+	IncludeUsage bool            // Request token usage stats (stream_options include_usage)
+	Dataset      dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
@@ -377,6 +378,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,
+			IncludeUsage:         opts.IncludeUsage,
 		}
 
 		gen.RunStages(ctx, run.stages, func(i, concurrency int) {

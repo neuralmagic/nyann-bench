@@ -32,6 +32,7 @@ func generateCmd() *cobra.Command {
 		metricsAddr   string
 		prometheusURL string
 		deployName    string
+		includeUsage  bool
 		kubeFlags     kube.Flags
 	)
 
@@ -167,12 +168,13 @@ Workload types:
 			var collected []*analysis.ServerMetrics
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
-				Target:      target,
-				Model:       model,
-				Scenario:    sc,
-				OutputDir:   outputDir,
-				WorkerID:    workerID,
-				MetricsAddr: metricsAddr,
+				Target:       target,
+				Model:        model,
+				Scenario:     sc,
+				OutputDir:    outputDir,
+				WorkerID:     workerID,
+				MetricsAddr:  metricsAddr,
+				IncludeUsage: includeUsage,
 				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
@@ -246,6 +248,7 @@ Workload types:
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 	cmd.Flags().StringVar(&prometheusURL, "prometheus-url", "", "Prometheus server URL for querying server-side vLLM metrics (e.g. http://prometheus:9090)")
 	cmd.Flags().StringVar(&deployName, "deploy-name", "", "Deployment name prefix for Prometheus pod label filtering (e.g. my-deploy)")
+	cmd.Flags().BoolVar(&includeUsage, "include-usage", false, "Request prompt/completion token counts from server (stream_options include_usage)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 
