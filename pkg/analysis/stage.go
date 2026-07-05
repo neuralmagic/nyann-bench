@@ -14,17 +14,18 @@ import (
 // StageSummary holds per-stage metrics computed from client-side records
 // and optionally enriched with Prometheus metrics.
 type StageSummary struct {
-	Concurrency       int          `json:"concurrency"`
-	TotalRequests     int          `json:"total_requests"`
-	SuccessRequests   int          `json:"successful_requests"`
-	ErrorRequests     int          `json:"error_requests"`
-	DurationS         float64      `json:"duration_seconds"`
-	TotalOutputTokens int          `json:"total_output_tokens"`
-	OutputTokensPerS  float64      `json:"output_tokens_per_second"`
-	TTFTMs            LatencyStats `json:"ttft_ms"`
-	ITLMs             LatencyStats `json:"itl_ms"`
-	E2EMs             LatencyStats `json:"e2e_latency_ms"`
-	InterTurnWait     LatencyStats `json:"inter_turn_wait_ms,omitempty"`
+	Concurrency        int          `json:"concurrency"`
+	TotalRequests      int          `json:"total_requests"`
+	SuccessRequests    int          `json:"successful_requests"`
+	ErrorRequests      int          `json:"error_requests"`
+	DurationS          float64      `json:"duration_seconds"`
+	TotalOutputTokens  int          `json:"total_output_tokens"`
+	TotalPromptTokens  int          `json:"total_prompt_tokens"`
+	OutputTokensPerS   float64      `json:"output_tokens_per_second"`
+	TTFTMs             LatencyStats `json:"ttft_ms"`
+	ITLMs              LatencyStats `json:"itl_ms"`
+	E2EMs              LatencyStats `json:"e2e_latency_ms"`
+	InterTurnWait      LatencyStats `json:"inter_turn_wait_ms,omitempty"`
 
 	// Server-side metrics from Prometheus (populated by QueryStageServerMetrics).
 	Server *ServerMetrics `json:"server,omitempty"`
@@ -56,7 +57,7 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 	var summaries []StageSummary
 	for _, stage := range stages {
 		var ttfts, e2es, allITLs, interTurnWaits []float64
-		totalOK, totalErr, totalOutTok := 0, 0, 0
+		totalOK, totalErr, totalOutTok, totalPromptTok := 0, 0, 0, 0
 		minT, maxT := stage.EndTime, stage.StartTime
 
 		for _, r := range records {
@@ -69,6 +70,7 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 				e2es = append(e2es, r.TotalLatencyMs)
 				allITLs = append(allITLs, r.ITLs...)
 				totalOutTok += r.OutputTokens
+				totalPromptTok += r.PromptTokens
 			} else {
 				totalErr++
 			}
@@ -96,6 +98,7 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 			ErrorRequests:     totalErr,
 			DurationS:         dur,
 			TotalOutputTokens: totalOutTok,
+			TotalPromptTokens: totalPromptTok,
 			OutputTokensPerS:  tokPerSec,
 			TTFTMs:            computeLatencyStats(ttfts),
 			ITLMs:             computeLatencyStats(allITLs),
