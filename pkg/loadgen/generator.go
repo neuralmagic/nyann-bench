@@ -559,7 +559,7 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 }
 
 // recordResult handles eval, metrics, and recording for a completed request.
-func (g *Generator) recordResult(result *client.Result, streamID int, convID string, turn int, conv dataset.Conversation, interTurnWaitMs ...float64) {
+func (g *Generator) recordResult(result *client.Result, streamID int, convID string, turn int, conv dataset.Conversation) {
 	rec := &recorder.Record{
 		RequestID:      fmt.Sprintf("%s-t%d", convID, turn),
 		StreamID:       streamID,
@@ -570,10 +570,6 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
 		OutputTokens:   result.OutputTokens(),
 	}
-	if len(interTurnWaitMs) > 0 && interTurnWaitMs[0] > 0 {
-		rec.InterTurnWaitMs = interTurnWaitMs[0]
-	}
-
 	if result.Err != nil {
 		rec.Status = "error"
 		rec.Error = result.Err.Error()

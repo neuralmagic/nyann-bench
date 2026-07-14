@@ -25,10 +25,9 @@ type Summary struct {
 	TotalPromptTokens int     `json:"total_prompt_tokens"`
 	OutputTokensPerS  float64 `json:"output_tokens_per_second"`
 
-	TTFTMs        LatencyStats `json:"ttft_ms"`
-	ITLMs         LatencyStats `json:"itl_ms"`
-	E2EMs         LatencyStats `json:"e2e_latency_ms"`
-	InterTurnWait LatencyStats `json:"inter_turn_wait_ms,omitempty"`
+	TTFTMs LatencyStats `json:"ttft_ms"`
+	ITLMs  LatencyStats `json:"itl_ms"`
+	E2EMs  LatencyStats `json:"e2e_latency_ms"`
 
 	Conversations int          `json:"conversations"`
 	TurnsPerConv  LatencyStats `json:"turns_per_conversation"`
@@ -167,7 +166,7 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 		return s
 	}
 
-	var ttfts, e2es, allITLs, interTurnWaits []float64
+	var ttfts, e2es, allITLs []float64
 	convs := map[string]int{}
 
 	minT, maxT := records[0].StartTime, records[0].EndTime
@@ -182,10 +181,6 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 			s.TotalPromptTokens += r.PromptTokens
 		} else {
 			s.ErrorRequests++
-		}
-
-		if r.InterTurnWaitMs > 0 {
-			interTurnWaits = append(interTurnWaits, r.InterTurnWaitMs)
 		}
 
 		if r.StartTime < minT {
@@ -207,8 +202,6 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 	s.TTFTMs = computeLatencyStats(ttfts)
 	s.ITLMs = computeLatencyStats(allITLs)
 	s.E2EMs = computeLatencyStats(e2es)
-	s.InterTurnWait = computeLatencyStats(interTurnWaits)
-
 	s.Conversations = len(convs)
 	var turnsPerConv []float64
 	for _, count := range convs {
@@ -277,10 +270,6 @@ func FormatSummary(s *Summary) string {
 		s.ITLMs.Mean, s.ITLMs.P50, s.ITLMs.P90, s.ITLMs.P99, s.ITLMs.Min, s.ITLMs.Max)
 	fmt.Fprintf(&b, "E2E  (ms):      mean=%.1f  p50=%.1f  p90=%.1f  p99=%.1f  min=%.1f  max=%.1f\n",
 		s.E2EMs.Mean, s.E2EMs.P50, s.E2EMs.P90, s.E2EMs.P99, s.E2EMs.Min, s.E2EMs.Max)
-	if s.InterTurnWait.Mean > 0 {
-		fmt.Fprintf(&b, "InterTurnWait: mean=%.1f  p50=%.1f  p90=%.1f  p99=%.1f  min=%.1f  max=%.1f  (ms, conversation_pool only)\n",
-			s.InterTurnWait.Mean, s.InterTurnWait.P50, s.InterTurnWait.P90, s.InterTurnWait.P99, s.InterTurnWait.Min, s.InterTurnWait.Max)
-	}
 	if s.EvalTotal > 0 {
 		fmt.Fprintf(&b, "\n")
 		fmt.Fprintf(&b, "Eval:           %d total, %d correct, %d incorrect\n",

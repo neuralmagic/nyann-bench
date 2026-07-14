@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/neuralmagic/nyann-bench/pkg/client"
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
-	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 type pooledConversation struct {
@@ -19,8 +17,6 @@ type pooledConversation struct {
 	conv                dataset.Conversation
 	history             []client.Message
 	turn                int
-	prevTurnEnd         time.Time // when the previous turn's last token arrived
-	lastInterTurnWaitMs float64   // inter-turn wait for the current turn (recorded alongside result)
 }
 
 type conversationPoolScheduler struct {
@@ -33,35 +29,6 @@ type conversationPoolScheduler struct {
 	convs   map[int]*pooledConversation
 	nextID  int
 	stopped bool
-
-	// inter-turn wait tracking: time from turn N's last token to turn N+1's request submission
-	interTurnMu      sync.Mutex
-	interTurnWaitsMs []float64
-}
-
-func (s *conversationPoolScheduler) recordInterTurnWait(ms float64) {
-	s.interTurnMu.Lock()
-	s.interTurnWaitsMs = append(s.interTurnWaitsMs, ms)
-	s.interTurnMu.Unlock()
-}
-
-func (s *conversationPoolScheduler) logInterTurnStats() {
-	s.interTurnMu.Lock()
-	waits := make([]float64, len(s.interTurnWaitsMs))
-	copy(waits, s.interTurnWaitsMs)
-	s.interTurnMu.Unlock()
-
-	if len(waits) == 0 {
-		return
-	}
-	sort.Float64s(waits)
-	slog.Info("inter-turn wait (time between turn N last token → turn N+1 request submitted)",
-		"samples", len(waits),
-		"p50_ms", statsutil.Percentile(waits, 0.50),
-		"p90_ms", statsutil.Percentile(waits, 0.90),
-		"p99_ms", statsutil.Percentile(waits, 0.99),
-		"max_ms", waits[len(waits)-1],
-	)
 }
 
 func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolScheduler {
@@ -320,7 +287,7 @@ func (g *Generator) runConversationPoolWorkers(ctx context.Context, c *client.Cl
 				if !ok {
 					return
 				}
-				replace := g.runPooledConversationTurn(ctx, c, streamID, pc, scheduler)
+				replace := g.runPooledConversationTurn(ctx, c, streamID, pc)
 				if ctx.Err() != nil {
 					return
 				}
@@ -329,12 +296,11 @@ func (g *Generator) runConversationPoolWorkers(ctx context.Context, c *client.Cl
 		}(i, delay)
 	}
 	wg.Wait()
-	scheduler.logInterTurnStats()
 }
 
 // runPooledConversationTurn runs exactly one request from pc.
 // It returns true when the conversation should be retired and replaced.
-func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Client, streamID int, pc *pooledConversation, scheduler *conversationPoolScheduler) bool {
+func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Client, streamID int, pc *pooledConversation) bool {
 	if pc.conv.Prompt != "" {
 		return g.runPooledCompletionTurn(ctx, c, streamID, pc)
 	}
@@ -362,17 +328,6 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		CacheSalt:     g.cacheSalt(),
 	}
 
-	// Record inter-turn wait: time from previous turn's last token to this
-	// request being submitted. Captures how long the conversation sat in the
-	// pool queue waiting for a concurrency slot — a proxy for the minimum
-	// think-time / tool-call latency the system needs at this {C, N} config.
-	submitTime := time.Now()
-	pc.lastInterTurnWaitMs = 0
-	if turnIdx > 0 && !pc.prevTurnEnd.IsZero() {
-		pc.lastInterTurnWaitMs = float64(submitTime.Sub(pc.prevTurnEnd).Microseconds()) / 1000.0
-		scheduler.recordInterTurnWait(pc.lastInterTurnWaitMs)
-	}
-
 	g.trackInFlight(1)
 	result := c.ChatStream(ctx, req)
 	g.trackInFlight(-1)
@@ -382,18 +337,16 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		return true
 	}
 
-	interTurnWaitMs := pc.lastInterTurnWaitMs
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
-		g.recordResult(result, streamID, pc.convID, turnIdx, pc.conv, interTurnWaitMs)
+		g.recordResult(result, streamID, pc.convID, turnIdx, pc.conv)
 	}()
 
 	if result.Err != nil {
 		return true
 	}
 
-	pc.prevTurnEnd = result.EndTime
 	pc.history = append(pc.history, client.Message{
 		Role:    "assistant",
 		Content: result.Content,

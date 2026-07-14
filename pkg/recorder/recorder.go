@@ -25,10 +25,6 @@ type Record struct {
 	Status         string    `json:"status"` // "ok" or "error"
 	Error          string    `json:"error,omitempty"`
 
-	// Inter-turn wait: time from previous turn's last token to this turn's request submission.
-	// Only set for conversation_pool mode, turn > 0. Zero for all other modes.
-	InterTurnWaitMs float64 `json:"inter_turn_wait_ms,omitempty"`
-
 	// Eval fields (populated when dataset provides ExpectedAnswer)
 	EvalExpected  string `json:"eval_expected,omitempty"`
 	EvalExtracted string `json:"eval_extracted,omitempty"`
