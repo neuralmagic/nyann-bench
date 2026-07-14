@@ -311,13 +311,12 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
-			text := delta.Content + delta.Reasoning + delta.ReasoningContent
-			if text != "" {
+			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" {
 				if result.FirstToken.IsZero() {
 					result.FirstToken = now
 				}
 				result.TokenTimes = append(result.TokenTimes, now)
-				content.WriteString(text)
+				content.WriteString(delta.Content)
 			}
 			if chunk.Choices[0].FinishReason != nil {
 				result.FinishReason = *chunk.Choices[0].FinishReason
