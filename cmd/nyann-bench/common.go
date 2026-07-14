@@ -94,7 +94,6 @@ type scenarioOpts struct {
 	OutputDir    string
 	WorkerID     int
 	MetricsAddr  string
-	IncludeUsage bool            // Request token usage stats (stream_options include_usage)
 	Dataset      dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
 	// OnStageComplete is called after each measured stage finishes with
@@ -378,7 +377,6 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,
-			IncludeUsage:         opts.IncludeUsage,
 		}
 
 		gen.RunStages(ctx, run.stages, func(i, concurrency int) {

@@ -20,7 +20,6 @@ type StageSummary struct {
 	ErrorRequests      int          `json:"error_requests"`
 	DurationS          float64      `json:"duration_seconds"`
 	TotalOutputTokens  int          `json:"total_output_tokens"`
-	TotalPromptTokens  int          `json:"total_prompt_tokens"`
 	OutputTokensPerS   float64      `json:"output_tokens_per_second"`
 	TTFTMs             LatencyStats `json:"ttft_ms"`
 	ITLMs              LatencyStats `json:"itl_ms"`
@@ -56,7 +55,7 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 	var summaries []StageSummary
 	for _, stage := range stages {
 		var ttfts, e2es, allITLs []float64
-		totalOK, totalErr, totalOutTok, totalPromptTok := 0, 0, 0, 0
+		totalOK, totalErr, totalOutTok := 0, 0, 0
 		minT, maxT := stage.EndTime, stage.StartTime
 
 		for _, r := range records {
@@ -69,7 +68,6 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 				e2es = append(e2es, r.TotalLatencyMs)
 				allITLs = append(allITLs, r.ITLs...)
 				totalOutTok += r.OutputTokens
-				totalPromptTok += r.PromptTokens
 			} else {
 				totalErr++
 			}
@@ -94,7 +92,6 @@ func ComputePerStage(records []recorder.Record, stages []recorder.StageTimestamp
 			ErrorRequests:     totalErr,
 			DurationS:         dur,
 			TotalOutputTokens: totalOutTok,
-			TotalPromptTokens: totalPromptTok,
 			OutputTokensPerS:  tokPerSec,
 			TTFTMs:            computeLatencyStats(ttfts),
 			ITLMs:             computeLatencyStats(allITLs),
