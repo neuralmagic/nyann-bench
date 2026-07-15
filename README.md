@@ -74,6 +74,8 @@ Each goroutine stream can run multi-turn conversations, carrying real model resp
 
 For KV-cache working-set experiments, use `mode="conversation_pool"` to decouple HOT active requests from the total number of active conversations. In this mode, `concurrency` controls the number of actively running inference requests, while `conversation_pool_size` controls how many conversations are kept in rotation. Completed turns resume the least recently used ready conversation; completed conversations are replaced with fresh ones.
 
+Conversation-pool entries are materialized lazily when first scheduled, so large pools do not block stage startup on remote tokenization. For reasoning models, nyann-bench keeps the visible answer and reasoning output separate for evaluation, but replays both in conversation-pool history. This makes subsequent prompts reflect the full generated workload and KV-cache footprint. Ordinary multi-turn mode replays only the visible answer. When vLLM uses a reasoning parser, parser-only boundary tokens may not be present in the replayed text, so the reconstructed prefix is not guaranteed to be token-for-token identical to the original generation.
+
 ```python
 scenario(
     stages = [

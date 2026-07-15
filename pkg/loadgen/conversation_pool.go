@@ -307,6 +307,8 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		return true
 	}
 
+	// Pool mode models the complete generated KV working set, so replay both
+	// reasoning and visible content. Evaluation still uses result.Content.
 	pc.history = append(pc.history, client.Message{
 		Role:    "assistant",
 		Content: result.GeneratedText,

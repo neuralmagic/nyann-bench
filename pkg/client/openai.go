@@ -55,9 +55,9 @@ type Result struct {
 	FirstToken   time.Time
 	TokenTimes   []time.Time // Time of each token arrival
 	EndTime      time.Time
-	Content      string
-	Reasoning    string // Reasoning emitted separately from visible content
-	GeneratedText string // Full streamed text in generation order
+	Content      string // Visible assistant response, used for evaluation
+	Reasoning    string // Reasoning emitted separately by the server
+	GeneratedText string // Reasoning and visible content in streamed order, used for workload replay
 	FinishReason string // "stop", "length", etc.
 	Usage        *Usage
 	Err          error
@@ -311,6 +311,8 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
+			// vLLM renamed reasoning_content to reasoning. Prefer the current
+			// field so a server emitting both aliases cannot duplicate text.
 			reasoningDelta := delta.Reasoning
 			if reasoningDelta == "" {
 				reasoningDelta = delta.ReasoningContent
