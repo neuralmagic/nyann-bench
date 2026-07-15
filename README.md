@@ -68,6 +68,33 @@ scenario(
 )
 ```
 
+Stop a finite stage sweep automatically when the server becomes congested:
+
+```python
+scenario(
+    stages = until_congested(
+        [stage("2m", concurrency=c) for c in range(64, 2049, 64)],
+        waiting_requests=32,
+        ttft="2s",
+        kv_cache_usage=0.95,  # optional; default 95%
+        preemptions=1,        # optional; default 1 per stage
+    ),
+    workload = workload("faker", isl=512, osl=1024),
+)
+```
+
+Run congestion-aware scenarios with `--prometheus-url` and `--deploy-name`.
+After each stage, nyann-bench stops before the next stage when either:
+
+- waiting requests reach the configured threshold **and** server TTFT p99 is
+  at least the configured duration; or
+- KV-cache usage reaches the configured threshold **and** the stage produces
+  at least the configured number of preemptions.
+
+For disaggregated serving, pass the decoder deployment name (for example,
+`my-model-decode`). Both `my-model-prefill` and `my-model-decode` are checked;
+aggregate deployments are checked as a single role.
+
 ### Multi-turn conversations
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.

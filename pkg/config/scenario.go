@@ -18,6 +18,16 @@ type ScenarioConfig struct {
 	WorkerID int             // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
 }
 
+// CongestionCondition describes the two server-side congestion signals. A
+// stage stops the remaining sweep when either the queueing pair (waiting
+// requests and TTFT) or cache pair (KV usage and preemptions) is satisfied.
+type CongestionCondition struct {
+	WaitingRequests float64
+	TTFT            time.Duration
+	KVCacheUsage    float64
+	Preemptions     float64
+}
+
 // SyncConfig configures distributed barrier synchronization across pods.
 type SyncConfig struct {
 	Workers int      `json:"workers"`           // expected number of pods
@@ -42,6 +52,7 @@ type ScenarioStage struct {
 	Warmup       bool          // true = don't record results
 	Barrier      bool          // true = sync point (other fields ignored)
 	BarrierDrain bool          // true = stop pool before sync, fresh pool after
+	StopWhen     *CongestionCondition // nil = always continue to the next stage
 }
 
 // ToScenarioConfig converts a JSON Config into the universal ScenarioConfig IR.

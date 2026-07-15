@@ -73,6 +73,22 @@ Workload types:
 			if err != nil {
 				return fmt.Errorf("config: %w", err)
 			}
+			var measuredConditions []*config.CongestionCondition
+			for _, stage := range sc.Stages {
+				if !stage.Barrier && !stage.Warmup {
+					measuredConditions = append(measuredConditions, stage.StopWhen)
+				}
+			}
+			hasCongestionSweep := false
+			for _, condition := range measuredConditions {
+				if condition != nil {
+					hasCongestionSweep = true
+					break
+				}
+			}
+			if hasCongestionSweep && (prometheusURL == "" || deployName == "") {
+				return fmt.Errorf("until_congested() requires both --prometheus-url and --deploy-name")
+			}
 
 			workers, err := config.ResolveWorkers(workersFlag, sc.MaxConcurrency())
 			if err != nil {
@@ -172,10 +188,10 @@ Workload types:
 				OutputDir:   outputDir,
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
-				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) {
+				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) bool {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
-						return
+						return true
 					}
 					stage := stages[0]
 
@@ -192,6 +208,27 @@ Workload types:
 						headerPrinted = true
 					}
 					fmt.Fprint(os.Stderr, analysis.FormatStageRow(stage))
+
+					if ts.Stage >= len(measuredConditions) || measuredConditions[ts.Stage] == nil {
+						return true
+					}
+					result, err := analysis.CheckStageCongestion(promClient, ts, deployName, *measuredConditions[ts.Stage])
+					if err != nil {
+						slog.Warn("Some congestion metrics could not be queried", "error", err)
+					}
+					for _, role := range result.Roles {
+						slog.Info("Congestion signals",
+							"role", role.Role,
+							"waiting_max", role.WaitingMax,
+							"ttft_p99", time.Duration(role.TTFTP99*float64(time.Second)),
+							"kv_usage_max", role.KVUsageMax,
+							"preemptions", role.Preemptions)
+					}
+					if result.Congested {
+						slog.Warn("Congestion reached; stopping stage sweep", "reasons", strings.Join(result.Reasons, "; "))
+						return false
+					}
+					return true
 				},
 			})
 			if err != nil {
