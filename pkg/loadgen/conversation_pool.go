@@ -12,11 +12,12 @@ import (
 )
 
 type pooledConversation struct {
-	id      int
-	convID  string
-	conv    dataset.Conversation
-	history []client.Message
-	turn    int
+	id           int
+	convID       string
+	conv         dataset.Conversation
+	materialized bool
+	history      []client.Message
+	turn         int
 }
 
 type conversationPoolScheduler struct {
@@ -46,18 +47,17 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 		initial = int(state.limit)
 	}
 	for i := 0; i < initial; i++ {
-		s.addConversationLocked()
+		s.addConversationSlotLocked()
 	}
 	return s
 }
 
-func (s *conversationPoolScheduler) addConversationLocked() {
+func (s *conversationPoolScheduler) addConversationSlotLocked() {
 	id := s.nextID
 	s.nextID++
 	pc := &pooledConversation{
 		id:     id,
 		convID: fmt.Sprintf("pool-c%d", id),
-		conv:   s.g.Dataset.NextConversation(),
 	}
 	s.convs[id] = pc
 	s.pushReadyLocked(id)
@@ -125,7 +125,7 @@ func (s *conversationPoolScheduler) complete(pc *pooledConversation, replace boo
 	}
 	if replace {
 		if len(s.convs) < s.poolSize && s.canCreateConversationLocked() {
-			s.addConversationLocked()
+			s.addConversationSlotLocked()
 		}
 		return
 	}
@@ -241,6 +241,13 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 				if !ok {
 					return
 				}
+				if !pc.materialized {
+					pc.conv = g.Dataset.NextConversation()
+					pc.materialized = true
+				}
+				if ctx.Err() != nil {
+					return
+				}
 				replace := g.runPooledConversationTurn(ctx, c, streamID, pc)
 				if ctx.Err() != nil {
 					return
@@ -300,9 +307,11 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		return true
 	}
 
+	// Pool mode models the complete generated KV working set, so replay both
+	// reasoning and visible content. Evaluation still uses result.Content.
 	pc.history = append(pc.history, client.Message{
 		Role:    "assistant",
-		Content: result.Content,
+		Content: result.GeneratedText,
 	})
 	pc.turn++
 	return pc.turn >= len(pc.conv.Turns)

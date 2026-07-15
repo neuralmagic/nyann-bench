@@ -1053,6 +1053,60 @@ func TestConversationPoolLRUOrder(t *testing.T) {
 	}
 }
 
+func TestConversationPoolReplaysReasoningAndContent(t *testing.T) {
+	var bodies [][]client.Message
+	var mu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []client.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, body.Messages)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"think-\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + ln.Addr().String() + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  dataset.NewSynthetic(16, 4, 2, 4.0),
+		Recorder: recorder.NewMemory(),
+	}
+	gen.RunStages(context.Background(), []loadgen.Stage{{
+		Concurrency:          1,
+		ConversationPoolSize: 1,
+		Duration:             30 * time.Second,
+		MaxRequests:          2,
+	}}, nil, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("got %d requests, want 2", len(bodies))
+	}
+	if len(bodies[1]) < 2 {
+		t.Fatalf("second request has %d messages, want at least 2", len(bodies[1]))
+	}
+	if got := bodies[1][1].Content; got != "think-answer" {
+		t.Fatalf("replayed assistant content = %q, want %q", got, "think-answer")
+	}
+}
+
 func TestConversationPoolMaxRequestsHighConcurrency(t *testing.T) {
 	addr := startMockServer(t)
 
@@ -1083,6 +1137,35 @@ func TestConversationPoolMaxRequestsHighConcurrency(t *testing.T) {
 	draws := atomic.LoadInt64(&ds.draws)
 	if draws != maxReqs {
 		t.Fatalf("expected exactly %d dataset draws, got %d", maxReqs, draws)
+	}
+}
+
+func TestConversationPoolMaterializesConversationsLazily(t *testing.T) {
+	addr := startMockServer(t)
+	ds := &countingDataset{inner: dataset.NewSynthetic(32, 10, 1, 4.0)}
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  ds,
+		Recorder: recorder.NewMemory(),
+	}
+
+	stages := []loadgen.Stage{{
+		Concurrency:          1,
+		ConversationPoolSize: 128,
+		Duration:             30 * time.Second,
+		MaxRequests:          1,
+	}}
+	gen.RunStages(context.Background(), stages, func(_, _ int) {
+		if draws := atomic.LoadInt64(&ds.draws); draws != 0 {
+			t.Fatalf("generated %d conversations before the stage started", draws)
+		}
+	}, nil)
+
+	if draws := atomic.LoadInt64(&ds.draws); draws != 1 {
+		t.Fatalf("generated %d conversations, want 1", draws)
 	}
 }
 
