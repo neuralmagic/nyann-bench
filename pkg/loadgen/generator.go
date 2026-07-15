@@ -561,6 +561,7 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
 		OutputTokens:   result.OutputTokens(),
 	}
+
 	if result.Err != nil {
 		rec.Status = "error"
 		rec.Error = result.Err.Error()

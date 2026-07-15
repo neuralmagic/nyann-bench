@@ -13,8 +13,8 @@ import (
 )
 
 // Corpus generates conversations by sliding a window over real text files.
-// When a TokenCounter is set, each chunk is tokenized and trimmed to the
-// exact target token count before being returned.
+// When a TokenCounter is set, each chunk is remotely tokenized and
+// proportionally trimmed toward the target token count.
 type Corpus struct {
 	ISL           int
 	SubsequentISL int // ISL for turns > 0 (0 = use ISL)
@@ -23,8 +23,8 @@ type Corpus struct {
 	CharsPerToken float64
 
 	// TokenCounter counts tokens in a string via the server's /tokenize
-	// endpoint. When non-nil, nextChunk overfetches text and trims to the
-	// exact target token count. When nil, falls back to char-based estimate.
+	// endpoint. When non-nil, nextChunk overfetches text and trims toward the
+	// target token count. When nil, falls back to a char-based estimate.
 	TokenCounter TokenCounter
 
 	text   string // concatenated corpus text
@@ -94,7 +94,8 @@ func (c *Corpus) NextConversation() Conversation {
 
 // nextChunk returns targetTokens worth of text from the corpus, advancing the
 // shared offset. When a TokenCounter is available, the chunk is overfetched
-// and trimmed to the exact token count; otherwise falls back to char estimate.
+// and proportionally trimmed toward the token target; otherwise it falls back
+// to a character estimate.
 func (c *Corpus) nextChunk(targetTokens int) string {
 	estimatedBytes := int(float64(targetTokens) * c.CharsPerToken)
 
@@ -102,7 +103,7 @@ func (c *Corpus) nextChunk(targetTokens int) string {
 		return c.fetchText(estimatedBytes)
 	}
 
-	// Overfetch 2x, then binary-search for the exact trim point.
+	// Overfetch 2x, then converge proportionally using remote token counts.
 	text := c.fetchText(estimatedBytes * 2)
 
 	actualTokens, err := c.TokenCounter(text)
@@ -128,27 +129,14 @@ func (c *Corpus) nextChunk(targetTokens int) string {
 		return text
 	}
 
-	// Binary search for the trim point that yields ~targetTokens.
-	lo, hi := 0, len(text)
-	for hi-lo > 16 {
-		mid := (lo + hi) / 2
-		count, err := c.TokenCounter(text[:mid])
-		if err != nil {
-			break
-		}
-		if count < targetTokens {
-			lo = mid
-		} else {
-			hi = mid
-		}
-	}
+	text = trimToTokenBudgetWithCount(text, targetTokens, actualTokens, c.TokenCounter)
 
 	slog.Debug("Corpus chunk trimmed",
 		"target_tokens", targetTokens,
 		"overfetch_tokens", actualTokens,
-		"final_bytes", hi)
+		"final_bytes", len(text))
 
-	return text[:hi]
+	return text
 }
 
 // fetchText atomically claims nBytes from the corpus and returns them,

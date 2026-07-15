@@ -1086,6 +1086,35 @@ func TestConversationPoolMaxRequestsHighConcurrency(t *testing.T) {
 	}
 }
 
+func TestConversationPoolMaterializesConversationsLazily(t *testing.T) {
+	addr := startMockServer(t)
+	ds := &countingDataset{inner: dataset.NewSynthetic(32, 10, 1, 4.0)}
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  ds,
+		Recorder: recorder.NewMemory(),
+	}
+
+	stages := []loadgen.Stage{{
+		Concurrency:          1,
+		ConversationPoolSize: 128,
+		Duration:             30 * time.Second,
+		MaxRequests:          1,
+	}}
+	gen.RunStages(context.Background(), stages, func(_, _ int) {
+		if draws := atomic.LoadInt64(&ds.draws); draws != 0 {
+			t.Fatalf("generated %d conversations before the stage started", draws)
+		}
+	}, nil)
+
+	if draws := atomic.LoadInt64(&ds.draws); draws != 1 {
+		t.Fatalf("generated %d conversations, want 1", draws)
+	}
+}
+
 func TestGeneratorMaxRequestsHighConcurrency(t *testing.T) {
 	addr := startMockServer(t)
 

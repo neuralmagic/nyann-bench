@@ -25,9 +25,9 @@ type Summary struct {
 	TotalPromptTokens int     `json:"total_prompt_tokens"`
 	OutputTokensPerS  float64 `json:"output_tokens_per_second"`
 
-	TTFTMs LatencyStats `json:"ttft_ms"`
-	ITLMs  LatencyStats `json:"itl_ms"`
-	E2EMs  LatencyStats `json:"e2e_latency_ms"`
+	TTFTMs  LatencyStats `json:"ttft_ms"`
+	ITLMs   LatencyStats `json:"itl_ms"`
+	E2EMs   LatencyStats `json:"e2e_latency_ms"`
 
 	Conversations int          `json:"conversations"`
 	TurnsPerConv  LatencyStats `json:"turns_per_conversation"`
@@ -103,49 +103,41 @@ func loadJSONL(path string) ([]recorder.Record, error) {
 	return records, nil
 }
 
-// LoadTimestamps reads timestamp files and returns the merged Timestamps struct.
-// Stage boundaries and metadata are taken from the first (lowest-numbered) worker's
-// file, which is always valid for single-worker runs. The overall start/end window
-// is intersected across all workers (latest rampup-end, earliest end-time).
-func LoadTimestamps(dir string) (*recorder.Timestamps, error) {
+// LoadTimestamps reads all timestamp files and returns the merged measurement window.
+func LoadTimestamps(dir string) (startTime, endTime float64, err error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "timestamps_*.json"))
 	if err != nil {
-		return nil, err
+		return 0, 0, err
 	}
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no timestamps_*.json files found in %s", dir)
-	}
-	sort.Strings(matches)
-
-	data, err := os.ReadFile(matches[0])
-	if err != nil {
-		return nil, err
-	}
-	var merged recorder.Timestamps
-	if err := json.Unmarshal(data, &merged); err != nil {
-		return nil, err
+		return 0, 0, fmt.Errorf("no timestamps_*.json files found in %s", dir)
 	}
 
-	// Intersect measurement window across remaining workers.
-	for _, path := range matches[1:] {
+	first := true
+	for _, path := range matches {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			return 0, 0, err
 		}
 		var ts recorder.Timestamps
 		if err := json.Unmarshal(data, &ts); err != nil {
-			return nil, err
+			return 0, 0, err
 		}
-		if ts.RampupEndTime > merged.RampupEndTime {
-			merged.RampupEndTime = ts.RampupEndTime
-		}
-		if ts.EndTime < merged.EndTime {
-			merged.EndTime = ts.EndTime
+		if first {
+			startTime = ts.RampupEndTime
+			endTime = ts.EndTime
+			first = false
+		} else {
+			if ts.RampupEndTime > startTime {
+				startTime = ts.RampupEndTime
+			}
+			if ts.EndTime < endTime {
+				endTime = ts.EndTime
+			}
 		}
 	}
-	return &merged, nil
+	return startTime, endTime, nil
 }
-
 
 // Compute generates summary statistics from records.
 // If startTime/endTime are non-zero, only records within that window are included.
@@ -202,6 +194,7 @@ func Compute(records []recorder.Record, startTime, endTime float64) *Summary {
 	s.TTFTMs = computeLatencyStats(ttfts)
 	s.ITLMs = computeLatencyStats(allITLs)
 	s.E2EMs = computeLatencyStats(e2es)
+
 	s.Conversations = len(convs)
 	var turnsPerConv []float64
 	for _, count := range convs {

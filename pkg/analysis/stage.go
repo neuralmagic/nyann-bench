@@ -14,16 +14,16 @@ import (
 // StageSummary holds per-stage metrics computed from client-side records
 // and optionally enriched with Prometheus metrics.
 type StageSummary struct {
-	Concurrency        int          `json:"concurrency"`
-	TotalRequests      int          `json:"total_requests"`
-	SuccessRequests    int          `json:"successful_requests"`
-	ErrorRequests      int          `json:"error_requests"`
-	DurationS          float64      `json:"duration_seconds"`
-	TotalOutputTokens  int          `json:"total_output_tokens"`
-	OutputTokensPerS   float64      `json:"output_tokens_per_second"`
-	TTFTMs             LatencyStats `json:"ttft_ms"`
-	ITLMs              LatencyStats `json:"itl_ms"`
-	E2EMs              LatencyStats `json:"e2e_latency_ms"`
+	Concurrency       int          `json:"concurrency"`
+	TotalRequests     int          `json:"total_requests"`
+	SuccessRequests   int          `json:"successful_requests"`
+	ErrorRequests     int          `json:"error_requests"`
+	DurationS         float64      `json:"duration_seconds"`
+	TotalOutputTokens int          `json:"total_output_tokens"`
+	OutputTokensPerS  float64      `json:"output_tokens_per_second"`
+	TTFTMs            LatencyStats `json:"ttft_ms"`
+	ITLMs             LatencyStats `json:"itl_ms"`
+	E2EMs             LatencyStats `json:"e2e_latency_ms"`
 
 	// Server-side metrics from Prometheus (populated by QueryStageServerMetrics).
 	Server *ServerMetrics `json:"server,omitempty"`

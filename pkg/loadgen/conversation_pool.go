@@ -12,11 +12,12 @@ import (
 )
 
 type pooledConversation struct {
-	id                  int
-	convID              string
-	conv                dataset.Conversation
-	history             []client.Message
-	turn                int
+	id           int
+	convID       string
+	conv         dataset.Conversation
+	materialized bool
+	history      []client.Message
+	turn         int
 }
 
 type conversationPoolScheduler struct {
@@ -45,26 +46,18 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 	if state := g.maxReqState.Load(); state != nil && state.limit > 0 && int64(initial) > state.limit {
 		initial = int(state.limit)
 	}
-
-	slog.Info("Preparing conversation pool", "size", initial)
-	step := max(1, initial/4)
 	for i := 0; i < initial; i++ {
-		s.addConversationWithConv(g.Dataset.NextConversation())
-		if (i+1)%step == 0 || i+1 == initial {
-			slog.Info("Conversation pool progress", "done", i+1, "total", initial)
-		}
+		s.addConversationSlotLocked()
 	}
-	slog.Info("Conversation pool ready", "size", initial)
 	return s
 }
 
-func (s *conversationPoolScheduler) addConversationWithConv(conv dataset.Conversation) {
+func (s *conversationPoolScheduler) addConversationSlotLocked() {
 	id := s.nextID
 	s.nextID++
 	pc := &pooledConversation{
 		id:     id,
 		convID: fmt.Sprintf("pool-c%d", id),
-		conv:   conv,
 	}
 	s.convs[id] = pc
 	s.pushReadyLocked(id)
@@ -124,39 +117,20 @@ func (s *conversationPoolScheduler) next() (*pooledConversation, bool) {
 
 func (s *conversationPoolScheduler) complete(pc *pooledConversation, replace bool) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	delete(s.convs, pc.id)
-	stopped := s.stopped
-	needNew := replace && !stopped && len(s.convs) < s.poolSize && s.canCreateConversationLocked()
-	s.mu.Unlock()
-
-	if stopped {
+	if s.stopped {
 		return
 	}
-	if !replace {
-		s.mu.Lock()
-		s.convs[pc.id] = pc
-		s.pushReadyLocked(pc.id)
-		s.mu.Unlock()
-		return
-	}
-	if !needNew {
-		return
-	}
-
-	conv := s.g.Dataset.NextConversation()
-
-	s.mu.Lock()
-	if !s.stopped && len(s.convs) < s.poolSize { // re-check: another goroutine may have filled the slot
-		id := s.nextID
-		s.nextID++
-		s.convs[id] = &pooledConversation{
-			id:     id,
-			convID: fmt.Sprintf("pool-c%d", id),
-			conv:   conv,
+	if replace {
+		if len(s.convs) < s.poolSize && s.canCreateConversationLocked() {
+			s.addConversationSlotLocked()
 		}
-		s.pushReadyLocked(id)
+		return
 	}
-	s.mu.Unlock()
+	s.convs[pc.id] = pc
+	s.pushReadyLocked(pc.id)
 }
 
 func (s *conversationPoolScheduler) canCreateConversationLocked() bool {
@@ -166,8 +140,8 @@ func (s *conversationPoolScheduler) canCreateConversationLocked() bool {
 
 func (s *conversationPoolScheduler) stop() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.stopped = true
-	s.mu.Unlock()
 }
 
 func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
@@ -193,14 +167,6 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 			done:  make(chan struct{}),
 		}
 		g.maxReqState.Store(state)
-
-		// Build the pool before starting the stage timer so that
-		// conversation generation does not eat into benchmark duration.
-		poolSize := stage.ConversationPoolSize
-		if poolSize <= 0 {
-			poolSize = stage.Concurrency
-		}
-		scheduler := newConversationPoolScheduler(g, poolSize)
 		if onStage != nil {
 			onStage(i, stage.Concurrency)
 		}
@@ -209,8 +175,7 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			defer scheduler.stop()
-			g.runConversationPoolWorkers(stageCtx, c, scheduler, stage.Concurrency, stage.Rampup)
+			g.runConversationPool(stageCtx, c, stage.Concurrency, stage.ConversationPoolSize, stage.Rampup)
 		}()
 
 		if stage.MaxRequests > 0 {
@@ -239,8 +204,6 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 	g.recordWG.Wait()
 }
 
-// runConversationPool is used by the single-stage Run path. It creates its own
-// scheduler (preparation time counts against the overall run duration there).
 func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, concurrency, poolSize int, rampup time.Duration) {
 	if concurrency <= 0 {
 		return
@@ -248,18 +211,9 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 	if poolSize <= 0 {
 		poolSize = concurrency
 	}
+
 	scheduler := newConversationPoolScheduler(g, poolSize)
 	defer scheduler.stop()
-	g.runConversationPoolWorkers(ctx, c, scheduler, concurrency, rampup)
-}
-
-// runConversationPoolWorkers runs the worker goroutines against an already-prepared
-// scheduler. Called by runConversationPoolStages after pool setup, so that
-// conversation generation does not count against the stage timer.
-func (g *Generator) runConversationPoolWorkers(ctx context.Context, c *client.Client, scheduler *conversationPoolScheduler, concurrency int, rampup time.Duration) {
-	if concurrency <= 0 {
-		return
-	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -285,6 +239,13 @@ func (g *Generator) runConversationPoolWorkers(ctx context.Context, c *client.Cl
 				}
 				pc, ok := scheduler.next()
 				if !ok {
+					return
+				}
+				if !pc.materialized {
+					pc.conv = g.Dataset.NextConversation()
+					pc.materialized = true
+				}
+				if ctx.Err() != nil {
 					return
 				}
 				replace := g.runPooledConversationTurn(ctx, c, streamID, pc)

@@ -36,8 +36,8 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 }
 
 // buildDataset constructs a dataset from the workload config.
-// tokenCounter is optional; when non-nil the corpus dataset tokenizes each
-// chunk via /tokenize and trims to the exact target token count.
+// tokenCounter is optional; when non-nil datasets count each chunk via the
+// remote /tokenize endpoint and proportionally trim toward the target length.
 func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
@@ -88,13 +88,13 @@ func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(s
 }
 
 type scenarioOpts struct {
-	Target       string
-	Model        string
-	Scenario     *config.ScenarioConfig
-	OutputDir    string
-	WorkerID     int
-	MetricsAddr  string
-	Dataset      dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
+	Target      string
+	Model       string
+	Scenario    *config.ScenarioConfig
+	OutputDir   string
+	WorkerID    int
+	MetricsAddr string
+	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
