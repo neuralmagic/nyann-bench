@@ -20,12 +20,13 @@ type ScenarioConfig struct {
 
 // CongestionCondition describes the two server-side congestion signals. A
 // stage stops the remaining sweep when either the queueing pair (waiting
-// requests and TTFT) or cache pair (KV usage and preemptions) is satisfied.
+// requests p50 and TTFT p99) or cache pair (KV usage and preemptions) is
+// satisfied.
 type CongestionCondition struct {
-	WaitingRequests float64
-	TTFT            time.Duration
-	KVCacheUsage    float64
-	Preemptions     float64
+	WaitingRequestsP50 float64
+	TTFTP99            time.Duration
+	KVCacheUsage       float64
+	Preemptions        float64
 }
 
 // SyncConfig configures distributed barrier synchronization across pods.

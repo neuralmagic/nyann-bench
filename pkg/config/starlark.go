@@ -237,8 +237,8 @@ func builtinUntilCongested(_ *starlark.Thread, _ *starlark.Builtin, args starlar
 	)
 	if err := starlark.UnpackArgs("until_congested", args, kwargs,
 		"stages", &stages,
-		"waiting_requests", &waitingVal,
-		"ttft", &ttftVal,
+		"waiting_requests_p50", &waitingVal,
+		"ttft_p99", &ttftVal,
 		"kv_cache_usage?", &kvCacheUsage,
 		"preemptions?", &preemptionsVal,
 	); err != nil {
@@ -250,14 +250,14 @@ func builtinUntilCongested(_ *starlark.Thread, _ *starlark.Builtin, args starlar
 		return nil, fmt.Errorf("stages must contain at least one stage")
 	}
 	if waitingRequests <= 0 {
-		return nil, fmt.Errorf("waiting_requests must be > 0, got %g", waitingRequests)
+		return nil, fmt.Errorf("waiting_requests_p50 must be > 0, got %g", waitingRequests)
 	}
 	ttft, err := parseDurationValue(ttftVal)
 	if err != nil {
-		return nil, fmt.Errorf("ttft: %w", err)
+		return nil, fmt.Errorf("ttft_p99: %w", err)
 	}
 	if ttft <= 0 {
-		return nil, fmt.Errorf("ttft must be > 0, got %s", ttft)
+		return nil, fmt.Errorf("ttft_p99 must be > 0, got %s", ttft)
 	}
 	if kvCacheUsage <= 0 || kvCacheUsage > 1 {
 		return nil, fmt.Errorf("kv_cache_usage must be in (0, 1], got %g", kvCacheUsage)
@@ -267,10 +267,10 @@ func builtinUntilCongested(_ *starlark.Thread, _ *starlark.Builtin, args starlar
 	}
 
 	condition := starlarkstruct.FromStringDict(starlark.String("CongestionCondition"), starlark.StringDict{
-		"waiting_requests": starlark.Float(waitingRequests),
-		"ttft":             starlark.String(ttft.String()),
-		"kv_cache_usage":   starlark.Float(kvCacheUsage),
-		"preemptions":      starlark.Float(preemptions),
+		"waiting_requests_p50": starlark.Float(waitingRequests),
+		"ttft_p99":             starlark.String(ttft.String()),
+		"kv_cache_usage":       starlark.Float(kvCacheUsage),
+		"preemptions":          starlark.Float(preemptions),
 	})
 	annotated := make([]starlark.Value, 0, stages.Len())
 	iter := stages.Iterate()
@@ -521,19 +521,19 @@ func structToScenarioStage(s *starlarkstruct.Struct) (*ScenarioStage, error) {
 		if !ok || condition.Constructor() != starlark.String("CongestionCondition") {
 			return nil, fmt.Errorf("stop_when: expected CongestionCondition")
 		}
-		waiting, _ := condition.Attr("waiting_requests")
-		ttftVal, _ := condition.Attr("ttft")
+		waiting, _ := condition.Attr("waiting_requests_p50")
+		ttftVal, _ := condition.Attr("ttft_p99")
 		kv, _ := condition.Attr("kv_cache_usage")
 		preemptions, _ := condition.Attr("preemptions")
 		ttft, err := time.ParseDuration(starlarkString(ttftVal))
 		if err != nil {
-			return nil, fmt.Errorf("stop_when.ttft: %w", err)
+			return nil, fmt.Errorf("stop_when.ttft_p99: %w", err)
 		}
 		stage.StopWhen = &CongestionCondition{
-			WaitingRequests: starlarkFloat(waiting),
-			TTFT:            ttft,
-			KVCacheUsage:    starlarkFloat(kv),
-			Preemptions:     starlarkFloat(preemptions),
+			WaitingRequestsP50: starlarkFloat(waiting),
+			TTFTP99:            ttft,
+			KVCacheUsage:       starlarkFloat(kv),
+			Preemptions:        starlarkFloat(preemptions),
 		}
 	}
 

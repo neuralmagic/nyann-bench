@@ -219,7 +219,7 @@ Workload types:
 					for _, role := range result.Roles {
 						slog.Info("Congestion signals",
 							"role", role.Role,
-							"waiting_max", role.WaitingMax,
+							"waiting_p50", role.WaitingP50,
 							"ttft_p99", time.Duration(role.TTFTP99*float64(time.Second)),
 							"kv_usage_max", role.KVUsageMax,
 							"preemptions", role.Preemptions)

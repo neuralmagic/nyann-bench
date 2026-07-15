@@ -241,8 +241,8 @@ func TestStarlarkUntilCongested(t *testing.T) {
 scenario(
     stages = until_congested(
         [stage("2m", concurrency=c) for c in range(64, 257, 64)],
-        waiting_requests=32,
-        ttft="2s",
+        waiting_requests_p50=32,
+        ttft_p99="2s",
         kv_cache_usage=0.97,
         preemptions=2,
     ),
@@ -259,7 +259,7 @@ scenario(
 		if stage.StopWhen == nil {
 			t.Fatalf("stage %d has no congestion condition", i)
 		}
-		if stage.StopWhen.WaitingRequests != 32 || stage.StopWhen.TTFT != 2*time.Second ||
+		if stage.StopWhen.WaitingRequestsP50 != 32 || stage.StopWhen.TTFTP99 != 2*time.Second ||
 			stage.StopWhen.KVCacheUsage != 0.97 || stage.StopWhen.Preemptions != 2 {
 			t.Errorf("stage %d condition = %+v", i, stage.StopWhen)
 		}
@@ -269,7 +269,7 @@ scenario(
 func TestStarlarkUntilCongestedDefaultsAndValidation(t *testing.T) {
 	path := writeStarFile(t, `
 scenario(stages=until_congested(
-    [stage("1m")], waiting_requests=10, ttft="500ms",
+    [stage("1m")], waiting_requests_p50=10, ttft_p99="500ms",
 ))
 `)
 	sc, err := config.ParseStarlark(path)
@@ -283,11 +283,11 @@ scenario(stages=until_congested(
 
 	bad := writeStarFile(t, `
 scenario(stages=until_congested(
-    [stage("1m")], waiting_requests=0, ttft="500ms",
+    [stage("1m")], waiting_requests_p50=0, ttft_p99="500ms",
 ))
 `)
-	if _, err := config.ParseStarlark(bad); err == nil || !contains(err.Error(), "waiting_requests must be > 0") {
-		t.Fatalf("expected waiting_requests validation error, got %v", err)
+	if _, err := config.ParseStarlark(bad); err == nil || !contains(err.Error(), "waiting_requests_p50 must be > 0") {
+		t.Fatalf("expected waiting_requests_p50 validation error, got %v", err)
 	}
 }
 
