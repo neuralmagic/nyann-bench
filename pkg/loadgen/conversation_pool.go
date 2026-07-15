@@ -309,7 +309,7 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 
 	pc.history = append(pc.history, client.Message{
 		Role:    "assistant",
-		Content: result.Content,
+		Content: result.GeneratedText,
 	})
 	pc.turn++
 	return pc.turn >= len(pc.conv.Turns)

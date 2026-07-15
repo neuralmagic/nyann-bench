@@ -56,6 +56,8 @@ type Result struct {
 	TokenTimes   []time.Time // Time of each token arrival
 	EndTime      time.Time
 	Content      string
+	Reasoning    string // Reasoning emitted separately from visible content
+	GeneratedText string // Full streamed text in generation order
 	FinishReason string // "stop", "length", etc.
 	Usage        *Usage
 	Err          error
@@ -275,7 +277,7 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 		return result
 	}
 
-	var content strings.Builder
+	var content, reasoning, generated strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase scanner buffer for large responses
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -309,12 +311,19 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
-			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" {
+			reasoningDelta := delta.Reasoning
+			if reasoningDelta == "" {
+				reasoningDelta = delta.ReasoningContent
+			}
+			if delta.Content != "" || reasoningDelta != "" {
 				if result.FirstToken.IsZero() {
 					result.FirstToken = now
 				}
 				result.TokenTimes = append(result.TokenTimes, now)
+				reasoning.WriteString(reasoningDelta)
+				generated.WriteString(reasoningDelta)
 				content.WriteString(delta.Content)
+				generated.WriteString(delta.Content)
 			}
 			if chunk.Choices[0].FinishReason != nil {
 				result.FinishReason = *chunk.Choices[0].FinishReason
@@ -327,6 +336,8 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 	}
 
 	result.Content = content.String()
+	result.Reasoning = reasoning.String()
+	result.GeneratedText = generated.String()
 	result.EndTime = time.Now()
 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
@@ -423,6 +434,7 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 	}
 
 	result.Content = content.String()
+	result.GeneratedText = result.Content
 	result.EndTime = time.Now()
 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
