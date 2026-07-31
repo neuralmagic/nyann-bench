@@ -182,6 +182,21 @@ just deploy my-benchmark http://vllm-server:8000/v1 config.star 8
 
 This creates a ConfigMap with your config and launches an Indexed Job with 8 pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX` and the barrier server address from `BARRIER_ADDR`. The manifest passes `--workers N` so barrier sync and load division are enabled automatically.
 
+For OpenShift, select the platform explicitly. This removes the privileged
+network-tuning init container, applies restricted-compatible security
+contexts, and creates a PodMonitor:
+
+```bash
+nyann-bench eval gsm8k \
+  --target http://model-gateway/v1 \
+  --gsm8k-path /mnt/shared/data/gsm8k_test.jsonl \
+  --gsm8k-train-path /mnt/shared/data/gsm8k_train.jsonl \
+  --output-dir /mnt/shared/results/run-001 \
+  --kube --kube.context pirate --kube.namespace tms \
+  --kube.platform openshift --kube.arch amd64 \
+  --kube.config '{"volumes":[{"pvc":"shared-cache","mountPath":"/mnt/shared"}]}'
+```
+
 ## Installation
 
 ```bash

@@ -72,14 +72,16 @@ prep-corpus SOURCE CORPUS_DIR NAMESPACE='vllm':
     kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=600s job/corpus-prep \
       && kubectl -n {{NAMESPACE}} logs job/corpus-prep
 
-# Download GSM8K test and train JSONL files for the gsm8k dataset type
-prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
+# Download GSM8K test and train JSONL files to a shared Kubernetes volume.
+prep-gsm8k OUTPUT_DIR PVC MOUNT_PATH='/mnt/shared' NAMESPACE='vllm' CONTEXT='':
     #!/usr/bin/env bash
     set -euo pipefail
     TEST_URL="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl"
     TRAIN_URL="https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl"
-    kubectl -n {{NAMESPACE}} delete job gsm8k-prep --ignore-not-found=true
-    kubectl -n {{NAMESPACE}} apply -f - <<EOF
+    KUBECTL=(kubectl)
+    if [[ -n "{{CONTEXT}}" ]]; then KUBECTL+=(--context "{{CONTEXT}}"); fi
+    "${KUBECTL[@]}" -n {{NAMESPACE}} delete job gsm8k-prep --ignore-not-found=true
+    "${KUBECTL[@]}" -n {{NAMESPACE}} apply -f - <<EOF
     apiVersion: batch/v1
     kind: Job
     metadata:
@@ -91,21 +93,18 @@ prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
       template:
         spec:
           restartPolicy: Never
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: nvidia.com/gpu.present
-                        operator: Exists
           containers:
             - name: download
               image: curlimages/curl:8.5.0
               securityContext:
-                runAsUser: 0
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                runAsNonRoot: true
               command: ["sh", "-c"]
               args:
                 - |
+                  set -eu
                   mkdir -p {{OUTPUT_DIR}}
                   echo "Downloading GSM8K test split..."
                   curl -fL -o {{OUTPUT_DIR}}/gsm8k_test.jsonl "${TEST_URL}"
@@ -115,16 +114,16 @@ prep-gsm8k OUTPUT_DIR NAMESPACE='vllm':
                   ls -lh {{OUTPUT_DIR}}/gsm8k_*.jsonl
                   wc -l {{OUTPUT_DIR}}/gsm8k_*.jsonl
               volumeMounts:
-                - mountPath: /mnt/lustre
-                  name: lustre
+                - mountPath: {{MOUNT_PATH}}
+                  name: shared-data
           volumes:
-            - name: lustre
+            - name: shared-data
               persistentVolumeClaim:
-                claimName: lustre-pvc-vllm
+                claimName: {{PVC}}
     EOF
     echo "Waiting for job to complete..."
-    kubectl -n {{NAMESPACE}} wait --for=condition=complete --timeout=120s job/gsm8k-prep \
-      && kubectl -n {{NAMESPACE}} logs job/gsm8k-prep
+    "${KUBECTL[@]}" -n {{NAMESPACE}} wait --for=condition=complete --timeout=120s job/gsm8k-prep \
+      && "${KUBECTL[@]}" -n {{NAMESPACE}} logs job/gsm8k-prep
 
 # Download GPQA Diamond dataset (public, 198 questions) for the gpqa dataset type
 prep-gpqa OUTPUT_DIR NAMESPACE='vllm':

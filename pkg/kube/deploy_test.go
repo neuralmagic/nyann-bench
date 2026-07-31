@@ -36,6 +36,9 @@ func TestKubeConfigDefaults(t *testing.T) {
 	if cfg.Image != "latest" {
 		t.Errorf("Image = %q, want latest", cfg.Image)
 	}
+	if cfg.Platform != "kubernetes" {
+		t.Errorf("Platform = %q, want kubernetes", cfg.Platform)
+	}
 	if cfg.Arch != "arm64" {
 		t.Errorf("Arch = %q, want arm64", cfg.Arch)
 	}
@@ -167,6 +170,28 @@ func TestRenderYAMLNoVolumes(t *testing.T) {
 	}
 }
 
+func TestRenderYAMLOpenShift(t *testing.T) {
+	yaml, err := RenderYAML(KubeConfig{Platform: "openshift"}, "eval-gsm8k", []string{"eval", "gsm8k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, check := range []string{
+		"kind: PodMonitor",
+		"allowPrivilegeEscalation: false",
+		"runAsNonRoot: true",
+		"seccompProfile:",
+		"requests:",
+	} {
+		if !strings.Contains(yaml, check) {
+			t.Errorf("OpenShift YAML missing %q", check)
+		}
+	}
+	if strings.Contains(yaml, "initContainers:") || strings.Contains(yaml, "privileged: true") {
+		t.Error("OpenShift YAML must not contain the privileged sysctl init container")
+	}
+}
+
 func TestRenderYAMLMultiWorker(t *testing.T) {
 	yaml, err := RenderYAML(KubeConfig{Workers: 4}, "generate", []string{"generate"})
 	if err != nil {
@@ -223,9 +248,11 @@ func TestBarrierAddrDNSFormat(t *testing.T) {
 
 func TestFlagsToConfig(t *testing.T) {
 	f := Flags{
-		Config: `{"namespace": "test-ns", "workers": 2}`,
-		Image:  "pr-99",
-		Volume: "lustre",
+		Config:   `{"namespace": "test-ns", "workers": 2}`,
+		Context:  "pirate",
+		Platform: "openshift",
+		Image:    "pr-99",
+		Volume:   "lustre",
 	}
 	cfg, err := f.ToConfig()
 	if err != nil {
@@ -237,6 +264,12 @@ func TestFlagsToConfig(t *testing.T) {
 	}
 	if cfg.Workers != 2 {
 		t.Errorf("Workers = %d, want 2 (from JSON)", cfg.Workers)
+	}
+	if cfg.Context != "pirate" {
+		t.Errorf("Context = %q, want pirate", cfg.Context)
+	}
+	if cfg.Platform != "openshift" {
+		t.Errorf("Platform = %q, want openshift", cfg.Platform)
 	}
 	if cfg.Image != "pr-99" {
 		t.Errorf("Image = %q, want pr-99 (dotted flag overrides)", cfg.Image)
