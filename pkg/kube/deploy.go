@@ -22,7 +22,9 @@ var volumePresets = map[string]VolumeSpec{
 
 type KubeConfig struct {
 	Name      string       `json:"name,omitempty"`
+	Context   string       `json:"context,omitempty"`
 	Namespace string       `json:"namespace,omitempty"`
+	Platform  string       `json:"platform,omitempty"`
 	Image     string       `json:"image,omitempty"`
 	Arch      string       `json:"arch,omitempty"`
 	Workers   int          `json:"workers,omitempty"`
@@ -42,7 +44,9 @@ type Flags struct {
 	Enabled   bool
 	Config    string
 	Name      string
+	Context   string
 	Namespace string
+	Platform  string
 	Image     string
 	Arch      string
 	Volume    string
@@ -55,7 +59,9 @@ func RegisterFlags(cmd *cobra.Command, f *Flags) {
 	cmd.Flags().BoolVar(&f.Enabled, "kube", false, "Deploy to Kubernetes instead of running locally")
 	cmd.Flags().StringVar(&f.Config, "kube.config", "", "Kubernetes deploy config as JSON")
 	cmd.Flags().StringVar(&f.Name, "kube.name", "", "Job name (auto-generated if omitted)")
+	cmd.Flags().StringVar(&f.Context, "kube.context", "", "Exact kube context to use")
 	cmd.Flags().StringVar(&f.Namespace, "kube.namespace", "", "Kubernetes namespace (default: from kubeconfig)")
+	cmd.Flags().StringVar(&f.Platform, "kube.platform", "", "Cluster platform: kubernetes or openshift")
 	cmd.Flags().StringVar(&f.Image, "kube.image", "", "Container image tag or full ref (default: latest)")
 	cmd.Flags().StringVar(&f.Arch, "kube.arch", "", "Node architecture (default: arm64)")
 	cmd.Flags().StringVar(&f.Volume, "kube.volume", "", "Volume preset (e.g. lustre)")
@@ -65,7 +71,7 @@ func RegisterFlags(cmd *cobra.Command, f *Flags) {
 
 // IsEnabled returns true if any --kube* flag was set.
 func (f *Flags) IsEnabled(cmd *cobra.Command) bool {
-	for _, name := range []string{"kube", "kube.config", "kube.name", "kube.namespace", "kube.image", "kube.arch", "kube.volume", "kube.cpu", "kube.memory"} {
+	for _, name := range []string{"kube", "kube.config", "kube.name", "kube.context", "kube.namespace", "kube.platform", "kube.image", "kube.arch", "kube.volume", "kube.cpu", "kube.memory"} {
 		if cmd.Flags().Changed(name) {
 			return true
 		}
@@ -84,8 +90,14 @@ func (f *Flags) ToConfig() (KubeConfig, error) {
 	if f.Name != "" {
 		cfg.Name = f.Name
 	}
+	if f.Context != "" {
+		cfg.Context = f.Context
+	}
 	if f.Namespace != "" {
 		cfg.Namespace = f.Namespace
+	}
+	if f.Platform != "" {
+		cfg.Platform = f.Platform
 	}
 	if f.Image != "" {
 		cfg.Image = f.Image
@@ -102,6 +114,9 @@ func (f *Flags) ToConfig() (KubeConfig, error) {
 	if f.Memory != "" {
 		cfg.Memory = f.Memory
 	}
+	if cfg.Platform != "" && cfg.Platform != "kubernetes" && cfg.Platform != "openshift" {
+		return cfg, fmt.Errorf("unsupported kube platform %q (options: kubernetes, openshift)", cfg.Platform)
+	}
 	return cfg, nil
 }
 
@@ -116,6 +131,9 @@ func (cfg *KubeConfig) applyDefaults(defaultName string) {
 	// Namespace intentionally left empty if not set — kubectl will use the kubeconfig default
 	if cfg.Image == "" {
 		cfg.Image = "latest"
+	}
+	if cfg.Platform == "" {
+		cfg.Platform = "kubernetes"
 	}
 	if cfg.Arch == "" {
 		cfg.Arch = "arm64"
@@ -160,6 +178,7 @@ type deployParams struct {
 	Workers   int
 	CPU       string
 	Memory    string
+	OpenShift bool
 	Args      []string
 	Volumes   []VolumeSpec
 }
@@ -210,6 +229,11 @@ spec:
               - key: kubernetes.io/arch
                 operator: In
                 values: ["{{ .Arch }}"]
+{{ if .OpenShift }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+{{ else }}
       initContainers:
         - name: sysctl
           image: public.ecr.aws/docker/library/busybox:1.36
@@ -220,14 +244,25 @@ spec:
               sysctl -w net.ipv4.tcp_tw_reuse=1
           securityContext:
             privileged: true
+{{ end }}
       containers:
         - name: nyann-bench
           image: {{ .Image }}
           imagePullPolicy: Always
           resources:
+            requests:
+              cpu: "{{ .CPU }}"
+              memory: "{{ .Memory }}"
             limits:
               cpu: "{{ .CPU }}"
               memory: "{{ .Memory }}"
+{{ if .OpenShift }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+{{ end }}
           ports:
             - name: metrics
               containerPort: 9090
@@ -255,6 +290,24 @@ spec:
             claimName: {{ .PVC }}
 {{- end }}
 {{- end }}
+{{ if .OpenShift }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Name }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Name }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+  podTargetLabels:
+    - app
+    - job-name
+{{ end }}
 `))
 
 type templateVolume struct {
@@ -264,14 +317,15 @@ type templateVolume struct {
 }
 
 type templateParams struct {
-	Name    string
-	Arch    string
-	Image   string
-	Workers int
-	CPU     string
-	Memory  string
-	Args    []string
-	Volumes []templateVolume
+	Name      string
+	Arch      string
+	Image     string
+	Workers   int
+	CPU       string
+	Memory    string
+	OpenShift bool
+	Args      []string
+	Volumes   []templateVolume
 }
 
 func renderYAML(p deployParams) (string, error) {
@@ -288,14 +342,15 @@ func renderYAML(p deployParams) (string, error) {
 		})
 	}
 	tp := templateParams{
-		Name:    p.Name,
-		Arch:    p.Arch,
-		Image:   p.Image,
-		Workers: p.Workers,
-		CPU:     p.CPU,
-		Memory:  p.Memory,
-		Args:    p.Args,
-		Volumes: vols,
+		Name:      p.Name,
+		Arch:      p.Arch,
+		Image:     p.Image,
+		Workers:   p.Workers,
+		CPU:       p.CPU,
+		Memory:    p.Memory,
+		OpenShift: p.OpenShift,
+		Args:      p.Args,
+		Volumes:   vols,
 	}
 	var buf bytes.Buffer
 	if err := jobTemplate.Execute(&buf, tp); err != nil {
@@ -304,8 +359,11 @@ func renderYAML(p deployParams) (string, error) {
 	return buf.String(), nil
 }
 
-func kubectl(namespace string, args ...string) error {
+func kubectl(context, namespace string, args ...string) error {
 	var fullArgs []string
+	if context != "" {
+		fullArgs = append(fullArgs, "--context", context)
+	}
 	if namespace != "" {
 		fullArgs = append(fullArgs, "-n", namespace)
 	}
@@ -331,30 +389,44 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 		"workers", cfg.Workers,
 		"volumes", len(volumes))
 
-	// Clean up existing resources
-	_ = kubectl(cfg.Namespace, "delete", "job", cfg.Name, "--ignore-not-found=true")
-	_ = kubectl(cfg.Namespace, "delete", "service", cfg.Name, "--ignore-not-found=true")
-
 	yaml, err := renderYAML(deployParams{
-		Name:    cfg.Name,
+		Name:      cfg.Name,
 		Namespace: cfg.Namespace,
-		Image:   image,
-		Arch:    cfg.Arch,
-		Workers: cfg.Workers,
-		CPU:     cfg.CPU,
-		Memory:  cfg.Memory,
-		Args:    args,
-		Volumes: volumes,
+		Image:     image,
+		Arch:      cfg.Arch,
+		Workers:   cfg.Workers,
+		CPU:       cfg.CPU,
+		Memory:    cfg.Memory,
+		OpenShift: cfg.Platform == "openshift",
+		Args:      args,
+		Volumes:   volumes,
 	})
 	if err != nil {
 		return err
 	}
 
-	applyArgs := []string{}
-	if cfg.Namespace != "" {
-		applyArgs = append(applyArgs, "-n", cfg.Namespace)
+	baseArgs := []string{}
+	if cfg.Context != "" {
+		baseArgs = append(baseArgs, "--context", cfg.Context)
 	}
-	applyArgs = append(applyArgs, "apply", "-f", "-")
+	if cfg.Namespace != "" {
+		baseArgs = append(baseArgs, "-n", cfg.Namespace)
+	}
+	dryRunArgs := append(append([]string{}, baseArgs...), "apply", "--dry-run=server", "-f", "-")
+	dryRunCmd := exec.Command("kubectl", dryRunArgs...)
+	dryRunCmd.Stdin = strings.NewReader(yaml)
+	dryRunCmd.Stdout = os.Stdout
+	dryRunCmd.Stderr = os.Stderr
+	if err := dryRunCmd.Run(); err != nil {
+		return fmt.Errorf("kubectl server-side dry run: %w", err)
+	}
+
+	// Only replace an existing deployment after the new manifest validates.
+	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "job", cfg.Name, "--ignore-not-found=true")
+	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "service", cfg.Name, "--ignore-not-found=true")
+	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "podmonitor", cfg.Name, "--ignore-not-found=true")
+
+	applyArgs := append(baseArgs, "apply", "-f", "-")
 	applyCmd := exec.Command("kubectl", applyArgs...)
 	applyCmd.Stdin = strings.NewReader(yaml)
 	applyCmd.Stdout = os.Stdout
@@ -390,14 +462,15 @@ func RenderYAML(cfg KubeConfig, defaultName string, args []string) (string, erro
 	image := ResolveImage(cfg.Image)
 	volumes := cfg.resolveVolumes()
 	return renderYAML(deployParams{
-		Name:    cfg.Name,
+		Name:      cfg.Name,
 		Namespace: cfg.Namespace,
-		Image:   image,
-		Arch:    cfg.Arch,
-		Workers: cfg.Workers,
-		CPU:     cfg.CPU,
-		Memory:  cfg.Memory,
-		Args:    args,
-		Volumes: volumes,
+		Image:     image,
+		Arch:      cfg.Arch,
+		Workers:   cfg.Workers,
+		CPU:       cfg.CPU,
+		Memory:    cfg.Memory,
+		OpenShift: cfg.Platform == "openshift",
+		Args:      args,
+		Volumes:   volumes,
 	})
 }
