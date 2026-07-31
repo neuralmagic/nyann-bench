@@ -424,7 +424,9 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 	// Only replace an existing deployment after the new manifest validates.
 	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "job", cfg.Name, "--ignore-not-found=true")
 	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "service", cfg.Name, "--ignore-not-found=true")
-	_ = kubectl(cfg.Context, cfg.Namespace, "delete", "podmonitor", cfg.Name, "--ignore-not-found=true")
+	if cfg.Platform == "openshift" {
+		_ = kubectl(cfg.Context, cfg.Namespace, "delete", "podmonitor", cfg.Name, "--ignore-not-found=true")
+	}
 
 	applyArgs := append(baseArgs, "apply", "-f", "-")
 	applyCmd := exec.Command("kubectl", applyArgs...)
@@ -435,11 +437,14 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 		return fmt.Errorf("kubectl apply: %w", err)
 	}
 
-	nsFlag := ""
+	var ctxFlag, nsFlag string
+	if cfg.Context != "" {
+		ctxFlag = "--context " + cfg.Context + " "
+	}
 	if cfg.Namespace != "" {
 		nsFlag = "-n " + cfg.Namespace + " "
 	}
-	fmt.Fprintf(os.Stderr, "\nDeployed. Follow with:\n  kubectl %slogs -l app=%s -c nyann-bench --tail=50 -f\n", nsFlag, cfg.Name)
+	fmt.Fprintf(os.Stderr, "\nDeployed. Follow with:\n  kubectl %s%slogs -l app=%s -c nyann-bench --tail=50 -f\n", ctxFlag, nsFlag, cfg.Name)
 	return nil
 }
 
