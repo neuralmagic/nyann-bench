@@ -144,7 +144,7 @@ func (s *conversationPoolScheduler) stop() {
 	s.stopped = true
 }
 
-func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
+func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int), onStageComplete func(index int) bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.stopFunc = cancel
@@ -199,6 +199,9 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 			}
 		}
 		stageCancel()
+		if ctx.Err() == nil && onStageComplete != nil && !onStageComplete(i) {
+			break
+		}
 	}
 
 	g.recordWG.Wait()

@@ -18,6 +18,17 @@ type ScenarioConfig struct {
 	WorkerID int             // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
 }
 
+// CongestionCondition describes the two server-side congestion signals. A
+// stage stops the remaining sweep when either the queueing pair (waiting
+// requests p50 and TTFT p99) or cache pair (KV usage and preemptions) is
+// satisfied.
+type CongestionCondition struct {
+	WaitingRequestsP50 float64
+	TTFTP99            time.Duration
+	KVCacheUsage       float64
+	Preemptions        float64
+}
+
 // SyncConfig configures distributed barrier synchronization across pods.
 type SyncConfig struct {
 	Workers int      `json:"workers"`           // expected number of pods
@@ -28,21 +39,22 @@ type SyncConfig struct {
 
 // ScenarioStage is a single phase of a benchmark with optional per-stage overrides.
 type ScenarioStage struct {
-	Name                 string        // human-readable label (for logging/analysis)
-	Duration             time.Duration // how long this stage runs
-	Mode                 string        // "concurrent", "conversation_pool", "constant", "poisson" (empty = inherit)
-	Concurrency          int           // hot running requests for concurrent modes (0 = inherit)
-	ConversationPoolSize int           // active conversation working set for conversation_pool mode
-	Rate                 float64       // req/s for constant/poisson (0 = inherit)
-	MaxInFlight          int           // cap for rate-based modes (0 = unlimited)
-	Rampup               time.Duration // stagger stream starts / ramp rate
-	Workload             *Workload     // nil = inherit from scenario
-	Target               string        // empty = inherit from scenario
-	Model                string        // empty = inherit from scenario
-	MaxRequests          int           // stop after this many requests (0 = unlimited)
-	Warmup               bool          // true = don't record results
-	Barrier              bool          // true = sync point (other fields ignored)
-	BarrierDrain         bool          // true = stop pool before sync, fresh pool after
+	Name                 string               // human-readable label (for logging/analysis)
+	Duration             time.Duration        // how long this stage runs
+	Mode                 string               // "concurrent", "conversation_pool", "constant", "poisson" (empty = inherit)
+	Concurrency          int                  // hot running requests for concurrent modes (0 = inherit)
+	ConversationPoolSize int                  // active conversation working set for conversation_pool mode
+	Rate                 float64              // req/s for constant/poisson (0 = inherit)
+	MaxInFlight          int                  // cap for rate-based modes (0 = unlimited)
+	Rampup               time.Duration        // stagger stream starts / ramp rate
+	Workload             *Workload            // nil = inherit from scenario
+	Target               string               // empty = inherit from scenario
+	Model                string               // empty = inherit from scenario
+	MaxRequests          int                  // stop after this many requests (0 = unlimited)
+	Warmup               bool                 // true = don't record results
+	Barrier              bool                 // true = sync point (other fields ignored)
+	BarrierDrain         bool                 // true = stop pool before sync, fresh pool after
+	StopWhen             *CongestionCondition // nil = always continue to the next stage
 }
 
 // ToScenarioConfig converts a JSON Config into the universal ScenarioConfig IR.

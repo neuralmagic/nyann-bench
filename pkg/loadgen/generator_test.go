@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -553,6 +554,35 @@ func TestRunStagesPoolResize(t *testing.T) {
 	// A torn-down pool would show gaps of 100ms+ as all streams finish then restart.
 	if maxGap > 0.2 {
 		t.Errorf("max gap between requests was %.3fs, expected < 0.2s (pool may have torn down between stages)", maxGap)
+	}
+}
+
+func TestRunStagesUntilStopsBeforeNextStage(t *testing.T) {
+	for _, mode := range []loadgen.Mode{loadgen.ModeConcurrent, loadgen.ModeConversationPool} {
+		t.Run(string(mode), func(t *testing.T) {
+			addr := startMockServer(t)
+			gen := &loadgen.Generator{
+				Target:   "http://" + addr + "/v1",
+				Model:    "test-model",
+				Mode:     mode,
+				Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
+				Recorder: recorder.NewMemory(),
+			}
+			stages := []loadgen.Stage{
+				{Concurrency: 2, ConversationPoolSize: 4, Duration: 100 * time.Millisecond},
+				{Concurrency: 4, ConversationPoolSize: 8, Duration: 100 * time.Millisecond},
+			}
+			var started, completed []int
+			gen.RunStagesUntil(context.Background(), stages, func(i, _ int) {
+				started = append(started, i)
+			}, nil, func(i int) bool {
+				completed = append(completed, i)
+				return false
+			})
+			if !reflect.DeepEqual(started, []int{0}) || !reflect.DeepEqual(completed, []int{0}) {
+				t.Fatalf("started=%v completed=%v, want only stage 0", started, completed)
+			}
+		})
 	}
 }
 
