@@ -236,12 +236,12 @@ nyann-bench eval gsm8k \
 `nyann-bench-api` is a small control plane for agents and other automation. It
 keeps Kubernetes credentials inside the cluster and accepts nyann-bench's
 native command vector; it does not define another workload or evaluation
-schema. The command must target an existing service URL, normally one created
-by Manifesto.
+schema. The command must target an existing service URL, normally a vLLM or
+llm-d inference service.
 
 Create a strong bearer token and an explicit policy. Empty host/PVC lists deny
 all corresponding access. The DNS suffix should be scoped to the namespace(s)
-where Manifesto creates model Services:
+where the vLLM or llm-d inference Services are deployed:
 
 ```bash
 kubectl -n benchmarks create secret generic nyann-bench-api-auth \
@@ -262,10 +262,10 @@ kubectl -n benchmarks apply -f deploy/api.yaml
 
 The API and every benchmark run are CPU-only. Runs are ordinary Indexed Jobs:
 they have no GPU requests, Kueue queue labels, or suspended admission state.
-Manifesto remains responsible for deploying GPU-serving workloads through
-Kueue.
+The vLLM or llm-d deployment remains responsible for its GPU-serving workloads
+and any Kueue admission.
 
-Create a native generate run against a Manifesto service:
+Create a native generate run against a vLLM or llm-d inference service:
 
 ```bash
 curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
@@ -332,8 +332,8 @@ curl -i -X DELETE -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-ben
 The server enforces operator-configured ceilings for workers, per-worker CPU
 and memory, active runtime, and completed-Job retention. The defaults in the
 manifest are 16 workers, 16 CPU, 64 GiB, six hours maximum runtime, and seven
-days maximum retention. PVC access and Manifesto target hosts are explicit
-allowlists; their secure default is deny-all. The runner image is
+days maximum retention. PVC access and inference-service target hosts are
+explicit allowlists; their secure default is deny-all. The runner image is
 operator-managed and must be an immutable official digest.
 
 The supplied RBAC can only manage Jobs, their headless Services, and pod logs

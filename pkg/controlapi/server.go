@@ -467,7 +467,7 @@ func (s *Server) prepare(req CreateRunRequest) (string, kube.KubeConfig, []strin
 	if err != nil {
 		return "", kube.KubeConfig{}, nil, ResultMetadata{}, err
 	}
-	_ = target // validated here; service ownership remains with Manifesto.
+	_ = target // validated here; inference service ownership remains outside this API.
 	workers := req.Workers
 	if workers == 0 {
 		workers = 1
@@ -605,7 +605,7 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 	}
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
-		return nil, "", fmt.Errorf("--target must be an http(s) URL for an existing in-cluster Manifesto service")
+		return nil, "", fmt.Errorf("--target must be an http(s) URL for an existing in-cluster vLLM or llm-d inference service")
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if _, err := netip.ParseAddr(host); err == nil {
