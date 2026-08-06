@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nyann-bench-api
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nyann-bench-api
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete", "get", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nyann-bench-api
+subjects:
+  - kind: ServiceAccount
+    name: nyann-bench-api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nyann-bench-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nyann-bench-api
+  labels:
+    app: nyann-bench-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nyann-bench-api
+  template:
+    metadata:
+      labels:
+        app: nyann-bench-api
+    spec:
+      serviceAccountName: nyann-bench-api
+      containers:
+        - name: api
+          # Required: replace with a reviewed immutable image digest.
+          image: ghcr.io/neuralmagic/nyann-bench@sha256:REPLACE_WITH_IMAGE_DIGEST
+          command: ["/nyann-bench-api"]
+          args:
+            - -allowed-target-hosts=$(ALLOWED_TARGET_HOSTS)
+            - -allowed-target-suffixes=$(ALLOWED_TARGET_SUFFIXES)
+            - -allowed-pvcs=$(ALLOWED_PVCS)
+            - -runner-image=ghcr.io/neuralmagic/nyann-bench@sha256:REPLACE_WITH_IMAGE_DIGEST
+            - -max-workers=16
+            - -max-cpu=16
+            - -max-memory=64Gi
+            - -default-active-deadline=1h
+            - -max-active-deadline=6h
+            - -default-retention-ttl=24h
+            - -max-retention-ttl=168h
+          env:
+            - name: ALLOWED_TARGET_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: nyann-bench-api-policy
+                  key: allowed-target-hosts
+            - name: ALLOWED_TARGET_SUFFIXES
+              valueFrom:
+                configMapKeyRef:
+                  name: nyann-bench-api-policy
+                  key: allowed-target-suffixes
+            - name: ALLOWED_PVCS
+              valueFrom:
+                configMapKeyRef:
+                  name: nyann-bench-api-policy
+                  key: allowed-pvcs
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - name: auth
+              mountPath: /var/run/secrets/nyann-bench-api
+              readOnly: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: auth
+          secret:
+            secretName: nyann-bench-api-auth
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nyann-bench-api
+spec:
+  selector:
+    app: nyann-bench-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

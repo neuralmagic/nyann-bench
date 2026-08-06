@@ -231,6 +231,131 @@ nyann-bench eval gsm8k \
   --kube.config '{"volumes":[{"pvc":"shared-cache","mountPath":"/mnt/shared"}]}'
 ```
 
+## In-cluster run API
+
+`nyann-bench-api` is a small control plane for agents and other automation. It
+keeps Kubernetes credentials inside the cluster and accepts nyann-bench's
+native command vector; it does not define another workload or evaluation
+schema. The command must target an existing service URL, normally a vLLM or
+llm-d inference service.
+
+Create a strong bearer token and an explicit policy. Empty host/PVC lists deny
+all corresponding access. The DNS suffix should be scoped to the namespace(s)
+where the vLLM or llm-d inference Services are deployed:
+
+```bash
+kubectl -n benchmarks create secret generic nyann-bench-api-auth \
+  --from-literal=token='REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS'
+kubectl -n benchmarks create configmap nyann-bench-api-policy \
+  --from-literal=allowed-target-hosts='' \
+  --from-literal=allowed-target-suffixes='.models.svc' \
+  --from-literal=allowed-pvcs='benchmark-results,benchmark-datasets'
+```
+
+Replace every `REPLACE_WITH_IMAGE_DIGEST` in `deploy/api.yaml` with the same
+reviewed 64-character sha256 digest, then install the namespace-scoped API and
+RBAC:
+
+```bash
+kubectl -n benchmarks apply -f deploy/api.yaml
+```
+
+The API and every benchmark run are CPU-only. Runs are ordinary Indexed Jobs:
+they have no GPU requests, Kueue queue labels, or suspended admission state.
+The vLLM or llm-d deployment remains responsible for its GPU-serving workloads
+and any Kueue admission.
+
+Create a native generate run against a vLLM or llm-d inference service:
+
+```bash
+curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
+  -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
+  -H 'content-type: application/json' \
+  -d '{
+    "name": "llama-smoke",
+    "command": [
+      "generate",
+      "--target", "http://llama-decode.models.svc:8000/v1",
+      "--config", "{\"load\":{\"concurrency\":32,\"duration\":\"2m\"}}"
+    ],
+    "workers": 2,
+    "cpu": "4",
+    "memory": "8Gi",
+    "active_deadline_seconds": 3600,
+    "ttl_seconds_after_finished": 86400,
+    "results": {
+      "pvc": "benchmark-results",
+      "mount_path": "/results",
+      "subdir": "nightly"
+    }
+  }'
+```
+
+`command` is passed as an argument array, so inline JSON does not undergo shell
+expansion. For the secure API path, `--config` must be inline JSON; file and
+Starlark configs are rejected because the control plane cannot inspect them for
+per-stage target overrides. The API also rejects Prometheus and auxiliary URL
+overrides. It owns `--workers`, `--worker-id`, `--metrics`,
+`--output-dir`, and all `--kube*` flags. Durable runs report a `pvc://` URI and
+write nyann-bench's existing `requests_N.jsonl` and `timestamps_N.json` files;
+uploading those files to an artifact store is intentionally left for a later
+integration.
+
+An eval uses the same endpoint and the native eval command:
+
+```bash
+curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
+  -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
+  -H 'content-type: application/json' \
+  -d '{
+    "command": [
+      "eval", "gsm8k",
+      "--target", "http://llama-decode.models.svc:8000/v1",
+      "--gsm8k-path", "/datasets/gsm8k_test.jsonl",
+      "--gsm8k-train-path", "/datasets/gsm8k_train.jsonl"
+    ],
+    "mounts": [
+      {"pvc": "benchmark-datasets", "mount_path": "/datasets"}
+    ]
+  }'
+```
+
+Inspect and control runs:
+
+```bash
+curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs
+curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke
+curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' 'http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke/logs?tail_lines=500'
+curl -i -X DELETE -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke
+```
+
+The server enforces operator-configured ceilings for workers, per-worker CPU
+and memory, active runtime, and completed-Job retention. The defaults in the
+manifest are 16 workers, 16 CPU, 64 GiB, six hours maximum runtime, and seven
+days maximum retention. PVC access and inference-service target hosts are
+explicit allowlists; their secure default is deny-all. The runner image is
+operator-managed and must be an immutable official digest.
+
+The supplied RBAC can only manage Jobs, their headless Services, and pod logs
+in its own namespace. Bearer authentication is required for every `/v1`
+endpoint, but NetworkPolicy should still limit callers. Apply a namespace
+`ResourceQuota` as defense in depth because aggregate namespace capacity and
+other workload controllers are outside this API's scope, for example:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: nyann-bench-ceiling
+spec:
+  hard:
+    requests.cpu: "64"
+    requests.memory: 256Gi
+    limits.cpu: "64"
+    limits.memory: 256Gi
+    count/jobs.batch: "32"
+```
+
 ## Installation
 
 ```bash
