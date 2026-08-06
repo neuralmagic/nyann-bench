@@ -2,6 +2,7 @@ package recorder
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -44,12 +45,18 @@ type written struct {
 // background goroutine writes pre-serialized bytes to disk. This eliminates
 // lock contention on the marshal step at high concurrency.
 type Recorder struct {
-	ch      chan written
-	done    chan struct{}
-	file    *os.File
-	mu      sync.Mutex
-	records []Record
+	ch        chan written
+	done      chan struct{}
+	file      *os.File
+	mu        sync.Mutex
+	records   []Record
+	writeMu   sync.RWMutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
+
+var ErrClosed = errors.New("recorder is closed")
 
 // New creates a file-based recorder that also buffers in memory.
 func New(dir string, workerID int) (*Recorder, error) {
@@ -98,6 +105,11 @@ func (r *Recorder) Write(rec *Record) error {
 		return err
 	}
 	line = append(line, '\n')
+	r.writeMu.RLock()
+	defer r.writeMu.RUnlock()
+	if r.closed {
+		return ErrClosed
+	}
 	r.ch <- written{line: line, record: *rec}
 	return nil
 }
@@ -112,21 +124,20 @@ func (r *Recorder) Records() []Record {
 // Close drains pending writes and closes the underlying file.
 // Safe to call multiple times.
 func (r *Recorder) Close() error {
-	r.mu.Lock()
-	ch := r.ch
-	r.ch = nil
-	r.mu.Unlock()
+	r.closeOnce.Do(func() {
+		// Exclude active writers before closing the channel. Future writers see
+		// closed and return ErrClosed rather than racing with close(ch).
+		r.writeMu.Lock()
+		r.closed = true
+		close(r.ch)
+		r.writeMu.Unlock()
 
-	if ch == nil {
-		return nil // already closed
-	}
-
-	close(ch)
-	<-r.done
-	if r.file != nil {
-		return r.file.Close()
-	}
-	return nil
+		<-r.done
+		if r.file != nil {
+			r.closeErr = r.file.Close()
+		}
+	})
+	return r.closeErr
 }
 
 // StageTimestamp marks the measurement window for a single stage.
@@ -139,12 +150,12 @@ type StageTimestamp struct {
 
 // Timestamps holds phase timestamps for a single worker.
 type Timestamps struct {
-	StartTime      float64          `json:"start_time"`
-	RampupEndTime  float64          `json:"rampup_end_time"`
-	EndTime        float64          `json:"end_time"`
-	RampupSeconds  float64          `json:"rampup_duration_seconds"`
-	TotalSeconds   float64          `json:"total_duration_seconds"`
-	Stages         []StageTimestamp  `json:"stages,omitempty"`
+	StartTime     float64          `json:"start_time"`
+	RampupEndTime float64          `json:"rampup_end_time"`
+	EndTime       float64          `json:"end_time"`
+	RampupSeconds float64          `json:"rampup_duration_seconds"`
+	TotalSeconds  float64          `json:"total_duration_seconds"`
+	Stages        []StageTimestamp `json:"stages,omitempty"`
 }
 
 func (t *Timestamps) Write(path string) error {
