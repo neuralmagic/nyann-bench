@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"sigs.k8s.io/yaml"
 )
 
 // Config defines a complete benchmark run.
@@ -77,18 +80,19 @@ type CacheSalt struct {
 	Value string `json:"value,omitempty"` // salt value (required when mode is "fixed")
 }
 
-// Parse reads a config from a JSON string, JSON file path, or Starlark (.star)
-// file path and returns a ScenarioConfig.
+// Parse reads JSON or YAML config, or a Starlark (.star) file, and returns a
+// ScenarioConfig. Inline JSON starts with "{" or "["; inline YAML must start
+// with a "---" document marker. Files use .json/.yaml/.yml when present, and
+// otherwise detect JSON by its leading delimiter and YAML as the fallback.
 func Parse(input string) (*ScenarioConfig, error) {
 	input = strings.TrimSpace(input)
 
 	// Starlark files
-	if strings.HasSuffix(input, ".star") {
+	if strings.EqualFold(filepath.Ext(input), ".star") {
 		return ParseStarlark(input)
 	}
 
-	// JSON (inline or file)
-	cfg, err := parseJSON(input)
+	cfg, err := parseDataConfig(input)
 	if err != nil {
 		return nil, err
 	}
@@ -99,20 +103,18 @@ func Parse(input string) (*ScenarioConfig, error) {
 	return sc, nil
 }
 
-// parseJSON reads a config from a JSON string or file path.
-func parseJSON(input string) (*Config, error) {
-	var data []byte
+type dataFormat string
 
-	if strings.HasPrefix(input, "{") {
-		data = []byte(input)
-	} else {
-		var err error
-		data, err = os.ReadFile(input)
-		if err != nil {
-			return nil, fmt.Errorf("reading config file %s: %w", input, err)
-		}
+const (
+	formatJSON dataFormat = "JSON"
+	formatYAML dataFormat = "YAML"
+)
+
+func parseDataConfig(input string) (*Config, error) {
+	data, format, err := loadConfigData(input)
+	if err != nil {
+		return nil, err
 	}
-
 	cfg := &Config{
 		Load: Load{
 			Mode:        "concurrent",
@@ -128,11 +130,60 @@ func parseJSON(input string) (*Config, error) {
 		},
 	}
 
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+	switch format {
+	case formatYAML:
+		// sigs.k8s.io/yaml converts through JSON, so YAML uses the same JSON
+		// tags, Duration.UnmarshalJSON methods, and typed Config defaults as
+		// native JSON. Strict mode also rejects duplicate and unknown fields.
+		if err := yaml.UnmarshalStrict(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing YAML config: %w", err)
+		}
+	default:
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
+func loadConfigData(input string) ([]byte, dataFormat, error) {
+	if strings.HasPrefix(input, "{") || strings.HasPrefix(input, "[") {
+		return []byte(input), formatJSON, nil
+	}
+	if hasYAMLDocumentMarker(input) {
+		return []byte(input), formatYAML, nil
 	}
 
-	return cfg, nil
+	data, err := os.ReadFile(input)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading config file %s: %w", input, err)
+	}
+	switch strings.ToLower(filepath.Ext(input)) {
+	case ".json":
+		return data, formatJSON, nil
+	case ".yaml", ".yml":
+		return data, formatYAML, nil
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return data, formatJSON, nil
+	}
+	return data, formatYAML, nil
+}
+
+func hasYAMLDocumentMarker(input string) bool {
+	if input == "---" {
+		return true
+	}
+	if len(input) < 4 || input[:3] != "---" {
+		return false
+	}
+	switch input[3] {
+	case '\n', '\r', ' ', '\t':
+		return true
+	default:
+		return false
+	}
 }
 
 // Duration is a time.Duration that marshals/unmarshals as a JSON string ("60s", "10m").

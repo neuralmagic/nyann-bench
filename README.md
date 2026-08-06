@@ -44,7 +44,40 @@ Two-sided observability out of the box:
 
 ### Flexible workload definition
 
-Define benchmark scenarios using a Pythonic [Starlark](https://github.com/google/starlark-go) DSL:
+JSON and YAML use the same typed workload schema, defaults, duration parsing,
+and validation. YAML is convenient for checked-in profiles and for systems
+such as llm-d-benchmark that apply treatment overrides and emit YAML:
+
+```yaml
+warmup:
+  duration: 30s
+  stagger: true
+stages:
+  - concurrency: 8
+    duration: 2m
+  - concurrency: 96
+    duration: 3m
+workload:
+  type: faker
+  name: llm-d-concurrency-sweep
+  isl: 1024
+  osl: 512
+  turns: 2
+```
+
+```bash
+nyann-bench generate --target http://localhost:8000/v1 \
+  --config deploy/examples/concurrent-faker.yaml
+```
+
+YAML files use `.yaml` or `.yml`. Files with another extension are detected as
+JSON when their first non-space character is `{` or `[`, and as YAML otherwise;
+this covers rendered names such as `.yaml.in`. Inline JSON is detected the same
+way. Prefix inline YAML with the `---` document marker so it cannot be mistaken
+for a file path. YAML parsing is strict: unknown or duplicate fields are errors.
+
+For programmable scenarios, use the Pythonic
+[Starlark](https://github.com/google/starlark-go) DSL:
 
 ```python
 chat = workload("faker", isl=256, osl=512)
@@ -130,9 +163,10 @@ go build -o nyann-bench ./cmd/nyann-bench/
 ./nyann-bench generate --target http://localhost:8000/v1 --config '{"load":{"concurrency":16,"duration":"30s"}}'
 ```
 
-Or with a Starlark config file:
+Or with a YAML or Starlark config file:
 
 ```bash
+./nyann-bench generate --target http://localhost:8000/v1 --config deploy/examples/concurrent-faker.yaml
 ./nyann-bench generate --target http://localhost:8000/v1 --config scenario.star
 ```
 
