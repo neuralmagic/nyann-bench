@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -557,26 +558,31 @@ func TestRunStagesPoolResize(t *testing.T) {
 }
 
 func TestRunStagesUntilStopsBeforeNextStage(t *testing.T) {
-	addr := startMockServer(t)
-	gen := &loadgen.Generator{
-		Target:   "http://" + addr + "/v1",
-		Model:    "test-model",
-		Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
-		Recorder: recorder.NewMemory(),
-	}
-	stages := []loadgen.Stage{
-		{Concurrency: 2, Duration: 100 * time.Millisecond},
-		{Concurrency: 4, Duration: 100 * time.Millisecond},
-	}
-	var started, completed []int
-	gen.RunStagesUntil(context.Background(), stages, func(i, _ int) {
-		started = append(started, i)
-	}, nil, func(i int) bool {
-		completed = append(completed, i)
-		return false
-	})
-	if !reflect.DeepEqual(started, []int{0}) || !reflect.DeepEqual(completed, []int{0}) {
-		t.Fatalf("started=%v completed=%v, want only stage 0", started, completed)
+	for _, mode := range []loadgen.Mode{loadgen.ModeConcurrent, loadgen.ModeConversationPool} {
+		t.Run(string(mode), func(t *testing.T) {
+			addr := startMockServer(t)
+			gen := &loadgen.Generator{
+				Target:   "http://" + addr + "/v1",
+				Model:    "test-model",
+				Mode:     mode,
+				Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
+				Recorder: recorder.NewMemory(),
+			}
+			stages := []loadgen.Stage{
+				{Concurrency: 2, ConversationPoolSize: 4, Duration: 100 * time.Millisecond},
+				{Concurrency: 4, ConversationPoolSize: 8, Duration: 100 * time.Millisecond},
+			}
+			var started, completed []int
+			gen.RunStagesUntil(context.Background(), stages, func(i, _ int) {
+				started = append(started, i)
+			}, nil, func(i int) bool {
+				completed = append(completed, i)
+				return false
+			})
+			if !reflect.DeepEqual(started, []int{0}) || !reflect.DeepEqual(completed, []int{0}) {
+				t.Fatalf("started=%v completed=%v, want only stage 0", started, completed)
+			}
+		})
 	}
 }
 
@@ -613,12 +619,12 @@ func TestCacheSaltAppearsInRequest(t *testing.T) {
 
 	rec := recorder.NewMemory()
 	gen := &loadgen.Generator{
-		Target:    "http://" + ln.Addr().String() + "/v1",
-		Model:     "test-model",
-		CacheSalt: &config.CacheSalt{Mode: "fixed", Value: "test-salt-abc"},
-		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
-		Recorder:  rec,
-		Duration:  500 * time.Millisecond,
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		CacheSalt:   &config.CacheSalt{Mode: "fixed", Value: "test-salt-abc"},
+		Dataset:     dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:    rec,
+		Duration:    500 * time.Millisecond,
 		Concurrency: 1,
 	}
 
@@ -720,13 +726,13 @@ func TestRandomCacheSaltUnique(t *testing.T) {
 
 	rec := recorder.NewMemory()
 	gen := &loadgen.Generator{
-		Target:    "http://" + ln.Addr().String() + "/v1",
-		Model:     "test-model",
-		CacheSalt: &config.CacheSalt{Mode: "random"},
-		Dataset:   dataset.NewSynthetic(8, 4, 1, 4.0),
-		Recorder:        rec,
-		Duration:        1 * time.Second,
-		Concurrency:     1,
+		Target:      "http://" + ln.Addr().String() + "/v1",
+		Model:       "test-model",
+		CacheSalt:   &config.CacheSalt{Mode: "random"},
+		Dataset:     dataset.NewSynthetic(8, 4, 1, 4.0),
+		Recorder:    rec,
+		Duration:    1 * time.Second,
+		Concurrency: 1,
 	}
 
 	gen.Run(context.Background())
@@ -951,6 +957,246 @@ type countingDataset struct {
 func (d *countingDataset) NextConversation() dataset.Conversation {
 	atomic.AddInt64(&d.draws, 1)
 	return d.inner.NextConversation()
+}
+
+func startTrackingServer(t *testing.T, delay time.Duration) (addr string, maxInFlight *atomic.Int64) {
+	t.Helper()
+	var inFlight atomic.Int64
+	maxInFlight = &atomic.Int64{}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			max := maxInFlight.Load()
+			if cur <= max || maxInFlight.CompareAndSwap(max, cur) {
+				break
+			}
+		}
+		defer inFlight.Add(-1)
+
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		data, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"delta":         map[string]string{"content": "ok"},
+				"finish_reason": "stop",
+			}},
+		})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		f.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		f.Flush()
+	})
+
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	return ln.Addr().String(), maxInFlight
+}
+
+func TestConversationPoolHonorsHotConcurrencyAndPoolSize(t *testing.T) {
+	addr, maxInFlight := startTrackingServer(t, 20*time.Millisecond)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:               "http://" + addr + "/v1",
+		Model:                "test-model",
+		Mode:                 loadgen.ModeConversationPool,
+		Dataset:              dataset.NewSynthetic(16, 4, 3, 4.0),
+		Recorder:             rec,
+		ConversationPoolSize: 5,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 2, ConversationPoolSize: 5, Duration: 30 * time.Second, MaxRequests: 10},
+	}
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	if len(records) != 10 {
+		t.Fatalf("expected exactly 10 records, got %d", len(records))
+	}
+	if got := maxInFlight.Load(); got > 2 {
+		t.Fatalf("max in-flight = %d, want <= 2", got)
+	}
+
+	convIDs := map[string]bool{}
+	for _, r := range records {
+		convIDs[r.ConversationID] = true
+	}
+	if len(convIDs) != 5 {
+		t.Fatalf("expected 5 active conversations in the working set, got %d (%v)", len(convIDs), convIDs)
+	}
+}
+
+func TestConversationPoolLRUOrder(t *testing.T) {
+	addr, _ := startTrackingServer(t, 0)
+
+	rec := recorder.NewMemory()
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  dataset.NewSynthetic(16, 4, 2, 4.0),
+		Recorder: rec,
+	}
+
+	stages := []loadgen.Stage{
+		{Concurrency: 1, ConversationPoolSize: 3, Duration: 30 * time.Second, MaxRequests: 6},
+	}
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].StartTime < records[j].StartTime
+	})
+
+	if len(records) != 6 {
+		t.Fatalf("expected 6 records, got %d", len(records))
+	}
+	want := []struct {
+		conv string
+		turn int
+	}{
+		{"pool-c0", 0},
+		{"pool-c1", 0},
+		{"pool-c2", 0},
+		{"pool-c0", 1},
+		{"pool-c1", 1},
+		{"pool-c2", 1},
+	}
+	for i, w := range want {
+		if records[i].ConversationID != w.conv || records[i].Turn != w.turn {
+			t.Fatalf("record %d = (%s, turn %d), want (%s, turn %d)",
+				i, records[i].ConversationID, records[i].Turn, w.conv, w.turn)
+		}
+	}
+}
+
+func TestConversationPoolReplaysReasoningAndContent(t *testing.T) {
+	var bodies [][]client.Message
+	var mu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []client.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, body.Messages)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"think-\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	srv := &http.Server{Handler: handler}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + ln.Addr().String() + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  dataset.NewSynthetic(16, 4, 2, 4.0),
+		Recorder: recorder.NewMemory(),
+	}
+	gen.RunStages(context.Background(), []loadgen.Stage{{
+		Concurrency:          1,
+		ConversationPoolSize: 1,
+		Duration:             30 * time.Second,
+		MaxRequests:          2,
+	}}, nil, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("got %d requests, want 2", len(bodies))
+	}
+	if len(bodies[1]) < 2 {
+		t.Fatalf("second request has %d messages, want at least 2", len(bodies[1]))
+	}
+	if got := bodies[1][1].Content; got != "think-answer" {
+		t.Fatalf("replayed assistant content = %q, want %q", got, "think-answer")
+	}
+}
+
+func TestConversationPoolMaxRequestsHighConcurrency(t *testing.T) {
+	addr := startMockServer(t)
+
+	rec := recorder.NewMemory()
+	ds := &countingDataset{inner: dataset.NewSynthetic(32, 10, 1, 4.0)}
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  ds,
+		Recorder: rec,
+	}
+
+	const maxReqs = 20
+	stages := []loadgen.Stage{
+		{Concurrency: 128, ConversationPoolSize: 128, Duration: 30 * time.Second, MaxRequests: maxReqs},
+	}
+
+	gen.RunStages(context.Background(), stages, nil, nil)
+
+	rec.Close()
+	records := rec.Records()
+	if len(records) != maxReqs {
+		t.Fatalf("expected exactly %d records, got %d", maxReqs, len(records))
+	}
+
+	draws := atomic.LoadInt64(&ds.draws)
+	if draws != maxReqs {
+		t.Fatalf("expected exactly %d dataset draws, got %d", maxReqs, draws)
+	}
+}
+
+func TestConversationPoolMaterializesConversationsLazily(t *testing.T) {
+	addr := startMockServer(t)
+	ds := &countingDataset{inner: dataset.NewSynthetic(32, 10, 1, 4.0)}
+
+	gen := &loadgen.Generator{
+		Target:   "http://" + addr + "/v1",
+		Model:    "test-model",
+		Mode:     loadgen.ModeConversationPool,
+		Dataset:  ds,
+		Recorder: recorder.NewMemory(),
+	}
+
+	stages := []loadgen.Stage{{
+		Concurrency:          1,
+		ConversationPoolSize: 128,
+		Duration:             30 * time.Second,
+		MaxRequests:          1,
+	}}
+	gen.RunStages(context.Background(), stages, func(_, _ int) {
+		if draws := atomic.LoadInt64(&ds.draws); draws != 0 {
+			t.Fatalf("generated %d conversations before the stage started", draws)
+		}
+	}, nil)
+
+	if draws := atomic.LoadInt64(&ds.draws); draws != 1 {
+		t.Fatalf("generated %d conversations, want 1", draws)
+	}
 }
 
 func TestGeneratorMaxRequestsHighConcurrency(t *testing.T) {

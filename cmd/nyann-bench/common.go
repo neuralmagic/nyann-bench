@@ -36,8 +36,8 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 }
 
 // buildDataset constructs a dataset from the workload config.
-// tokenCounter is optional; when non-nil the corpus dataset tokenizes each
-// chunk via /tokenize and trims to the exact target token count.
+// tokenCounter is optional; when non-nil datasets count each chunk via the
+// remote /tokenize endpoint and proportionally trim toward the target length.
 func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
@@ -94,6 +94,7 @@ type scenarioOpts struct {
 	OutputDir   string
 	WorkerID    int
 	MetricsAddr string
+	StreamUsage bool            // Request token usage stats (stream_options include_usage)
 	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
 	// OnStageComplete is called after each measured stage finishes with
@@ -232,22 +233,33 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		}
 
 		effectiveConcurrency := ss.Concurrency
+		effectiveConversationPoolSize := ss.ConversationPoolSize
+		if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
+			effectiveConversationPoolSize = effectiveConcurrency
+		}
 		if sc.Workers > 1 {
 			effectiveConcurrency = config.DivideConcurrency(ss.Concurrency, sc.Workers, sc.WorkerID)
+			effectiveConversationPoolSize = config.DivideConcurrency(ss.ConversationPoolSize, sc.Workers, sc.WorkerID)
+			if ss.Mode == "conversation_pool" && effectiveConversationPoolSize == 0 {
+				effectiveConversationPoolSize = effectiveConcurrency
+			}
 			slog.Info("Load division",
 				"stage", ss.Name,
 				"workers", sc.Workers,
 				"worker_id", sc.WorkerID,
 				"total_concurrency", ss.Concurrency,
-				"worker_concurrency", effectiveConcurrency)
+				"worker_concurrency", effectiveConcurrency,
+				"total_conversation_pool_size", ss.ConversationPoolSize,
+				"worker_conversation_pool_size", effectiveConversationPoolSize)
 		}
 
 		resolved = append(resolved, resolvedStage{
 			loadgen: loadgen.Stage{
-				Concurrency: effectiveConcurrency,
-				Duration:    ss.Duration,
-				Rampup:      ss.Rampup,
-				MaxRequests: ss.MaxRequests,
+				Concurrency:          effectiveConcurrency,
+				ConversationPoolSize: effectiveConversationPoolSize,
+				Duration:             ss.Duration,
+				Rampup:               ss.Rampup,
+				MaxRequests:          ss.MaxRequests,
 			},
 			target:   effectiveTarget,
 			model:    effectiveModel,
@@ -358,15 +370,17 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		}
 
 		gen := &loadgen.Generator{
-			Target:      runTarget,
-			Model:       runModel,
-			Mode:        loadgen.Mode(genMode),
-			Rate:        genRate,
-			MaxInFlight: genMaxInFlight,
-			CacheSalt:   runWorkload.CacheSalt,
-			Dataset:     runDS,
-			Recorder:    rec,
-			Metrics:     m,
+			Target:               runTarget,
+			Model:                runModel,
+			Mode:                 loadgen.Mode(genMode),
+			Rate:                 genRate,
+			MaxInFlight:          genMaxInFlight,
+			ConversationPoolSize: run.stages[0].ConversationPoolSize,
+			CacheSalt:            runWorkload.CacheSalt,
+			Dataset:              runDS,
+			Recorder:             rec,
+			Metrics:              m,
+			StreamUsage:          opts.StreamUsage,
 		}
 
 		gen.RunStagesUntil(ctx, run.stages, func(i, concurrency int) {

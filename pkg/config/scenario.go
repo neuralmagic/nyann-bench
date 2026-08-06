@@ -39,21 +39,22 @@ type SyncConfig struct {
 
 // ScenarioStage is a single phase of a benchmark with optional per-stage overrides.
 type ScenarioStage struct {
-	Name         string        // human-readable label (for logging/analysis)
-	Duration     time.Duration // how long this stage runs
-	Mode         string        // "concurrent", "constant", "poisson" (empty = inherit)
-	Concurrency  int           // concurrent streams (0 = inherit)
-	Rate         float64       // req/s for constant/poisson (0 = inherit)
-	MaxInFlight  int           // cap for rate-based modes (0 = unlimited)
-	Rampup       time.Duration // stagger stream starts / ramp rate
-	Workload     *Workload     // nil = inherit from scenario
-	Target       string        // empty = inherit from scenario
-	Model        string        // empty = inherit from scenario
-	MaxRequests  int           // stop after this many requests (0 = unlimited)
-	Warmup       bool          // true = don't record results
-	Barrier      bool          // true = sync point (other fields ignored)
-	BarrierDrain bool          // true = stop pool before sync, fresh pool after
-	StopWhen     *CongestionCondition // nil = always continue to the next stage
+	Name                 string               // human-readable label (for logging/analysis)
+	Duration             time.Duration        // how long this stage runs
+	Mode                 string               // "concurrent", "conversation_pool", "constant", "poisson" (empty = inherit)
+	Concurrency          int                  // hot running requests for concurrent modes (0 = inherit)
+	ConversationPoolSize int                  // active conversation working set for conversation_pool mode
+	Rate                 float64              // req/s for constant/poisson (0 = inherit)
+	MaxInFlight          int                  // cap for rate-based modes (0 = unlimited)
+	Rampup               time.Duration        // stagger stream starts / ramp rate
+	Workload             *Workload            // nil = inherit from scenario
+	Target               string               // empty = inherit from scenario
+	Model                string               // empty = inherit from scenario
+	MaxRequests          int                  // stop after this many requests (0 = unlimited)
+	Warmup               bool                 // true = don't record results
+	Barrier              bool                 // true = sync point (other fields ignored)
+	BarrierDrain         bool                 // true = stop pool before sync, fresh pool after
+	StopWhen             *CongestionCondition // nil = always continue to the next stage
 }
 
 // ToScenarioConfig converts a JSON Config into the universal ScenarioConfig IR.
@@ -70,32 +71,64 @@ func (c *Config) ToScenarioConfig() *ScenarioConfig {
 			rampup = c.Warmup.Duration.Duration()
 		}
 		warmupConcurrency := 0
+		warmupConversationPoolSize := c.Load.ConversationPoolSize
 		if len(effectiveStages) > 0 {
 			warmupConcurrency = effectiveStages[0].Concurrency
+			if effectiveStages[0].ConversationPoolSize > 0 {
+				warmupConversationPoolSize = effectiveStages[0].ConversationPoolSize
+			}
 		}
 		sc.Stages = append(sc.Stages, ScenarioStage{
-			Name:        "warmup",
-			Duration:    c.Warmup.Duration.Duration(),
-			Mode:        c.Load.Mode,
-			Concurrency: warmupConcurrency,
-			Rampup:      rampup,
-			Warmup:      true,
+			Name:                 "warmup",
+			Duration:             c.Warmup.Duration.Duration(),
+			Mode:                 c.Load.Mode,
+			Concurrency:          warmupConcurrency,
+			ConversationPoolSize: warmupConversationPoolSize,
+			Rampup:               rampup,
+			Warmup:               true,
 		})
 	}
 
 	for _, s := range effectiveStages {
+		conversationPoolSize := s.ConversationPoolSize
+		if conversationPoolSize == 0 {
+			conversationPoolSize = c.Load.ConversationPoolSize
+		}
 		sc.Stages = append(sc.Stages, ScenarioStage{
-			Duration:    s.Duration.Duration(),
-			Mode:        c.Load.Mode,
-			Concurrency: s.Concurrency,
-			Rate:        c.Load.Rate,
-			MaxInFlight: c.Load.MaxInFlight,
-			MaxRequests: s.MaxRequests,
-			Rampup:      c.Load.Rampup.Duration(),
+			Duration:             s.Duration.Duration(),
+			Mode:                 c.Load.Mode,
+			Concurrency:          s.Concurrency,
+			ConversationPoolSize: conversationPoolSize,
+			Rate:                 c.Load.Rate,
+			MaxInFlight:          c.Load.MaxInFlight,
+			MaxRequests:          s.MaxRequests,
+			Rampup:               c.Load.Rampup.Duration(),
 		})
 	}
 
 	return sc
+}
+
+// Validate checks scenario-level scheduling options after defaults have been applied.
+func (sc *ScenarioConfig) Validate() error {
+	for i, s := range sc.Stages {
+		if s.Barrier {
+			continue
+		}
+		switch s.Mode {
+		case "", "concurrent", "conversation_pool", "constant", "poisson":
+		default:
+			return fmt.Errorf("stage %d: unknown mode %q (options: concurrent, conversation_pool, constant, poisson)", i, s.Mode)
+		}
+		if s.Mode == "conversation_pool" {
+			if s.ConversationPoolSize == 0 {
+				sc.Stages[i].ConversationPoolSize = s.Concurrency
+			} else if s.ConversationPoolSize < s.Concurrency {
+				return fmt.Errorf("stage %d: conversation_pool_size (%d) must be >= concurrency (%d)", i, s.ConversationPoolSize, s.Concurrency)
+			}
+		}
+	}
+	return nil
 }
 
 // DivideConcurrency returns the concurrency share for workerID out of nWorkers.

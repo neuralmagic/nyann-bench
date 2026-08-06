@@ -79,6 +79,141 @@ func TestParseFile(t *testing.T) {
 	}
 }
 
+func TestParseYAMLFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+load:
+  mode: poisson
+  rate: 50
+  duration: 2m
+workload:
+  type: synthetic
+  isl: 64
+  osl: 128
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc, err := config.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Stages[0].Mode != "poisson" || sc.Stages[0].Rate != 50 || sc.Stages[0].Duration != 2*time.Minute {
+		t.Fatalf("unexpected YAML stage: %+v", sc.Stages[0])
+	}
+	if sc.Workload.Type != "synthetic" || sc.Workload.ISL != 64 || sc.Workload.OSL != 128 {
+		t.Fatalf("unexpected YAML workload: %+v", sc.Workload)
+	}
+}
+
+func TestParseInlineYAMLDocument(t *testing.T) {
+	sc, err := config.Parse(`---
+load:
+  concurrency: 24
+  duration: 90
+workload:
+  type: faker
+  turns: 2
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Stages[0].Concurrency != 24 || sc.Stages[0].Duration != 90*time.Second {
+		t.Fatalf("unexpected inline YAML stage: %+v", sc.Stages[0])
+	}
+	if sc.Workload.Turns != 2 {
+		t.Fatalf("turns = %d, want 2", sc.Workload.Turns)
+	}
+}
+
+func TestParseYAMLFileByContentForUnknownExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rendered-profile.yaml.in")
+	if err := os.WriteFile(path, []byte("load:\n  concurrency: 7\n  duration: 15s\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := config.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Stages[0].Concurrency != 7 || sc.Stages[0].Duration != 15*time.Second {
+		t.Fatalf("unexpected detected YAML stage: %+v", sc.Stages[0])
+	}
+}
+
+func TestParseLLMDBenchmarkRenderedYAMLWithTreatmentOverrides(t *testing.T) {
+	// llm-d-benchmark loads a native JSON profile, applies dotted treatment
+	// overrides, and emits this block-style YAML with PyYAML safe_dump.
+	path := filepath.Join(t.TempDir(), "concurrency_sweep-treatment.yaml")
+	profile := `warmup:
+  duration: 30s
+  stagger: true
+stages:
+- concurrency: 8
+  duration: 2m
+- concurrency: 96
+  duration: 3m
+workload:
+  type: faker
+  name: llm-d-concurrency-sweep
+  isl: 1024
+  osl: 512
+  turns: 2
+`
+	if err := os.WriteFile(path, []byte(profile), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := config.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.Stages) != 3 || !sc.Stages[0].Warmup {
+		t.Fatalf("expected warmup plus two treatment stages, got %+v", sc.Stages)
+	}
+	if sc.Stages[1].Mode != "concurrent" {
+		t.Fatalf("omitted load mode did not retain default: %q", sc.Stages[1].Mode)
+	}
+	if sc.Stages[2].Concurrency != 96 || sc.Stages[2].Duration != 3*time.Minute {
+		t.Fatalf("treatment stage override not preserved: %+v", sc.Stages[2])
+	}
+	if sc.Workload.OSL != 512 || sc.Workload.Turns != 2 {
+		t.Fatalf("treatment workload overrides not preserved: %+v", sc.Workload)
+	}
+}
+
+func TestYAMLStrictlyRejectsUnknownAndDuplicateFields(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown":   "---\nload:\n  concurrency: 4\n  surprise: true\n",
+		"duplicate": "---\nload:\n  concurrency: 4\n  concurrency: 8\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := config.Parse(body); err == nil {
+				t.Fatal("expected strict YAML parsing error")
+			}
+		})
+	}
+}
+
+func TestYAMLUsesScenarioValidation(t *testing.T) {
+	_, err := config.Parse(`---
+load:
+  mode: conversation_pool
+  concurrency: 16
+  conversation_pool_size: 8
+  duration: 1m
+`)
+	if err == nil {
+		t.Fatal("expected shared ScenarioConfig validation error")
+	}
+}
+
+func TestJSONUnknownFieldBehaviorIsPreserved(t *testing.T) {
+	if _, err := config.Parse(`{"unknown_for_forward_compatibility": true}`); err != nil {
+		t.Fatalf("JSON behavior changed: %v", err)
+	}
+}
+
 func TestParseDefaults(t *testing.T) {
 	sc, err := config.Parse(`{}`)
 	if err != nil {
@@ -102,6 +237,65 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if sc.Workload.ISL != 128 {
 		t.Errorf("expected default ISL 128, got %d", sc.Workload.ISL)
+	}
+}
+
+func TestParseConversationPoolJSON(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"conversation_pool_size": 256,
+			"duration": "5m"
+		},
+		"workload": {
+			"type": "faker",
+			"turns": 3
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].Mode != "conversation_pool" {
+		t.Errorf("expected conversation_pool mode, got %s", sc.Stages[0].Mode)
+	}
+	if sc.Stages[0].Concurrency != 16 {
+		t.Errorf("expected concurrency 16, got %d", sc.Stages[0].Concurrency)
+	}
+	if sc.Stages[0].ConversationPoolSize != 256 {
+		t.Errorf("expected conversation_pool_size 256, got %d", sc.Stages[0].ConversationPoolSize)
+	}
+}
+
+func TestConversationPoolJSONDefaultsToConcurrency(t *testing.T) {
+	sc, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"duration": "5m"
+		}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sc.Stages[0].ConversationPoolSize != 16 {
+		t.Errorf("expected conversation_pool_size to default to concurrency 16, got %d", sc.Stages[0].ConversationPoolSize)
+	}
+}
+
+func TestConversationPoolJSONRejectsPoolSmallerThanConcurrency(t *testing.T) {
+	_, err := config.Parse(`{
+		"load": {
+			"mode": "conversation_pool",
+			"concurrency": 16,
+			"conversation_pool_size": 8,
+			"duration": "5m"
+		}
+	}`)
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 

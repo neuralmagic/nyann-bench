@@ -86,6 +86,59 @@ func BenchmarkThroughput(b *testing.B) {
 	}
 }
 
+func BenchmarkConversationPoolThroughput(b *testing.B) {
+	addr := startFastMockServer(b)
+
+	cases := []struct {
+		name        string
+		concurrency int
+		poolSize    int
+		turns       int
+	}{
+		{name: "c16_pool16_turns1", concurrency: 16, poolSize: 16, turns: 1},
+		{name: "c16_pool256_turns1", concurrency: 16, poolSize: 256, turns: 1},
+		{name: "c16_pool1024_turns1", concurrency: 16, poolSize: 1024, turns: 1},
+		{name: "c16_pool256_turns3", concurrency: 16, poolSize: 256, turns: 3},
+		{name: "c256_pool256_turns1", concurrency: 256, poolSize: 256, turns: 1},
+		{name: "c256_pool4096_turns1", concurrency: 256, poolSize: 4096, turns: 1},
+		{name: "c256_pool4096_turns3", concurrency: 256, poolSize: 4096, turns: 3},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			dir := b.TempDir()
+			rec, err := recorder.New(dir, 0)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer rec.Close()
+
+			gen := &loadgen.Generator{
+				Target:               "http://" + addr + "/v1",
+				Model:                "bench-model",
+				Mode:                 loadgen.ModeConversationPool,
+				Concurrency:          tc.concurrency,
+				ConversationPoolSize: tc.poolSize,
+				Duration:             time.Duration(b.N) * time.Hour,
+				Dataset:              dataset.NewSynthetic(8, 5, tc.turns, 4.0),
+				Recorder:             rec,
+			}
+
+			const runDuration = 2 * time.Second
+			ctx, cancel := context.WithTimeout(context.Background(), runDuration)
+			defer cancel()
+
+			b.ResetTimer()
+			gen.Run(ctx)
+			b.StopTimer()
+
+			records := rec.Records()
+			b.ReportMetric(float64(len(records))/runDuration.Seconds(), "req/s")
+			b.ReportMetric(float64(len(records)), "total_reqs")
+		})
+	}
+}
+
 // TestConcurrencyUtilization measures how well actual concurrency tracks the
 // target. Samples InFlight() at 1ms intervals and reports mean/target ratio.
 // A ratio close to 1.0 means the streams are fully utilized.

@@ -28,6 +28,10 @@ const (
 	// Each stream sends the next request immediately on completion.
 	ModeConcurrent Mode = "concurrent"
 
+	// ModeConversationPool keeps a fixed hot request concurrency while
+	// scheduling turns across a larger active conversation working set.
+	ModeConversationPool Mode = "conversation_pool"
+
 	// ModeConstant sends requests at a fixed rate (requests/sec).
 	// Arrival times are deterministic (evenly spaced).
 	ModeConstant Mode = "constant"
@@ -50,21 +54,23 @@ type maxRequestsState struct {
 const defaultMaxConsecutiveErrors = 5
 
 type Generator struct {
-	Target      string
-	Model       string
-	Mode        Mode
-	Concurrency int           // For ModeConcurrent: number of streams
-	Rate        float64       // For ModeConstant/ModePoisson: requests per second
-	MaxInFlight int           // For ModeConstant/ModePoisson: cap on concurrent requests (0 = unlimited)
-	Rampup      time.Duration // Stagger stream starts (concurrent) or ramp rate (constant/poisson)
-	Duration    time.Duration
-	Dataset     dataset.Dataset
-	Recorder    *recorder.Recorder
-	CacheSalt *config.CacheSalt // Prefix cache isolation (nil = disabled)
-	Metrics     *metrics.Metrics // Optional Prometheus metrics (nil = disabled)
+	Target               string
+	Model                string
+	Mode                 Mode
+	Concurrency          int           // For ModeConcurrent: number of streams
+	ConversationPoolSize int           // For ModeConversationPool: active conversation working set
+	Rate                 float64       // For ModeConstant/ModePoisson: requests per second
+	MaxInFlight          int           // For ModeConstant/ModePoisson: cap on concurrent requests (0 = unlimited)
+	Rampup               time.Duration // Stagger stream starts (concurrent) or ramp rate (constant/poisson)
+	Duration             time.Duration
+	Dataset              dataset.Dataset
+	Recorder             *recorder.Recorder
+	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
+	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
+	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
 	recorderPtr atomic.Pointer[recorder.Recorder] // swappable recorder for warmup→main transition
-	recordWG    sync.WaitGroup // tracks in-flight recordResult goroutines
+	recordWG    sync.WaitGroup                    // tracks in-flight recordResult goroutines
 	inFlight    atomic.Int64
 	evalCount   atomic.Int64
 	evalCorrect atomic.Int64
@@ -160,12 +166,13 @@ func (p *streamPool) Stop() {
 
 // Stage defines a concurrency level and duration for RunStages.
 type Stage struct {
-	Concurrency  int
-	Duration     time.Duration
-	Rampup       time.Duration // stagger new stream starts over this duration
-	MaxRequests  int           // stop after this many requests (0 = unlimited)
-	Barrier      bool          // sync point — pool stays alive (unless BarrierDrain), onBarrier fires
-	BarrierDrain bool          // stop pool before sync, fresh pool after
+	Concurrency          int
+	ConversationPoolSize int
+	Duration             time.Duration
+	Rampup               time.Duration // stagger new stream starts over this duration
+	MaxRequests          int           // stop after this many requests (0 = unlimited)
+	Barrier              bool          // sync point — pool stays alive (unless BarrierDrain), onBarrier fires
+	BarrierDrain         bool          // stop pool before sync, fresh pool after
 }
 
 // RunStages runs multiple stages with a shared goroutine pool, dynamically
@@ -180,6 +187,11 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 // RunStagesUntil adds a completion control point to RunStages. Returning false
 // from onStageComplete stops the pool before any later stage is started.
 func (g *Generator) RunStagesUntil(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int), onStageComplete func(index int) bool) {
+	if g.Mode == ModeConversationPool {
+		g.runConversationPoolStages(ctx, stages, onStage, onBarrier, onStageComplete)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.stopFunc = cancel
@@ -264,6 +276,8 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	switch g.Mode {
 	case ModeConcurrent, "":
 		g.runConcurrent(ctx, c)
+	case ModeConversationPool:
+		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
 	case ModeConstant:
 		g.runRateBasedConstant(ctx, c, startTime)
 	case ModePoisson:
@@ -456,6 +470,15 @@ func (g *Generator) runStream(ctx context.Context, c *client.Client, streamID in
 	}
 }
 
+// streamOptions returns the stream_options payload to request token usage
+// stats from the server, or nil when usage reporting isn't requested.
+func (g *Generator) streamOptions() map[string]any {
+	if g.StreamUsage {
+		return map[string]any{"include_usage": true}
+	}
+	return nil
+}
+
 // cacheSalt returns the cache salt for a single request.
 func (g *Generator) cacheSalt() string {
 	if g.CacheSalt == nil {
@@ -519,13 +542,14 @@ func (g *Generator) trackInFlight(delta int64) {
 
 func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamID int, convID string, conv dataset.Conversation) {
 	req := &client.CompletionRequest{
-		Model:       g.Model,
-		Prompt:      conv.Prompt,
-		Stream:      true,
-		MaxTokens:   conv.MaxTokens,
-		Stop:        conv.Stop,
-		Temperature: conv.Temperature,
-		CacheSalt:   g.cacheSalt(),
+		Model:         g.Model,
+		Prompt:        conv.Prompt,
+		Stream:        true,
+		StreamOptions: g.streamOptions(),
+		MaxTokens:     conv.MaxTokens,
+		Stop:          conv.Stop,
+		Temperature:   conv.Temperature,
+		CacheSalt:     g.cacheSalt(),
 	}
 
 	g.trackInFlight(1)
@@ -684,11 +708,12 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 		copy(messages, history)
 
 		req := &client.Request{
-			Model:     g.Model,
-			Messages:  messages,
-			Stream:    true,
-			MaxTokens: conv.MaxTokens,
-			CacheSalt: g.cacheSalt(),
+			Model:         g.Model,
+			Messages:      messages,
+			Stream:        true,
+			StreamOptions: g.streamOptions(),
+			MaxTokens:     conv.MaxTokens,
+			CacheSalt:     g.cacheSalt(),
 		}
 
 		g.trackInFlight(1)

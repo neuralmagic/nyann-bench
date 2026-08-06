@@ -44,7 +44,40 @@ Two-sided observability out of the box:
 
 ### Flexible workload definition
 
-Define benchmark scenarios using a Pythonic [Starlark](https://github.com/google/starlark-go) DSL:
+JSON and YAML use the same typed workload schema, defaults, duration parsing,
+and validation. YAML is convenient for checked-in profiles and for systems
+such as llm-d-benchmark that apply treatment overrides and emit YAML:
+
+```yaml
+warmup:
+  duration: 30s
+  stagger: true
+stages:
+  - concurrency: 8
+    duration: 2m
+  - concurrency: 96
+    duration: 3m
+workload:
+  type: faker
+  name: llm-d-concurrency-sweep
+  isl: 1024
+  osl: 512
+  turns: 2
+```
+
+```bash
+nyann-bench generate --target http://localhost:8000/v1 \
+  --config deploy/examples/concurrent-faker.yaml
+```
+
+YAML files use `.yaml` or `.yml`. Files with another extension are detected as
+JSON when their first non-space character is `{` or `[`, and as YAML otherwise;
+this covers rendered names such as `.yaml.in`. Inline JSON is detected the same
+way. Prefix inline YAML with the `---` document marker so it cannot be mistaken
+for a file path. YAML parsing is strict: unknown or duplicate fields are errors.
+
+For programmable scenarios, use the Pythonic
+[Starlark](https://github.com/google/starlark-go) DSL:
 
 ```python
 chat = workload("faker", isl=256, osl=512)
@@ -143,6 +176,20 @@ nyann-bench generate --config scenario.star \
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.
 
+For KV-cache working-set experiments, use `mode="conversation_pool"` to decouple HOT active requests from the total number of active conversations. In this mode, `concurrency` controls the number of actively running inference requests, while `conversation_pool_size` controls how many conversations are kept in rotation. Completed turns resume the least recently used ready conversation; completed conversations are replaced with fresh ones.
+
+Conversation-pool entries are materialized lazily when first scheduled, so large pools do not block stage startup on remote tokenization. For reasoning models, nyann-bench keeps the visible answer and reasoning output separate for evaluation, but replays both in conversation-pool history. This makes subsequent prompts reflect the full generated workload and KV-cache footprint. Ordinary multi-turn mode replays only the visible answer. When vLLM uses a reasoning parser, parser-only boundary tokens may not be present in the replayed text, so the reconstructed prefix is not guaranteed to be token-for-token identical to the original generation.
+
+```python
+scenario(
+    stages = [
+        stage("5m", mode="conversation_pool", concurrency=128, conversation_pool_size=n)
+        for n in [128, 512, 2048, 8192]
+    ],
+    workload = workload("faker", isl=1024, subsequent_isl=64, osl=256, turns=3),
+)
+```
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
@@ -187,9 +234,10 @@ go build -o nyann-bench ./cmd/nyann-bench/
 ./nyann-bench generate --target http://localhost:8000/v1 --config '{"load":{"concurrency":16,"duration":"30s"}}'
 ```
 
-Or with a Starlark config file:
+Or with a YAML or Starlark config file:
 
 ```bash
+./nyann-bench generate --target http://localhost:8000/v1 --config deploy/examples/concurrent-faker.yaml
 ./nyann-bench generate --target http://localhost:8000/v1 --config scenario.star
 ```
 
@@ -218,6 +266,7 @@ All workload types support configurable ISL (input sequence length), OSL (output
 | Mode | Description |
 |------|-------------|
 | `concurrent` | Fixed number of goroutine streams, each sending requests back-to-back |
+| `conversation_pool` | Fixed HOT active requests over a configurable active conversation working set |
 | `constant` | Fixed request rate (req/s) with deterministic inter-arrival times |
 | `poisson` | Fixed request rate with exponential inter-arrival times (realistic traffic) |
 
@@ -237,6 +286,21 @@ just deploy my-benchmark http://vllm-server:8000/v1 config.star 8
 ```
 
 This creates a ConfigMap with your config and launches an Indexed Job with 8 pods. Each pod auto-detects its worker ID from `JOB_COMPLETION_INDEX` and the barrier server address from `BARRIER_ADDR`. The manifest passes `--workers N` so barrier sync and load division are enabled automatically.
+
+For OpenShift, select the platform explicitly. This removes the privileged
+network-tuning init container, applies restricted-compatible security
+contexts, and creates a PodMonitor:
+
+```bash
+nyann-bench eval gsm8k \
+  --target http://model-gateway/v1 \
+  --gsm8k-path /mnt/shared/data/gsm8k_test.jsonl \
+  --gsm8k-train-path /mnt/shared/data/gsm8k_train.jsonl \
+  --output-dir /mnt/shared/results/run-001 \
+  --kube --kube.context pirate --kube.namespace tms \
+  --kube.platform openshift --kube.arch amd64 \
+  --kube.config '{"volumes":[{"pvc":"shared-cache","mountPath":"/mnt/shared"}]}'
+```
 
 ## Installation
 

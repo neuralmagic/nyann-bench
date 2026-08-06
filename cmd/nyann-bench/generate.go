@@ -32,6 +32,7 @@ func generateCmd() *cobra.Command {
 		metricsAddr   string
 		prometheusURL string
 		deployName    string
+		streamUsage   bool
 		kubeFlags     kube.Flags
 	)
 
@@ -40,12 +41,14 @@ func generateCmd() *cobra.Command {
 		Short: "Generate load against an LLM inference endpoint",
 		Long: `Generate load against an LLM inference endpoint.
 
-Configure the workload via --config (JSON file, inline JSON, or Starlark .star file):
+Configure the workload via --config (JSON/YAML file, inline JSON/YAML, or Starlark .star file):
 
   nyann-bench generate --target http://localhost:8000/v1 --model my-model \
     --config '{"load":{"mode":"concurrent","concurrency":10,"duration":"60s"},"workload":{"type":"faker","isl":128,"osl":256}}'
 
   nyann-bench generate --target http://localhost:8000/v1 --config benchmark.json
+
+  nyann-bench generate --target http://localhost:8000/v1 --config benchmark.yaml
 
   nyann-bench generate --config scenario.star
 
@@ -59,6 +62,7 @@ conditionals, and per-stage workload/target overrides:
 
 Load modes:
   concurrent  Fixed number of streams, each fires next request on completion (default)
+  conversation_pool  Fixed hot request concurrency over a larger conversation working set
   constant    Requests arrive at a fixed rate (evenly spaced)
   poisson     Requests arrive at a target rate with exponential inter-arrival times
 
@@ -188,6 +192,7 @@ Workload types:
 				OutputDir:   outputDir,
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
+				StreamUsage: streamUsage,
 				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) bool {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
@@ -275,13 +280,14 @@ Workload types:
 
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
-	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file, inline JSON, or .star file)")
+	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)
 	cmd.Flags().StringVar(&metricsAddr, "metrics", "", "Prometheus metrics listen address (e.g. :9090)")
 	cmd.Flags().StringVar(&prometheusURL, "prometheus-url", "", "Prometheus server URL for querying server-side vLLM metrics (e.g. http://prometheus:9090)")
 	cmd.Flags().StringVar(&deployName, "deploy-name", "", "Deployment name prefix for Prometheus pod label filtering (e.g. my-deploy)")
+	cmd.Flags().BoolVar(&streamUsage, "stream-usage", false, "Request prompt/completion token counts from the server (stream_options include_usage)")
 
 	kube.RegisterFlags(cmd, &kubeFlags)
 
