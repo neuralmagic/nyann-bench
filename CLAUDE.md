@@ -20,7 +20,7 @@ go test ./... -count=1
 - `pkg/metrics/` — Prometheus metrics (request latencies, eval accuracy)
 - `pkg/recorder/` — Per-request JSONL recording and timestamps JSON output
 - `pkg/barrier/` — HTTP barrier server/client for multi-pod synchronized start
-- `pkg/config/` — JSON and Starlark config parsing (ScenarioConfig IR)
+- `pkg/config/` — JSON, YAML, and Starlark config parsing (ScenarioConfig IR)
 
 ## Testing
 

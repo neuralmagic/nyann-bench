@@ -40,12 +40,14 @@ func generateCmd() *cobra.Command {
 		Short: "Generate load against an LLM inference endpoint",
 		Long: `Generate load against an LLM inference endpoint.
 
-Configure the workload via --config (JSON file, inline JSON, or Starlark .star file):
+Configure the workload via --config (JSON/YAML file, inline JSON/YAML, or Starlark .star file):
 
   nyann-bench generate --target http://localhost:8000/v1 --model my-model \
     --config '{"load":{"mode":"concurrent","concurrency":10,"duration":"60s"},"workload":{"type":"faker","isl":128,"osl":256}}'
 
   nyann-bench generate --target http://localhost:8000/v1 --config benchmark.json
+
+  nyann-bench generate --target http://localhost:8000/v1 --config benchmark.yaml
 
   nyann-bench generate --config scenario.star
 
@@ -239,7 +241,7 @@ Workload types:
 
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
-	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON file, inline JSON, or .star file)")
+	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)
