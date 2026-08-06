@@ -32,6 +32,10 @@ type KubeConfig struct {
 	Volumes   []VolumeSpec `json:"volumes,omitempty"`
 	CPU       string       `json:"cpu,omitempty"`
 	Memory    string       `json:"memory,omitempty"`
+	// NetworkTuning enables the privileged sysctl init container. Nil preserves
+	// the CLI's historical Kubernetes default; control planes should set false.
+	NetworkTuning *bool `json:"networkTuning,omitempty"`
+	Restricted    bool  `json:"restricted,omitempty"`
 }
 
 type VolumeSpec struct {
@@ -171,16 +175,18 @@ func (cfg *KubeConfig) resolveVolumes() []VolumeSpec {
 }
 
 type deployParams struct {
-	Name      string
-	Namespace string
-	Image     string
-	Arch      string
-	Workers   int
-	CPU       string
-	Memory    string
-	OpenShift bool
-	Args      []string
-	Volumes   []VolumeSpec
+	Name          string
+	Namespace     string
+	Image         string
+	Arch          string
+	Workers       int
+	CPU           string
+	Memory        string
+	OpenShift     bool
+	NetworkTuning bool
+	Restricted    bool
+	Args          []string
+	Volumes       []VolumeSpec
 }
 
 var funcMap = template.FuncMap{
@@ -220,6 +226,7 @@ spec:
         prometheus.io/port: "9090"
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       subdomain: {{ .Name }}
       affinity:
         nodeAffinity:
@@ -229,11 +236,12 @@ spec:
               - key: kubernetes.io/arch
                 operator: In
                 values: ["{{ .Arch }}"]
-{{ if .OpenShift }}
+{{ if .Restricted }}
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-{{ else }}
+{{ end }}
+{{ if .NetworkTuning }}
       initContainers:
         - name: sysctl
           image: public.ecr.aws/docker/library/busybox:1.36
@@ -256,7 +264,7 @@ spec:
             limits:
               cpu: "{{ .CPU }}"
               memory: "{{ .Memory }}"
-{{ if .OpenShift }}
+{{ if .Restricted }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -317,15 +325,17 @@ type templateVolume struct {
 }
 
 type templateParams struct {
-	Name      string
-	Arch      string
-	Image     string
-	Workers   int
-	CPU       string
-	Memory    string
-	OpenShift bool
-	Args      []string
-	Volumes   []templateVolume
+	Name          string
+	Arch          string
+	Image         string
+	Workers       int
+	CPU           string
+	Memory        string
+	OpenShift     bool
+	NetworkTuning bool
+	Restricted    bool
+	Args          []string
+	Volumes       []templateVolume
 }
 
 func renderYAML(p deployParams) (string, error) {
@@ -342,15 +352,17 @@ func renderYAML(p deployParams) (string, error) {
 		})
 	}
 	tp := templateParams{
-		Name:      p.Name,
-		Arch:      p.Arch,
-		Image:     p.Image,
-		Workers:   p.Workers,
-		CPU:       p.CPU,
-		Memory:    p.Memory,
-		OpenShift: p.OpenShift,
-		Args:      p.Args,
-		Volumes:   vols,
+		Name:          p.Name,
+		Arch:          p.Arch,
+		Image:         p.Image,
+		Workers:       p.Workers,
+		CPU:           p.CPU,
+		Memory:        p.Memory,
+		OpenShift:     p.OpenShift,
+		NetworkTuning: p.NetworkTuning,
+		Restricted:    p.Restricted,
+		Args:          p.Args,
+		Volumes:       vols,
 	}
 	var buf bytes.Buffer
 	if err := jobTemplate.Execute(&buf, tp); err != nil {
@@ -381,6 +393,10 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 
 	image := ResolveImage(cfg.Image)
 	volumes := cfg.resolveVolumes()
+	networkTuning := cfg.Platform != "openshift"
+	if cfg.NetworkTuning != nil {
+		networkTuning = *cfg.NetworkTuning
+	}
 
 	slog.Info("Deploying to Kubernetes",
 		"name", cfg.Name,
@@ -390,16 +406,18 @@ func Deploy(cfg KubeConfig, defaultName string, args []string) error {
 		"volumes", len(volumes))
 
 	yaml, err := renderYAML(deployParams{
-		Name:      cfg.Name,
-		Namespace: cfg.Namespace,
-		Image:     image,
-		Arch:      cfg.Arch,
-		Workers:   cfg.Workers,
-		CPU:       cfg.CPU,
-		Memory:    cfg.Memory,
-		OpenShift: cfg.Platform == "openshift",
-		Args:      args,
-		Volumes:   volumes,
+		Name:          cfg.Name,
+		Namespace:     cfg.Namespace,
+		Image:         image,
+		Arch:          cfg.Arch,
+		Workers:       cfg.Workers,
+		CPU:           cfg.CPU,
+		Memory:        cfg.Memory,
+		OpenShift:     cfg.Platform == "openshift",
+		NetworkTuning: networkTuning,
+		Restricted:    cfg.Restricted || cfg.Platform == "openshift",
+		Args:          args,
+		Volumes:       volumes,
 	})
 	if err != nil {
 		return err
@@ -466,16 +484,22 @@ func RenderYAML(cfg KubeConfig, defaultName string, args []string) (string, erro
 	cfg.applyDefaults(defaultName)
 	image := ResolveImage(cfg.Image)
 	volumes := cfg.resolveVolumes()
+	networkTuning := cfg.Platform != "openshift"
+	if cfg.NetworkTuning != nil {
+		networkTuning = *cfg.NetworkTuning
+	}
 	return renderYAML(deployParams{
-		Name:      cfg.Name,
-		Namespace: cfg.Namespace,
-		Image:     image,
-		Arch:      cfg.Arch,
-		Workers:   cfg.Workers,
-		CPU:       cfg.CPU,
-		Memory:    cfg.Memory,
-		OpenShift: cfg.Platform == "openshift",
-		Args:      args,
-		Volumes:   volumes,
+		Name:          cfg.Name,
+		Namespace:     cfg.Namespace,
+		Image:         image,
+		Arch:          cfg.Arch,
+		Workers:       cfg.Workers,
+		CPU:           cfg.CPU,
+		Memory:        cfg.Memory,
+		OpenShift:     cfg.Platform == "openshift",
+		NetworkTuning: networkTuning,
+		Restricted:    cfg.Restricted || cfg.Platform == "openshift",
+		Args:          args,
+		Volumes:       volumes,
 	})
 }
