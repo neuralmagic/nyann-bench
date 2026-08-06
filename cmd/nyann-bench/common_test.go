@@ -2,46 +2,41 @@ package main
 
 import (
 	"context"
-	"net"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
-	"github.com/neuralmagic/nyann-bench/pkg/mockserver"
 )
 
 func startTestServer(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-
-	srv := &mockserver.Server{
-		Addr:            addr,
-		TTFT:            1 * time.Millisecond,
-		ITL:             1 * time.Millisecond,
-		OutputTokens:    5,
-		Model:           "test-model",
-		ResponseContent: "The answer is 42. #### 42",
-	}
-	go srv.ListenAndServe()
-
-	for i := 0; i < 50; i++ {
-		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return addr
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"test-model"}]}`)
+	})
+	mux.HandleFunc("/tokenize", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"count":10}`)
+	})
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"text\":\"The answer is 42. #### 42\",\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":5,\"total_tokens\":5}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("server did not start")
-	return ""
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return strings.TrimPrefix(server.URL, "http://")
 }
 
 // TestFiniteDatasetRunsFullDuration verifies that a finite eval dataset
@@ -75,30 +70,43 @@ func TestFiniteDatasetRunsFullDuration(t *testing.T) {
 		},
 		Stages: []config.ScenarioStage{{
 			Name:        "bench-stage",
-			Duration:    3 * time.Second,
+			Duration:    2 * time.Second,
 			Mode:        "concurrent",
 			Concurrency: 4,
 			MaxRequests: 0, // unlimited — should run for full duration
 		}},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	summary, err := runScenario(ctx, cancel, scenarioOpts{
-		Target:   "http://" + addr + "/v1",
-		Model:    "test-model",
-		Scenario: sc,
-		Dataset:  ds,
-	})
-	if err != nil {
-		t.Fatal(err)
+	var summaryRequests int
+	// Race-enabled package tests can briefly starve this process while other
+	// packages compile and run. Keep the normal attempt fast, then retry once
+	// with a generous bounded window without weakening the wraparound check.
+	for attempt, duration := range []time.Duration{2 * time.Second, 10 * time.Second} {
+		sc.Stages[0].Duration = duration
+		ctx, cancel := context.WithCancel(context.Background())
+		summary, err := runScenario(ctx, cancel, scenarioOpts{
+			Target:   "http://" + addr + "/v1",
+			Model:    "test-model",
+			Scenario: sc,
+			Dataset:  ds,
+		})
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		summaryRequests = summary.TotalRequests
+		if summaryRequests > 3 {
+			break
+		}
+		if attempt == 0 {
+			t.Logf("only %d requests completed in %s under contention; retrying with %s", summaryRequests, duration, 10*time.Second)
+		}
 	}
 
-	// With 3 items and 4 concurrent streams over 3s, the dataset wraps
-	// around and we get many more requests than the dataset length.
-	if summary.TotalRequests <= 3 {
-		t.Fatalf("expected more than 3 requests (dataset should wrap around), got %d", summary.TotalRequests)
+	// With 3 items and 4 concurrent streams in a timed unlimited stage, the
+	// dataset must wrap and produce more requests than its finite length.
+	if summaryRequests <= 3 {
+		t.Fatalf("expected more than 3 requests (dataset should wrap around), got %d", summaryRequests)
 	}
 }
 
