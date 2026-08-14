@@ -47,17 +47,24 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 		initial = int(state.limit)
 	}
 	for i := 0; i < initial; i++ {
-		s.addConversationSlotLocked()
+		s.addConversationSlotLocked(nil)
 	}
 	return s
 }
 
-func (s *conversationPoolScheduler) addConversationSlotLocked() {
+// addConversationSlotLocked creates a new pool slot, using prebuilt if
+// given (e.g. a conversation prefetched ahead of its predecessor retiring),
+// otherwise leaving it as a lazy stub drawn on first use.
+func (s *conversationPoolScheduler) addConversationSlotLocked(prebuilt *dataset.Conversation) {
 	id := s.nextID
 	s.nextID++
 	pc := &pooledConversation{
 		id:     id,
 		convID: fmt.Sprintf("pool-c%d", id),
+	}
+	if prebuilt != nil {
+		pc.conv = *prebuilt
+		pc.materialized = true
 	}
 	s.convs[id] = pc
 	s.pushReadyLocked(id)
@@ -125,7 +132,9 @@ func (s *conversationPoolScheduler) complete(pc *pooledConversation, replace boo
 	}
 	if replace {
 		if len(s.convs) < s.poolSize && s.canCreateConversationLocked() {
-			s.addConversationSlotLocked()
+			// Instant if the background prefetch already finished;
+			// otherwise blocks here, same cost as today's lazy draw.
+			s.addConversationSlotLocked(pc.conv.Successor())
 		}
 		return
 	}
@@ -245,9 +254,6 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 					pc.conv = g.Dataset.NextConversation()
 					pc.materialized = true
 				}
-				if ctx.Err() != nil {
-					return
-				}
 				replace := g.runPooledConversationTurn(ctx, c, streamID, pc)
 				if ctx.Err() != nil {
 					return
@@ -270,12 +276,17 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 	}
 
 	turnIdx := pc.turn
-	prebuilt := pc.conv.Turns[turnIdx]
+	prebuilt := pc.conv.Turn(turnIdx)
 	if len(prebuilt) == 0 {
 		return true
 	}
 	userMsg := prebuilt[len(prebuilt)-1]
 	pc.history = append(pc.history, userMsg)
+
+	// Keep the background generation work ConversationPrefetchLookahead
+	// turns ahead, crossing seamlessly into pc.conv.Next once this
+	// conversation's own turns run out.
+	pc.conv.Prefetch(turnIdx)
 
 	messages := make([]client.Message, len(pc.history))
 	copy(messages, pc.history)

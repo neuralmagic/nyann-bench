@@ -17,7 +17,7 @@ type Faker struct {
 	Turns         int
 	CharsPerToken float64
 	TokenCounter  TokenCounter
-	seq           atomic.Uint64
+	seq 		  atomic.Uint64
 }
 
 func NewFaker(isl, osl, turns int, charsPerToken float64) *Faker {
@@ -38,14 +38,23 @@ func (f *Faker) turnISL(t int) int {
 	return f.ISL
 }
 
+// NextConversation is the cold-start entry point, called once per stream or
+// pool slot; later conversations in that chain are drawn via Next/Successor.
 func (f *Faker) NextConversation() Conversation {
+	return f.buildConversation(true)
+}
+
+// buildConversation generates one conversation; safe to call concurrently
+// (each call reserves its own seed via f.seq.Add(1)). If bootstrap is true,
+// turn 0 is materialized now and turns 1..ConversationPrefetchLookahead are
+// kicked off in the background; otherwise every turn stays lazy until a
+// caller (e.g. the pool scheduler's Prefetch walk) materializes it.
+func (f *Faker) buildConversation(bootstrap bool) Conversation {
 	seed := f.seq.Add(1)
 	faker := gofakeit.New(seed)
-
-	turns := make([][]client.Message, f.Turns)
 	var history []client.Message
 
-	for t := 0; t < f.Turns; t++ {
+	turns := ChainedLazyTurns(f.Turns, func(t int) []client.Message {
 		prompt := f.generatePrompt(faker, t)
 		userMsg := client.Message{
 			Role:    "user",
@@ -55,7 +64,6 @@ func (f *Faker) NextConversation() Conversation {
 
 		turnMsgs := make([]client.Message, len(history))
 		copy(turnMsgs, history)
-		turns[t] = turnMsgs
 
 		if t < f.Turns-1 {
 			history = append(history, client.Message{
@@ -63,9 +71,17 @@ func (f *Faker) NextConversation() Conversation {
 				Content: f.padWithFaker(faker, "Here is my response.", f.OSL),
 			})
 		}
+		return turnMsgs
+	})
+
+	conv := Conversation{Turns: turns, MaxTokens: f.OSL}
+	conv.Next = NewLazyConversation(func() Conversation { return f.buildConversation(false) })
+
+	if bootstrap {
+		Bootstrap(turns)
 	}
 
-	return Conversation{Turns: turns, MaxTokens: f.OSL}
+	return conv
 }
 
 func (f *Faker) padWithFaker(faker *gofakeit.Faker, base string, targetTokens int) string {

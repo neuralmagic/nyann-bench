@@ -686,14 +686,19 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	// message from each turn and substitute real responses.
 	var history []client.Message
 
-	for turnIdx, prebuilt := range conv.Turns {
+	for turnIdx := range conv.Turns {
 		if ctx.Err() != nil {
 			return
 		}
 
+		prebuilt := conv.Turn(turnIdx)
+
 		// The last message in each pre-built turn is the new user message.
 		userMsg := prebuilt[len(prebuilt)-1]
 		history = append(history, userMsg)
+
+		// Prefetch upcoming turns so their generation overlaps this turn's request.
+		conv.Prefetch(turnIdx)
 
 		messages := make([]client.Message, len(history))
 		copy(messages, history)
