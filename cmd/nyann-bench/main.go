@@ -35,6 +35,7 @@ func main() {
 	root.AddCommand(mockServerCmd())
 	root.AddCommand(analyzeCmd())
 	root.AddCommand(corpusCmd())
+	root.AddCommand(compileStarlarkCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 )
@@ -9,13 +10,13 @@ import (
 // ScenarioConfig is the universal intermediate representation for benchmark
 // configurations. Both JSON configs and Starlark scripts produce this type.
 type ScenarioConfig struct {
-	Target   string          // default target URL (empty = use CLI flag)
-	Model    string          // default model (empty = use CLI flag)
-	Workload Workload        // default workload for stages that don't override
-	Stages   []ScenarioStage // ordered stages to execute
-	Sync     *SyncConfig     // barrier sync config (nil = no sync)
-	Workers  int             // total workers for load division (from --workers flag)
-	WorkerID int             // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
+	Target   string          `json:"target,omitempty"`    // default target URL (empty = use CLI flag)
+	Model    string          `json:"model,omitempty"`     // default model (empty = use CLI flag)
+	Workload Workload        `json:"workload"`            // default workload for stages that don't override
+	Stages   []ScenarioStage `json:"stages"`              // ordered stages to execute
+	Sync     *SyncConfig     `json:"sync,omitempty"`      // barrier sync config (nil = no sync)
+	Workers  int             `json:"workers,omitempty"`   // total workers for load division (from --workers flag)
+	WorkerID int             `json:"worker_id,omitempty"` // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
 }
 
 // SyncConfig configures distributed barrier synchronization across pods.
@@ -28,21 +29,21 @@ type SyncConfig struct {
 
 // ScenarioStage is a single phase of a benchmark with optional per-stage overrides.
 type ScenarioStage struct {
-	Name                 string        // human-readable label (for logging/analysis)
-	Duration             time.Duration // how long this stage runs
-	Mode                 string        // "concurrent", "conversation_pool", "constant", "poisson" (empty = inherit)
-	Concurrency          int           // hot running requests for concurrent modes (0 = inherit)
-	ConversationPoolSize int           // active conversation working set for conversation_pool mode
-	Rate                 float64       // req/s for constant/poisson (0 = inherit)
-	MaxInFlight          int           // cap for rate-based modes (0 = unlimited)
-	Rampup               time.Duration // stagger stream starts / ramp rate
-	Workload             *Workload     // nil = inherit from scenario
-	Target               string        // empty = inherit from scenario
-	Model                string        // empty = inherit from scenario
-	MaxRequests          int           // stop after this many requests (0 = unlimited)
-	Warmup               bool          // true = don't record results
-	Barrier              bool          // true = sync point (other fields ignored)
-	BarrierDrain         bool          // true = stop pool before sync, fresh pool after
+	Name                 string        `json:"name,omitempty"`
+	Duration             time.Duration `json:"duration"`
+	Mode                 string        `json:"mode,omitempty"`
+	Concurrency          int           `json:"concurrency,omitempty"`
+	ConversationPoolSize int           `json:"conversation_pool_size,omitempty"`
+	Rate                 float64       `json:"rate,omitempty"`
+	MaxInFlight          int           `json:"max_inflight,omitempty"`
+	Rampup               time.Duration `json:"rampup,omitempty"`
+	Workload             *Workload     `json:"workload,omitempty"`
+	Target               string        `json:"target,omitempty"`
+	Model                string        `json:"model,omitempty"`
+	MaxRequests          int           `json:"max_requests,omitempty"`
+	Warmup               bool          `json:"warmup,omitempty"`
+	Barrier              bool          `json:"barrier,omitempty"`
+	BarrierDrain         bool          `json:"barrier_drain,omitempty"`
 }
 
 // ToScenarioConfig converts a JSON Config into the universal ScenarioConfig IR.
@@ -107,6 +108,9 @@ func (sc *ScenarioConfig) Validate() error {
 		case "", "concurrent", "conversation_pool", "constant", "poisson":
 		default:
 			return fmt.Errorf("stage %d: unknown mode %q (options: concurrent, conversation_pool, constant, poisson)", i, s.Mode)
+		}
+		if math.IsNaN(s.Rate) || math.IsInf(s.Rate, 0) {
+			return fmt.Errorf("stage %d: rate must be finite", i)
 		}
 		if s.Mode == "conversation_pool" {
 			if s.ConversationPoolSize == 0 {

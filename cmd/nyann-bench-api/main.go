@@ -47,6 +47,7 @@ func main() {
 	maxRecordBytes := flag.Int("max-record-bytes", 8<<20, "maximum bytes in one JSONL request record")
 	maxIndexedRuns := flag.Int("max-indexed-runs", 10_000, "maximum durable run manifests scanned by list_benchmarks")
 	artifactProcessTimeout := flag.Duration("artifact-processing-timeout", 5*time.Minute, "maximum time spent hashing or aggregating artifacts per request")
+	starlarkCompiler := flag.String("starlark-compiler", "/nyann-bench", "absolute path to the isolated Starlark compiler executable")
 	flag.Parse()
 	if *namespace == "" {
 		*namespace = currentNamespace()
@@ -93,6 +94,7 @@ func main() {
 		MaxReportRecords: *maxReportRecords, MaxLatencySamples: *maxLatencySamples, MaxRecordBytes: *maxRecordBytes,
 		MaxIndexedRuns:         *maxIndexedRuns,
 		ArtifactProcessTimeout: *artifactProcessTimeout,
+		StarlarkCompilerPath:   *starlarkCompiler,
 	}
 	if err := options.Validate(); err != nil {
 		fatal("invalid API policy: %v", err)

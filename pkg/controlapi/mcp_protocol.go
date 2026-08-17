@@ -129,21 +129,26 @@ func completeMCPResult(value any) map[string]any {
 }
 
 func writeMCPJSON(w http.ResponseWriter, status int, value any) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		encoded = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal JSON encoding error"}}`)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(append(encoded, '\n'))
 }
 
 func (s *Server) mcpTools() []map[string]any {
 	readOnly := map[string]bool{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
 	submit := map[string]bool{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
 	cancel := map[string]bool{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
-	benchmarkSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target", "scenario", "result_label"}, "properties": map[string]any{"run_id": boundedString(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, 63), "target": map[string]any{"type": "string", "enum": s.targetNames()}, "scenario": map[string]any{"type": "object", "additionalProperties": false, "required": []string{}, "maxProperties": 5, "properties": scenarioProperties()}, "workers": map[string]any{"type": "integer", "minimum": 1, "maximum": s.options.MaxWorkers}, "cpu": boundedString(`^[0-9]+(?:m|(?:\.[0-9]+)?)?$`, 16), "memory": boundedString(`^[0-9]+(?:Ki|Mi|Gi|Ti)?$`, 16), "platform": map[string]any{"type": "string", "enum": s.options.allowedPlatforms()}, "architecture": map[string]any{"type": "string", "enum": []string{"amd64", "arm64"}}, "deadline_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(s.options.MaxActiveDeadline / time.Second)}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "vdp_workstream": boundedString(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, 128)}}
+	benchmarkSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target", "result_label"}, "oneOf": []any{map[string]any{"required": []string{"scenario"}, "not": map[string]any{"required": []string{"starlark"}}}, map[string]any{"required": []string{"starlark"}, "not": map[string]any{"required": []string{"scenario"}}}}, "properties": map[string]any{"run_id": boundedString(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, 63), "target": map[string]any{"type": "string", "enum": s.targetNames()}, "scenario": map[string]any{"type": "object", "additionalProperties": false, "required": []string{}, "maxProperties": 5, "properties": scenarioProperties()}, "starlark": map[string]any{"type": "string", "minLength": 1, "maxLength": mcpMaximumScenarioBytes, "description": "Inline nyann-bench Starlark source. load() is disabled and operator-owned target/model settings cannot be overridden."}, "workers": map[string]any{"type": "integer", "minimum": 1, "maximum": s.options.MaxWorkers}, "cpu": boundedString(`^[0-9]+(?:m|(?:\.[0-9]+)?)?$`, 16), "memory": boundedString(`^[0-9]+(?:Ki|Mi|Gi|Ti)?$`, 16), "platform": map[string]any{"type": "string", "enum": s.options.allowedPlatforms()}, "architecture": map[string]any{"type": "string", "enum": []string{"amd64", "arm64"}}, "deadline_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(s.options.MaxActiveDeadline / time.Second)}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "vdp_workstream": boundedString(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, 128)}}
 	refSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"run_id"}, "properties": map[string]any{"run_id": boundedString(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, 63)}}
 	listSchema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed", "archived"}}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
 	tools := []map[string]any{
-		toolDefinition("plan_benchmark", "Validate and render a benchmark without cluster mutation.", benchmarkSchema, readOnly),
-		toolDefinition("submit_benchmark", "Submit a previously plannable CPU Indexed Job using an operator-owned logical target.", benchmarkSchema, submit),
+		toolDefinition("plan_benchmark", "Validate and render a JSON or programmable Starlark benchmark without cluster mutation.", benchmarkSchema, readOnly),
+		toolDefinition("submit_benchmark", "Submit a previously plannable JSON or programmable Starlark CPU Indexed Job using an operator-owned logical target.", benchmarkSchema, submit),
 		toolDefinition("list_benchmarks", "List a bounded set of benchmark runs.", listSchema, readOnly),
 		toolDefinition("get_benchmark", "Get one benchmark's status and durable result metadata.", refSchema, readOnly),
 		toolDefinition("cancel_benchmark", "Cancel and clean up one non-terminal benchmark.", refSchema, cancel),

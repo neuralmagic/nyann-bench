@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 
+	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
 )
 
@@ -86,10 +87,11 @@ type Run struct {
 }
 
 type Server struct {
-	client    kubernetes.Interface
-	namespace string
-	options   Options
-	now       func() time.Time
+	client               kubernetes.Interface
+	namespace            string
+	options              Options
+	now                  func() time.Time
+	starlarkCompileSlots chan struct{}
 }
 
 // InferenceTarget is an operator-owned logical destination. MCP clients select
@@ -125,6 +127,8 @@ type Options struct {
 	MaxRecordBytes         int
 	MaxIndexedRuns         int
 	ArtifactProcessTimeout time.Duration
+	StarlarkCompilerPath   string
+	starlarkCompiler       func(context.Context, string) (*config.ScenarioConfig, error)
 }
 
 func DefaultOptions() Options {
@@ -143,6 +147,7 @@ func DefaultOptions() Options {
 		MaxRecordBytes:         8 << 20,
 		MaxIndexedRuns:         10_000,
 		ArtifactProcessTimeout: 5 * time.Minute,
+		StarlarkCompilerPath:   "/nyann-bench",
 	}
 }
 
@@ -214,6 +219,9 @@ func (o Options) Validate() error {
 	if o.MaxArtifactFiles < 1 || o.MaxArtifactBytes < 1 || o.MaxReportRecords < 1 || o.MaxLatencySamples < 1 || o.MaxRecordBytes < 1 || o.MaxIndexedRuns < 1 || o.ArtifactProcessTimeout <= 0 {
 		return fmt.Errorf("artifact and report processing limits must be positive")
 	}
+	if !path.IsAbs(o.StarlarkCompilerPath) {
+		return fmt.Errorf("Starlark compiler path must be absolute")
+	}
 	return nil
 }
 
@@ -281,7 +289,10 @@ func NewServer(client kubernetes.Interface, namespace string, options Options) *
 	if options.ArtifactProcessTimeout == 0 {
 		options.ArtifactProcessTimeout = defaults.ArtifactProcessTimeout
 	}
-	return &Server{client: client, namespace: namespace, options: options, now: time.Now}
+	if options.StarlarkCompilerPath == "" {
+		options.StarlarkCompilerPath = defaults.StarlarkCompilerPath
+	}
+	return &Server{client: client, namespace: namespace, options: options, now: time.Now, starlarkCompileSlots: make(chan struct{}, 1)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -515,6 +526,7 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 	}
 	var target string
 	var configValue string
+	var starlarkValue string
 	for i, arg := range input {
 		flag := strings.SplitN(arg, "=", 2)[0]
 		if strings.HasPrefix(flag, "--kube") || flag == "--worker-id" || flag == "--workers" || flag == "--metrics" || flag == "--output-dir" {
@@ -543,7 +555,20 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 				return nil, "", fmt.Errorf("command may contain at most one --config")
 			}
 			configValue = strings.TrimPrefix(arg, "--config=")
+		} else if arg == "--starlark-source" {
+			if i+1 >= len(input) || starlarkValue != "" {
+				return nil, "", fmt.Errorf("command may contain at most one --starlark-source with a value")
+			}
+			starlarkValue = input[i+1]
+		} else if strings.HasPrefix(arg, "--starlark-source=") {
+			if starlarkValue != "" {
+				return nil, "", fmt.Errorf("command may contain at most one --starlark-source")
+			}
+			starlarkValue = strings.TrimPrefix(arg, "--starlark-source=")
 		}
+	}
+	if configValue != "" && starlarkValue != "" {
+		return nil, "", fmt.Errorf("command may contain only one of --config or --starlark-source")
 	}
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
@@ -563,6 +588,9 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 		if err := validateInlineConfig(configValue); err != nil {
 			return nil, "", err
 		}
+	}
+	if len(starlarkValue) > config.MaxStarlarkSourceBytes {
+		return nil, "", fmt.Errorf("--starlark-source exceeds %d bytes", config.MaxStarlarkSourceBytes)
 	}
 	return append([]string(nil), input...), target, nil
 }

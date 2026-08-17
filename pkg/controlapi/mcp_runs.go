@@ -19,21 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
 )
 
 func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plannedBenchmark, error) {
-	if len(input.Scenario) == 0 || len(input.Scenario) > mcpMaximumScenarioBytes || !jsonObject(input.Scenario) {
-		return nil, fmt.Errorf("scenario must be a JSON object no larger than %d bytes", mcpMaximumScenarioBytes)
-	}
-	var typed config.Config
-	if err := decodeStrict(input.Scenario, &typed); err != nil {
-		return nil, fmt.Errorf("invalid typed scenario: %w", err)
-	}
-	scenario, err := config.Parse(string(input.Scenario))
+	scenario, configArgs, err := s.parseBenchmarkScenario(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("invalid typed scenario: %w", err)
+		return nil, err
 	}
 	if err := validateScenarioBounds(scenario); err != nil {
 		return nil, err
@@ -62,7 +54,7 @@ func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plan
 	if s.options.ResultPVC == "" || s.options.ResultRoot == "" {
 		return nil, fmt.Errorf("durable result storage is not configured")
 	}
-	if err := validateDatasetPaths(typed.Workload, s.options.DatasetRoot); err != nil {
+	if err := validateScenarioDatasetPaths(scenario, s.options.DatasetRoot); err != nil {
 		return nil, err
 	}
 	canonical, _ := json.Marshal(input)
@@ -78,12 +70,13 @@ func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plan
 	if len(validation.IsDNS1123Subdomain(runID)) > 0 || len(runID) > 63 {
 		return nil, fmt.Errorf("run_id must be a DNS-safe Kubernetes name of at most 63 characters")
 	}
-	command := []string{"generate", "--target", target.URL, "--config", string(input.Scenario)}
+	command := []string{"generate", "--target", target.URL}
+	command = append(command, configArgs...)
 	if target.Model != "" {
 		command = append(command, "--model", target.Model)
 	}
 	mounts := []mountSpec{}
-	if scenarioUsesDataset(typed.Workload) {
+	if scenarioUsesDataset(scenario) {
 		if s.options.DatasetPVC == "" || s.options.DatasetRoot == "" {
 			return nil, fmt.Errorf("the scenario uses a dataset but dataset storage is not configured")
 		}
@@ -106,7 +99,13 @@ func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plan
 	job.Spec.ActiveDeadlineSeconds = &deadline
 	job.Spec.TTLSecondsAfterFinished = &retention
 	effective := effectiveScenario(scenario)
-	effectiveJSON, _ := json.Marshal(effective)
+	effectiveJSON, err := json.Marshal(effective)
+	if err != nil {
+		return nil, fmt.Errorf("encoding effective scenario: %w", err)
+	}
+	if len(effectiveJSON) > mcpMaximumScenarioBytes {
+		return nil, fmt.Errorf("effective scenario exceeds the %d-byte service bound", mcpMaximumScenarioBytes)
+	}
 	fingerprintJSON, _ := json.Marshal(struct {
 		Command  []string
 		Config   kube.KubeConfig
