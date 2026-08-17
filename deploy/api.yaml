@@ -14,12 +14,6 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["create", "delete", "get", "update"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -59,6 +53,12 @@ spec:
             - -allowed-target-hosts=$(ALLOWED_TARGET_HOSTS)
             - -allowed-target-suffixes=$(ALLOWED_TARGET_SUFFIXES)
             - -allowed-pvcs=$(ALLOWED_PVCS)
+            - -targets-file=/etc/nyann-bench-policy/targets.json
+            - -result-pvc=benchmark-results
+            - -result-root=/var/lib/nyann-bench/results
+            - -dataset-pvc=benchmark-datasets
+            - -dataset-root=/var/lib/nyann-bench/datasets
+            - -allowed-platforms=kubernetes,openshift
             - -runner-image=ghcr.io/neuralmagic/nyann-bench@sha256:REPLACE_WITH_IMAGE_DIGEST
             - -max-workers=16
             - -max-cpu=16
@@ -95,6 +95,10 @@ spec:
               memory: 256Mi
           readinessProbe:
             httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
               path: /healthz
               port: http
           securityContext:
@@ -109,13 +113,29 @@ spec:
             - name: auth
               mountPath: /var/run/secrets/nyann-bench-api
               readOnly: true
+            - name: policy
+              mountPath: /etc/nyann-bench-policy
+              readOnly: true
+            - name: results
+              mountPath: /var/lib/nyann-bench/results
       securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       volumes:
         - name: auth
           secret:
             secretName: nyann-bench-api-auth
+        - name: policy
+          configMap:
+            name: nyann-bench-api-policy
+            items:
+              - key: targets.json
+                path: targets.json
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results
 ---
 apiVersion: v1
 kind: Service
