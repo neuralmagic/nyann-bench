@@ -100,7 +100,8 @@ type scenarioOpts struct {
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
 	// query Prometheus and print live per-stage results.
-	OnStageComplete func(ts recorder.StageTimestamp, records []recorder.Record)
+	// Returning false stops the scenario before the next stage.
+	OnStageComplete func(ts recorder.StageTimestamp, records []recorder.Record) bool
 }
 
 // runScenario executes a benchmark scenario and returns the summary.
@@ -317,6 +318,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 	barrierIdx := 0
 	var lastStageStart time.Time
 	var lastConcurrency int
+	stoppedEarly := false
 
 	for _, run := range runs {
 		if ctx.Err() != nil {
@@ -381,7 +383,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			StreamUsage:          opts.StreamUsage,
 		}
 
-		gen.RunStages(ctx, run.stages, func(i, concurrency int) {
+		gen.RunStagesUntil(ctx, run.stages, func(i, concurrency int) {
 			isWarmup := run.warmups[i]
 			stageName := run.names[i]
 
@@ -400,17 +402,6 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 
 			if startTime.IsZero() {
 				startTime = now
-			} else if !lastStageStart.IsZero() {
-				ts := recorder.StageTimestamp{
-					Stage:       measuredStageIdx - 1,
-					Concurrency: lastConcurrency,
-					StartTime:   recorder.TimeToFloat(lastStageStart),
-					EndTime:     recorder.TimeToFloat(now),
-				}
-				stageTimestamps = append(stageTimestamps, ts)
-				if opts.OnStageComplete != nil {
-					opts.OnStageComplete(ts, rec.Records())
-				}
 			}
 
 			lastStageStart = now
@@ -448,9 +439,30 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			}
 			time.Sleep(time.Until(t))
 			barrierIdx++
+		}, func(i int) bool {
+			if run.warmups[i] {
+				return true
+			}
+			now := time.Now()
+			ts := recorder.StageTimestamp{
+				Stage:       measuredStageIdx - 1,
+				Concurrency: lastConcurrency,
+				StartTime:   recorder.TimeToFloat(lastStageStart),
+				EndTime:     recorder.TimeToFloat(now),
+			}
+			stageTimestamps = append(stageTimestamps, ts)
+			lastStageStart = time.Time{}
+			if opts.OnStageComplete != nil && !opts.OnStageComplete(ts, rec.Records()) {
+				stoppedEarly = true
+				return false
+			}
+			return true
 		})
 
 		globalStageIdx += len(run.stages)
+		if stoppedEarly {
+			break
+		}
 	}
 
 	endTime := time.Now()
@@ -485,11 +497,6 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 
 	rec.Close()
 	records := rec.Records()
-
-	// Report the final stage now that all records are flushed.
-	if opts.OnStageComplete != nil && len(stageTimestamps) > 0 {
-		opts.OnStageComplete(stageTimestamps[len(stageTimestamps)-1], records)
-	}
 
 	if len(records) == 0 {
 		return &analysis.Summary{Timestamps: timestamps}, nil

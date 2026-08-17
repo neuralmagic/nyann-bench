@@ -29,9 +29,10 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 	var scenarioCalled bool
 
 	builtins := starlark.StringDict{
-		"workload": starlark.NewBuiltin("workload", builtinWorkload),
-		"stage":    starlark.NewBuiltin("stage", builtinStage),
-		"barrier":  starlark.NewBuiltin("barrier", builtinBarrier),
+		"workload":        starlark.NewBuiltin("workload", builtinWorkload),
+		"stage":           starlark.NewBuiltin("stage", builtinStage),
+		"barrier":         starlark.NewBuiltin("barrier", builtinBarrier),
+		"until_congested": starlark.NewBuiltin("until_congested", builtinUntilCongested),
 		"scenario": starlark.NewBuiltin("scenario", func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 			if scenarioCalled {
 				return nil, fmt.Errorf("scenario() can only be called once")
@@ -226,7 +227,76 @@ func builtinStage(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, 
 		"model":                  model,
 		"name":                   name,
 		"warmup":                 starlark.Bool(warmup),
+		"stop_when":              starlark.None,
 	}), nil
+}
+
+// builtinUntilCongested annotates every stage in a finite sweep with one
+// runtime stop condition. Returning a list keeps the API composable with list
+// comprehensions and user-defined Starlark helpers.
+func builtinUntilCongested(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var (
+		stages         *starlark.List
+		waitingVal     starlark.Value
+		ttftVal        starlark.Value
+		kvCacheUsage                  = 0.95
+		preemptionsVal starlark.Value = starlark.Float(1)
+	)
+	if err := starlark.UnpackArgs("until_congested", args, kwargs,
+		"stages", &stages,
+		"waiting_requests_p50", &waitingVal,
+		"ttft_p99", &ttftVal,
+		"kv_cache_usage?", &kvCacheUsage,
+		"preemptions?", &preemptionsVal,
+	); err != nil {
+		return nil, err
+	}
+	waitingRequests := starlarkFloat(waitingVal)
+	preemptions := starlarkFloat(preemptionsVal)
+	if stages.Len() == 0 {
+		return nil, fmt.Errorf("stages must contain at least one stage")
+	}
+	if waitingRequests <= 0 {
+		return nil, fmt.Errorf("waiting_requests_p50 must be > 0, got %g", waitingRequests)
+	}
+	ttft, err := parseDurationValue(ttftVal)
+	if err != nil {
+		return nil, fmt.Errorf("ttft_p99: %w", err)
+	}
+	if ttft <= 0 {
+		return nil, fmt.Errorf("ttft_p99 must be > 0, got %s", ttft)
+	}
+	if kvCacheUsage <= 0 || kvCacheUsage > 1 {
+		return nil, fmt.Errorf("kv_cache_usage must be in (0, 1], got %g", kvCacheUsage)
+	}
+	if preemptions <= 0 {
+		return nil, fmt.Errorf("preemptions must be > 0, got %g", preemptions)
+	}
+
+	condition := starlarkstruct.FromStringDict(starlark.String("CongestionCondition"), starlark.StringDict{
+		"waiting_requests_p50": starlark.Float(waitingRequests),
+		"ttft_p99":             starlark.String(ttft.String()),
+		"kv_cache_usage":       starlark.Float(kvCacheUsage),
+		"preemptions":          starlark.Float(preemptions),
+	})
+	annotated := make([]starlark.Value, 0, stages.Len())
+	iter := stages.Iterate()
+	defer iter.Done()
+	var val starlark.Value
+	for iter.Next(&val) {
+		s, ok := val.(*starlarkstruct.Struct)
+		if !ok || s.Constructor() != starlark.String(starlarkTypeStage) {
+			return nil, fmt.Errorf("stages: expected only Stage values, got %s", val.Type())
+		}
+		fields := starlark.StringDict{}
+		for _, name := range s.AttrNames() {
+			field, _ := s.Attr(name)
+			fields[name] = field
+		}
+		fields["stop_when"] = condition
+		annotated = append(annotated, starlarkstruct.FromStringDict(starlark.String(starlarkTypeStage), fields))
+	}
+	return starlark.NewList(annotated), nil
 }
 
 // builtinBarrier implements the barrier() Starlark builtin.
@@ -453,6 +523,28 @@ func structToScenarioStage(s *starlarkstruct.Struct) (*ScenarioStage, error) {
 	warmup, _ := s.Attr("warmup")
 	if warmup != starlark.None {
 		stage.Warmup = bool(warmup.(starlark.Bool))
+	}
+
+	stopWhen, _ := s.Attr("stop_when")
+	if stopWhen != nil && stopWhen != starlark.None {
+		condition, ok := stopWhen.(*starlarkstruct.Struct)
+		if !ok || condition.Constructor() != starlark.String("CongestionCondition") {
+			return nil, fmt.Errorf("stop_when: expected CongestionCondition")
+		}
+		waiting, _ := condition.Attr("waiting_requests_p50")
+		ttftVal, _ := condition.Attr("ttft_p99")
+		kv, _ := condition.Attr("kv_cache_usage")
+		preemptions, _ := condition.Attr("preemptions")
+		ttft, err := time.ParseDuration(starlarkString(ttftVal))
+		if err != nil {
+			return nil, fmt.Errorf("stop_when.ttft_p99: %w", err)
+		}
+		stage.StopWhen = &CongestionCondition{
+			WaitingRequestsP50: starlarkFloat(waiting),
+			TTFTP99:            ttft,
+			KVCacheUsage:       starlarkFloat(kv),
+			Preemptions:        starlarkFloat(preemptions),
+		}
 	}
 
 	return stage, nil

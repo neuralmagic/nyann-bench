@@ -236,6 +236,79 @@ scenario(
 	}
 }
 
+func TestStarlarkUntilCongested(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = until_congested(
+        [stage("2m", concurrency=c) for c in range(64, 257, 64)],
+        waiting_requests_p50=32,
+        ttft_p99="2s",
+        kv_cache_usage=0.97,
+        preemptions=2,
+    ),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.Stages) != 4 {
+		t.Fatalf("expected 4 stages, got %d", len(sc.Stages))
+	}
+	for i, stage := range sc.Stages {
+		if stage.StopWhen == nil {
+			t.Fatalf("stage %d has no congestion condition", i)
+		}
+		if stage.StopWhen.WaitingRequestsP50 != 32 || stage.StopWhen.TTFTP99 != 2*time.Second ||
+			stage.StopWhen.KVCacheUsage != 0.97 || stage.StopWhen.Preemptions != 2 {
+			t.Errorf("stage %d condition = %+v", i, stage.StopWhen)
+		}
+	}
+}
+
+func TestStarlarkUntilCongestedDefaultsAndValidation(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(stages=until_congested(
+    [stage("1m")], waiting_requests_p50=10, ttft_p99="500ms",
+))
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	condition := sc.Stages[0].StopWhen
+	if condition.KVCacheUsage != 0.95 || condition.Preemptions != 1 {
+		t.Errorf("unexpected defaults: %+v", condition)
+	}
+
+	bad := writeStarFile(t, `
+scenario(stages=until_congested(
+    [stage("1m")], waiting_requests_p50=0, ttft_p99="500ms",
+))
+`)
+	if _, err := config.ParseStarlark(bad); err == nil || !contains(err.Error(), "waiting_requests_p50 must be > 0") {
+		t.Fatalf("expected waiting_requests_p50 validation error, got %v", err)
+	}
+}
+
+func TestStarlarkUntilCongestedPreservesConversationPoolSize(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(stages=until_congested(
+    [stage("1m", mode="conversation_pool", concurrency=8, conversation_pool_size=64)],
+    waiting_requests_p50=10,
+    ttft_p99="500ms",
+))
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := sc.Stages[0]
+	if stage.ConversationPoolSize != 64 || stage.StopWhen == nil {
+		t.Fatalf("combined stage fields were not preserved: %+v", stage)
+	}
+}
+
 func TestStarlarkFunctions(t *testing.T) {
 	path := writeStarFile(t, `
 def ramp(start, end, step, duration):

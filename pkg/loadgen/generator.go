@@ -181,8 +181,14 @@ type Stage struct {
 // The onBarrier callback is called at barrier sync points and should block until
 // the barrier releases. The pool stays alive through non-drain barriers.
 func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
+	g.RunStagesUntil(ctx, stages, onStage, onBarrier, nil)
+}
+
+// RunStagesUntil adds a completion control point to RunStages. Returning false
+// from onStageComplete stops the pool before any later stage is started.
+func (g *Generator) RunStagesUntil(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int), onStageComplete func(index int) bool) {
 	if g.Mode == ModeConversationPool {
-		g.runConversationPoolStages(ctx, stages, onStage, onBarrier)
+		g.runConversationPoolStages(ctx, stages, onStage, onBarrier, onStageComplete)
 		return
 	}
 
@@ -247,6 +253,9 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 			case <-ctx.Done():
 			case <-time.After(stage.Duration):
 			}
+		}
+		if ctx.Err() == nil && onStageComplete != nil && !onStageComplete(i) {
+			break
 		}
 	}
 
