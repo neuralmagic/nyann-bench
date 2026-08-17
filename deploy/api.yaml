@@ -124,8 +124,9 @@ spec:
               readOnly: true
             - name: results
               mountPath: /var/lib/nyann-bench/results
-              readOnly: true
       securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       volumes:

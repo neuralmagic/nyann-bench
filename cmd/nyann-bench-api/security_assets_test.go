@@ -28,6 +28,7 @@ func TestContainerAndDeploymentUseNumericNonRootIdentity(t *testing.T) {
 	text := string(manifest)
 	for _, required := range []string{
 		"runAsNonRoot: true", "runAsUser: 65532", "runAsGroup: 65532",
+		"fsGroup: 65532", "fsGroupChangePolicy: OnRootMismatch",
 		"secretName: nyann-bench-api-auth", "@sha256:REPLACE_WITH_IMAGE_DIGEST",
 	} {
 		if !strings.Contains(text, required) {
@@ -36,6 +37,9 @@ func TestContainerAndDeploymentUseNumericNonRootIdentity(t *testing.T) {
 	}
 	if strings.Contains(text, ":latest") {
 		t.Fatal("deployment must not use a mutable :latest image")
+	}
+	if strings.Contains(text, "-enable-legacy-rest") {
+		t.Fatal("agent-facing deployment must not enable the legacy REST API")
 	}
 }
 

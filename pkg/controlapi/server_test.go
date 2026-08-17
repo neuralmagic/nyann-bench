@@ -12,6 +12,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -206,7 +207,7 @@ func TestCreateRunIsIdempotentAndRepairsService(t *testing.T) {
 	}
 }
 
-func TestCreateRunReconcilesManagedOrphanService(t *testing.T) {
+func TestCreateRunRejectsManagedOrphanServiceWithDifferentFingerprint(t *testing.T) {
 	orphan := &corev1.Service{ObjectMeta: metav1.ObjectMeta{
 		Name: "orphan", Namespace: "test",
 		Labels:      map[string]string{managedLabel: "true"},
@@ -215,18 +216,18 @@ func TestCreateRunReconcilesManagedOrphanService(t *testing.T) {
 	client := fake.NewSimpleClientset(orphan)
 	server := NewServer(client, "test", testOptions())
 	recorder := request(t, server.Handler(), http.MethodPost, "/v1/runs", `{"name":"orphan","command":["generate","--target","http://model/v1"]}`)
-	if recorder.Code != http.StatusCreated {
+	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 	service, err := client.CoreV1().Services("test").Get(context.Background(), "orphan", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.Annotations[requestAnnotation] == "stale" {
-		t.Fatal("orphan Service was not reconciled")
+	if service.Annotations[requestAnnotation] != "stale" {
+		t.Fatal("different submission replaced the existing Service")
 	}
-	if _, err := client.BatchV1().Jobs("test").Get(context.Background(), "orphan", metav1.GetOptions{}); err != nil {
-		t.Fatal(err)
+	if _, err := client.BatchV1().Jobs("test").Get(context.Background(), "orphan", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("unexpected Job after conflict: %v", err)
 	}
 }
 
@@ -314,6 +315,7 @@ func testOptions() Options {
 	options.AllowedTargetSuffixes = []string{".default.svc"}
 	options.AllowedPVCs = []string{"benchmark-results", "benchmark-datasets", "results", "a", "b"}
 	options.RunnerImage = "ghcr.io/neuralmagic/nyann-bench@sha256:" + strings.Repeat("a", 64)
+	options.EnableLegacyREST = true
 	return options
 }
 

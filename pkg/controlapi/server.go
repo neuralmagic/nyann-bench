@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
 )
@@ -117,35 +118,50 @@ type InferenceTarget struct {
 }
 
 type Options struct {
-	Token                 string
-	AllowedTargetHosts    []string
-	AllowedTargetSuffixes []string
-	AllowedPVCs           []string
-	RunnerImage           string
-	MaxWorkers            int
-	MaxCPU                resource.Quantity
-	MaxMemory             resource.Quantity
-	DefaultActiveDeadline time.Duration
-	MaxActiveDeadline     time.Duration
-	DefaultRetentionTTL   time.Duration
-	MaxRetentionTTL       time.Duration
-	InferenceTargets      map[string]InferenceTarget
-	ResultPVC             string
-	ResultRoot            string
-	DatasetPVC            string
-	DatasetRoot           string
-	AllowedPlatforms      []string
+	Token                  string
+	AllowedTargetHosts     []string
+	AllowedTargetSuffixes  []string
+	AllowedPVCs            []string
+	RunnerImage            string
+	MaxWorkers             int
+	MaxCPU                 resource.Quantity
+	MaxMemory              resource.Quantity
+	DefaultActiveDeadline  time.Duration
+	MaxActiveDeadline      time.Duration
+	DefaultRetentionTTL    time.Duration
+	MaxRetentionTTL        time.Duration
+	InferenceTargets       map[string]InferenceTarget
+	ResultPVC              string
+	ResultRoot             string
+	DatasetPVC             string
+	DatasetRoot            string
+	AllowedPlatforms       []string
+	EnableLegacyREST       bool
+	MaxArtifactFiles       int
+	MaxArtifactBytes       int64
+	MaxReportRecords       int64
+	MaxLatencySamples      int
+	MaxRecordBytes         int
+	MaxIndexedRuns         int
+	ArtifactProcessTimeout time.Duration
 }
 
 func DefaultOptions() Options {
 	return Options{
-		MaxWorkers:            16,
-		MaxCPU:                resource.MustParse("16"),
-		MaxMemory:             resource.MustParse("64Gi"),
-		DefaultActiveDeadline: time.Hour,
-		MaxActiveDeadline:     6 * time.Hour,
-		DefaultRetentionTTL:   24 * time.Hour,
-		MaxRetentionTTL:       7 * 24 * time.Hour,
+		MaxWorkers:             16,
+		MaxCPU:                 resource.MustParse("16"),
+		MaxMemory:              resource.MustParse("64Gi"),
+		DefaultActiveDeadline:  time.Hour,
+		MaxActiveDeadline:      6 * time.Hour,
+		DefaultRetentionTTL:    24 * time.Hour,
+		MaxRetentionTTL:        7 * 24 * time.Hour,
+		MaxArtifactFiles:       512,
+		MaxArtifactBytes:       64 << 30,
+		MaxReportRecords:       50_000_000,
+		MaxLatencySamples:      100_000,
+		MaxRecordBytes:         8 << 20,
+		MaxIndexedRuns:         10_000,
+		ArtifactProcessTimeout: 5 * time.Minute,
 	}
 }
 
@@ -214,6 +230,9 @@ func (o Options) Validate() error {
 			return fmt.Errorf("unsupported allowed platform %q", platform)
 		}
 	}
+	if o.MaxArtifactFiles < 1 || o.MaxArtifactBytes < 1 || o.MaxReportRecords < 1 || o.MaxLatencySamples < 1 || o.MaxRecordBytes < 1 || o.MaxIndexedRuns < 1 || o.ArtifactProcessTimeout <= 0 {
+		return fmt.Errorf("artifact and report processing limits must be positive")
+	}
 	return nil
 }
 
@@ -260,6 +279,27 @@ func NewServer(client kubernetes.Interface, namespace string, options Options) *
 	if options.MaxRetentionTTL == 0 {
 		options.MaxRetentionTTL = defaults.MaxRetentionTTL
 	}
+	if options.MaxArtifactFiles == 0 {
+		options.MaxArtifactFiles = defaults.MaxArtifactFiles
+	}
+	if options.MaxArtifactBytes == 0 {
+		options.MaxArtifactBytes = defaults.MaxArtifactBytes
+	}
+	if options.MaxReportRecords == 0 {
+		options.MaxReportRecords = defaults.MaxReportRecords
+	}
+	if options.MaxLatencySamples == 0 {
+		options.MaxLatencySamples = defaults.MaxLatencySamples
+	}
+	if options.MaxRecordBytes == 0 {
+		options.MaxRecordBytes = defaults.MaxRecordBytes
+	}
+	if options.MaxIndexedRuns == 0 {
+		options.MaxIndexedRuns = defaults.MaxIndexedRuns
+	}
+	if options.ArtifactProcessTimeout == 0 {
+		options.ArtifactProcessTimeout = defaults.ArtifactProcessTimeout
+	}
 	s := &Server{client: client, namespace: namespace, options: options, now: time.Now}
 	s.readLogs = func(ctx context.Context, pod string, tail int64) (string, error) {
 		body, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
@@ -276,11 +316,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.Handle("POST /mcp", s.MCPHandler())
-	mux.HandleFunc("POST /v1/runs", s.createRun)
-	mux.HandleFunc("GET /v1/runs", s.listRuns)
-	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
-	mux.HandleFunc("GET /v1/runs/{id}/logs", s.getLogs)
-	mux.HandleFunc("DELETE /v1/runs/{id}", s.cancelRun)
+	if s.options.EnableLegacyREST {
+		mux.HandleFunc("POST /v1/runs", s.createRun)
+		mux.HandleFunc("GET /v1/runs", s.listRuns)
+		mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
+		mux.HandleFunc("GET /v1/runs/{id}/logs", s.getLogs)
+		mux.HandleFunc("DELETE /v1/runs/{id}", s.cancelRun)
+	}
 	return s.authenticate(mux)
 }
 
@@ -371,6 +413,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			writeKubeError(w, err)
 			return
 		}
+		if err := s.attachServiceOwner(r.Context(), name, existingJob, fingerprint); err != nil {
+			writeKubeError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, runFromJob(existingJob))
 		return
 	}
@@ -387,11 +433,21 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		if apierrors.IsAlreadyExists(err) {
 			existingJob, getErr := s.client.BatchV1().Jobs(s.namespace).Get(r.Context(), name, metav1.GetOptions{})
 			if getErr == nil && existingJob.Labels[managedLabel] == "true" && existingJob.Annotations[requestAnnotation] == fingerprint {
+				if ownerErr := s.attachServiceOwner(r.Context(), name, existingJob, fingerprint); ownerErr != nil {
+					writeKubeError(w, ownerErr)
+					return
+				}
 				writeJSON(w, http.StatusOK, runFromJob(existingJob))
 				return
 			}
 		}
-		_ = s.deleteServiceIfFingerprint(r.Context(), name, fingerprint)
+		// Retain the fingerprinted Service on a failed Job create. Deleting it
+		// cannot be made atomic with another identical submit winning the Job
+		// create race; a retry can safely reuse it.
+		writeKubeError(w, err)
+		return
+	}
+	if err := s.attachServiceOwner(r.Context(), name, createdJob, fingerprint); err != nil {
 		writeKubeError(w, err)
 		return
 	}
@@ -401,8 +457,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) upsertManagedService(ctx context.Context, desired *corev1.Service, fingerprint string) error {
 	existing, err := s.client.CoreV1().Services(s.namespace).Get(ctx, desired.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = s.client.CoreV1().Services(s.namespace).Create(ctx, desired, metav1.CreateOptions{})
-		return err
+		_, createErr := s.client.CoreV1().Services(s.namespace).Create(ctx, desired, metav1.CreateOptions{})
+		if !apierrors.IsAlreadyExists(createErr) {
+			return createErr
+		}
+		existing, err = s.client.CoreV1().Services(s.namespace).Get(ctx, desired.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 	}
 	if err != nil {
 		return err
@@ -413,13 +475,35 @@ func (s *Server) upsertManagedService(ctx context.Context, desired *corev1.Servi
 	if existing.Annotations[requestAnnotation] == fingerprint {
 		return nil
 	}
-	desired.ResourceVersion = existing.ResourceVersion
-	desired.Spec.ClusterIP = existing.Spec.ClusterIP
-	desired.Spec.ClusterIPs = existing.Spec.ClusterIPs
-	desired.Spec.IPFamilies = existing.Spec.IPFamilies
-	desired.Spec.IPFamilyPolicy = existing.Spec.IPFamilyPolicy
-	_, err = s.client.CoreV1().Services(s.namespace).Update(ctx, desired, metav1.UpdateOptions{})
-	return err
+	// A Service name and its request fingerprint are immutable together. In
+	// particular, never let a concurrent different submission replace the
+	// discovery Service underneath a Job that is about to win the create race.
+	return apierrors.NewAlreadyExists(corev1.Resource("services"), desired.Name)
+}
+
+func (s *Server) attachServiceOwner(ctx context.Context, name string, job *batchv1.Job, fingerprint string) error {
+	// Real Kubernetes Jobs always receive a UID. The fake client does not,
+	// and there is no valid owner reference to attach in that case.
+	if job.UID == "" {
+		return nil
+	}
+	controller := true
+	owner := metav1.OwnerReference{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID, Controller: &controller}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		service, err := s.client.CoreV1().Services(s.namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if service.Labels[managedLabel] != "true" || service.Annotations[requestAnnotation] != fingerprint {
+			return apierrors.NewConflict(corev1.Resource("services"), name, fmt.Errorf("service ownership fingerprint changed"))
+		}
+		if len(service.OwnerReferences) == 1 && service.OwnerReferences[0].UID == owner.UID {
+			return nil
+		}
+		service.OwnerReferences = []metav1.OwnerReference{owner}
+		_, err = s.client.CoreV1().Services(s.namespace).Update(ctx, service, metav1.UpdateOptions{})
+		return err
+	})
 }
 
 func (s *Server) deleteServiceIfFingerprint(ctx context.Context, name, fingerprint string) error {
@@ -493,16 +577,17 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.getManagedJob(r.Context(), id); err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	if err := s.client.CoreV1().Services(s.namespace).Delete(r.Context(), id, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	job, err := s.getManagedJob(r.Context(), id)
+	if err != nil {
 		writeKubeError(w, err)
 		return
 	}
 	propagation := metav1.DeletePropagationBackground
 	if err := s.client.BatchV1().Jobs(s.namespace).Delete(r.Context(), id, metav1.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
+		writeKubeError(w, err)
+		return
+	}
+	if err := s.deleteServiceIfFingerprint(r.Context(), id, job.Annotations[requestAnnotation]); err != nil && !apierrors.IsNotFound(err) {
 		writeKubeError(w, err)
 		return
 	}

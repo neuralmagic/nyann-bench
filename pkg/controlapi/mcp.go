@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +32,8 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
+	"github.com/neuralmagic/nyann-bench/pkg/recorder"
+	"github.com/neuralmagic/nyann-bench/pkg/statsutil"
 )
 
 const (
@@ -50,7 +54,7 @@ const (
 var (
 	resultLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$`)
 	attachmentPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
-	artifactPattern    = regexp.MustCompile(`^(requests_([0-9]+)\.jsonl|timestamps_([0-9]+)\.json|prometheus(?:_[A-Za-z0-9.-]+)?\.json)$`)
+	artifactPattern    = regexp.MustCompile(`^(requests_([0-9]+)\.jsonl|timestamps_([0-9]+)\.json|prometheus(?:_[A-Za-z0-9.-]+)?\.json|run-manifest\.json)$`)
 )
 
 type benchmarkInput struct {
@@ -85,6 +89,7 @@ type plannedBenchmark struct {
 	Resources         resourceSummary `json:"resources"`
 	Results           ResultMetadata  `json:"results"`
 	DeadlineSeconds   int64           `json:"deadline_seconds"`
+	RetentionSeconds  int32           `json:"retention_seconds"`
 	Warnings          []string        `json:"validation_warnings"`
 	createRequest     CreateRunRequest
 	config            kube.KubeConfig
@@ -154,6 +159,23 @@ type benchmarkReport struct {
 	WorkerComplete    bool               `json:"worker_complete"`
 	Artifacts         []artifactMetadata `json:"artifacts"`
 	Warnings          []string           `json:"warnings"`
+}
+
+type durableRunManifest struct {
+	SchemaVersion     string          `json:"schema_version"`
+	RunID             string          `json:"run_id"`
+	Fingerprint       string          `json:"fingerprint"`
+	CreatedAt         time.Time       `json:"created_at"`
+	Target            plannedTarget   `json:"target"`
+	ResultLabel       string          `json:"result_label"`
+	VDPWorkstream     string          `json:"vdp_workstream,omitempty"`
+	EffectiveScenario json.RawMessage `json:"effective_scenario"`
+	Resources         resourceSummary `json:"resources"`
+	Results           ResultMetadata  `json:"results"`
+	Workers           int32           `json:"workers"`
+	DeadlineSeconds   int64           `json:"deadline_seconds"`
+	RetentionSeconds  int32           `json:"retention_seconds"`
+	Image             string          `json:"image"`
 }
 
 func (s *Server) MCPHandler() http.Handler {
@@ -263,7 +285,7 @@ func (s *Server) callMCPTool(ctx context.Context, name string, raw json.RawMessa
 		if err := decodeStrict(raw, &input); err != nil {
 			return nil, fmt.Errorf("invalid benchmark request: %w", err)
 		}
-		plan, err := s.planBenchmark(input)
+		plan, err := s.planBenchmark(ctx, input)
 		if err != nil {
 			return nil, err
 		}
@@ -288,6 +310,16 @@ func (s *Server) callMCPTool(ctx context.Context, name string, raw json.RawMessa
 			return nil, err
 		}
 		job, err := s.getManagedJob(ctx, ref.RunID)
+		if apierrors.IsNotFound(err) {
+			manifest, manifestErr := s.loadRunManifest(ref.RunID)
+			if manifestErr != nil {
+				if !errors.Is(manifestErr, os.ErrNotExist) {
+					return nil, manifestErr
+				}
+				return nil, friendlyKubeError(err)
+			}
+			return benchmarkDetailsFromManifest(manifest), nil
+		}
 		if err != nil {
 			return nil, friendlyKubeError(err)
 		}
@@ -304,10 +336,22 @@ func (s *Server) callMCPTool(ctx context.Context, name string, raw json.RawMessa
 			return nil, err
 		}
 		job, err := s.getManagedJob(ctx, ref.RunID)
-		if err != nil {
+		var run Run
+		if apierrors.IsNotFound(err) {
+			manifest, manifestErr := s.loadRunManifest(ref.RunID)
+			if manifestErr != nil {
+				if !errors.Is(manifestErr, os.ErrNotExist) {
+					return nil, manifestErr
+				}
+				return nil, friendlyKubeError(err)
+			}
+			run = runFromManifest(manifest, "archived")
+		} else if err != nil {
 			return nil, friendlyKubeError(err)
+		} else {
+			run = runFromJob(job)
 		}
-		artifacts, err := s.listArtifacts(runFromJob(job))
+		artifacts, err := s.listArtifacts(ctx, run)
 		if err != nil {
 			return nil, err
 		}
@@ -323,7 +367,7 @@ func (s *Server) callMCPTool(ctx context.Context, name string, raw json.RawMessa
 	}
 }
 
-func (s *Server) planBenchmark(input benchmarkInput) (*plannedBenchmark, error) {
+func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plannedBenchmark, error) {
 	if len(input.Scenario) == 0 || len(input.Scenario) > mcpMaximumScenarioBytes || !jsonObject(input.Scenario) {
 		return nil, fmt.Errorf("scenario must be a JSON object no larger than %d bytes", mcpMaximumScenarioBytes)
 	}
@@ -369,7 +413,7 @@ func (s *Server) planBenchmark(input benchmarkInput) (*plannedBenchmark, error) 
 	digest := sha256.Sum256(canonical)
 	runID := input.RunID
 	if runID == "" {
-		prefix := strings.ReplaceAll(input.ResultLabel, ".", "-")
+		prefix := strings.NewReplacer(".", "-", "_", "-").Replace(input.ResultLabel)
 		if len(prefix) > 40 {
 			prefix = prefix[:40]
 		}
@@ -418,10 +462,47 @@ func (s *Server) planBenchmark(input benchmarkInput) (*plannedBenchmark, error) 
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256(fingerprintJSON))
 	warnings := scenarioWarnings(scenario, workers, time.Duration(deadline)*time.Second)
 	resources := resourcesFromJob(job, platform, cfg.Arch, workers, s.options.RunnerImage)
-	return &plannedBenchmark{RunID: name, Target: plannedTarget{Name: input.Target, Model: target.Model}, EffectiveScenario: effective, Load: plannedLoad(scenario, workers), Resources: resources, Results: results, DeadlineSeconds: deadline, Warnings: warnings, createRequest: create, config: cfg, command: effectiveCommand, service: service, job: job, fingerprint: fingerprint, resultLabel: input.ResultLabel, workstream: input.VDPWorkstream}, nil
+	plan := &plannedBenchmark{RunID: name, Target: plannedTarget{Name: input.Target, Model: target.Model}, EffectiveScenario: effective, Load: plannedLoad(scenario, workers), Resources: resources, Results: results, DeadlineSeconds: deadline, RetentionSeconds: retention, Warnings: warnings, createRequest: create, config: cfg, command: effectiveCommand, service: service, job: job, fingerprint: fingerprint, resultLabel: input.ResultLabel, workstream: input.VDPWorkstream}
+	if err := s.serverDryRun(ctx, plan); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func (s *Server) serverDryRun(ctx context.Context, plan *plannedBenchmark) error {
+	suffix := "-dry-" + plan.fingerprint[:8]
+	prefix := strings.TrimSuffix(plan.RunID, "-")
+	if len(prefix)+len(suffix) > 63 {
+		prefix = strings.TrimSuffix(prefix[:63-len(suffix)], "-")
+	}
+	dryRunName := prefix + suffix
+	cfg := plan.config
+	cfg.Name = dryRunName
+	service, job, err := kube.RenderCoreResources(cfg, commandDefaultName(plan.command), plan.command)
+	if err != nil {
+		return fmt.Errorf("rendering Kubernetes dry-run resources: %w", err)
+	}
+	job.Spec.ActiveDeadlineSeconds = &plan.DeadlineSeconds
+	job.Spec.TTLSecondsAfterFinished = &plan.RetentionSeconds
+	metadata := map[string]string{requestAnnotation: plan.fingerprint, targetAnnotation: plan.Target.Name, resultLabelAnnotation: plan.resultLabel, mcpManagedAnnotation: "true"}
+	decorate(&service.ObjectMeta, dryRunName, metadata)
+	decorate(&job.ObjectMeta, dryRunName, metadata)
+	decorate(&job.Spec.Template.ObjectMeta, dryRunName, nil)
+	dryRun := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: "nyann-bench-mcp-plan"}
+	if _, err := s.client.CoreV1().Services(s.namespace).Create(ctx, service, dryRun); err != nil {
+		return fmt.Errorf("Kubernetes server-side dry-run rejected Service: %w", err)
+	}
+	if _, err := s.client.BatchV1().Jobs(s.namespace).Create(ctx, job, dryRun); err != nil {
+		return fmt.Errorf("Kubernetes server-side dry-run rejected Job: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) submitBenchmark(ctx context.Context, plan *plannedBenchmark) (Run, bool, error) {
+	manifest, manifestExisted, err := s.persistRunManifest(plan)
+	if err != nil {
+		return Run{}, false, err
+	}
 	created := s.now().UTC()
 	commandJSON, _ := json.Marshal(plan.command)
 	resultsJSON, _ := json.Marshal(plan.Results)
@@ -441,20 +522,220 @@ func (s *Server) submitBenchmark(ctx context.Context, plan *plannedBenchmark) (R
 		if err := s.upsertManagedService(ctx, plan.service, plan.fingerprint); err != nil {
 			return Run{}, false, friendlyKubeError(err)
 		}
+		if err := s.attachServiceOwner(ctx, plan.RunID, existing, plan.fingerprint); err != nil {
+			return Run{}, false, friendlyKubeError(err)
+		}
 		return runFromJob(existing), false, nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return Run{}, false, friendlyKubeError(err)
+	}
+	if manifestExisted {
+		hasArtifacts, artifactErr := s.manifestHasBenchmarkArtifacts(manifest)
+		if artifactErr != nil {
+			return Run{}, false, artifactErr
+		}
+		if hasArtifacts {
+			return runFromManifest(manifest, "archived"), false, nil
+		}
 	}
 	if err := s.upsertManagedService(ctx, plan.service, plan.fingerprint); err != nil {
 		return Run{}, false, friendlyKubeError(err)
 	}
 	job, err := s.client.BatchV1().Jobs(s.namespace).Create(ctx, plan.job, metav1.CreateOptions{})
 	if err != nil {
-		_ = s.deleteServiceIfFingerprint(ctx, plan.RunID, plan.fingerprint)
+		if apierrors.IsAlreadyExists(err) {
+			existing, getErr := s.client.BatchV1().Jobs(s.namespace).Get(ctx, plan.RunID, metav1.GetOptions{})
+			if getErr == nil && existing.Labels[managedLabel] == "true" && existing.Annotations[requestAnnotation] == plan.fingerprint {
+				if ownerErr := s.attachServiceOwner(ctx, plan.RunID, existing, plan.fingerprint); ownerErr != nil {
+					return Run{}, false, friendlyKubeError(ownerErr)
+				}
+				return runFromJob(existing), false, nil
+			}
+		}
+		// Keep the immutable Service for an identical concurrent winner or a
+		// later retry; cross-resource deletion cannot be made atomic with Job
+		// creation.
+		return Run{}, false, friendlyKubeError(err)
+	}
+	if err := s.attachServiceOwner(ctx, plan.RunID, job, plan.fingerprint); err != nil {
 		return Run{}, false, friendlyKubeError(err)
 	}
 	return runFromJob(job), true, nil
+}
+
+func (s *Server) persistRunManifest(plan *plannedBenchmark) (durableRunManifest, bool, error) {
+	scenarioJSON, err := json.Marshal(plan.EffectiveScenario)
+	if err != nil {
+		return durableRunManifest{}, false, err
+	}
+	desired := durableRunManifest{
+		SchemaVersion: "nyann-bench-run-v1", RunID: plan.RunID, Fingerprint: plan.fingerprint,
+		CreatedAt: s.now().UTC(), Target: plan.Target, ResultLabel: plan.resultLabel,
+		VDPWorkstream: plan.workstream, EffectiveScenario: scenarioJSON, Resources: plan.Resources,
+		Results: plan.Results, Workers: int32(plan.Resources.Workers), DeadlineSeconds: plan.DeadlineSeconds,
+		RetentionSeconds: plan.RetentionSeconds, Image: plan.Resources.Image,
+	}
+	indexDir := filepath.Join(s.options.ResultRoot, ".nyann-bench", "runs")
+	if err := ensureDirectoryBelowRoot(s.options.ResultRoot, indexDir); err != nil {
+		return durableRunManifest{}, false, fmt.Errorf("creating durable run index: %w", err)
+	}
+	indexPath := filepath.Join(indexDir, plan.RunID+".json")
+	manifest, created, err := createOrValidateManifest(indexPath, desired)
+	if err != nil {
+		return durableRunManifest{}, false, err
+	}
+	dir, err := s.safeResultDirectory(manifest.Results)
+	if err != nil {
+		if created {
+			_ = os.Remove(indexPath)
+		}
+		return durableRunManifest{}, false, err
+	}
+	if err := ensureDirectoryBelowRoot(s.options.ResultRoot, dir); err != nil {
+		if created {
+			_ = os.Remove(indexPath)
+		}
+		return durableRunManifest{}, false, fmt.Errorf("creating run result directory: %w", err)
+	}
+	if _, _, err := createOrValidateManifest(filepath.Join(dir, "run-manifest.json"), manifest); err != nil {
+		if created {
+			_ = os.Remove(indexPath)
+		}
+		return durableRunManifest{}, false, err
+	}
+	return manifest, !created, nil
+}
+
+func createOrValidateManifest(filename string, desired durableRunManifest) (durableRunManifest, bool, error) {
+	data, err := json.MarshalIndent(desired, "", "  ")
+	if err != nil {
+		return durableRunManifest{}, false, err
+	}
+	data = append(data, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(filename), ".run-manifest-*")
+	if err != nil {
+		return durableRunManifest{}, false, fmt.Errorf("creating durable run manifest temporary file: %w", err)
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o440); err != nil {
+		_ = temp.Close()
+		return durableRunManifest{}, false, err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return durableRunManifest{}, false, err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return durableRunManifest{}, false, err
+	}
+	if err := temp.Close(); err != nil {
+		return durableRunManifest{}, false, err
+	}
+	// Linking a fully-written inode gives create-if-absent semantics without
+	// exposing a partial manifest to concurrent submitters.
+	linkErr := os.Link(tempName, filename)
+	if linkErr == nil {
+		return desired, true, nil
+	}
+	if !errors.Is(linkErr, os.ErrExist) {
+		return durableRunManifest{}, false, fmt.Errorf("creating durable run manifest: %w", linkErr)
+	}
+	existing, err := readManifestFile(filename)
+	if err != nil {
+		return durableRunManifest{}, false, err
+	}
+	if existing.RunID != desired.RunID || existing.Fingerprint != desired.Fingerprint || existing.Results.Path != desired.Results.Path {
+		return durableRunManifest{}, false, fmt.Errorf("run_id already has durable provenance for a different validated specification")
+	}
+	return existing, false, nil
+}
+
+func readManifestFile(filename string) (durableRunManifest, error) {
+	var manifest durableRunManifest
+	file, err := os.Open(filename)
+	if err != nil {
+		return manifest, err
+	}
+	defer file.Close()
+	dec := json.NewDecoder(io.LimitReader(file, mcpMaximumRequestBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&manifest); err != nil {
+		return manifest, fmt.Errorf("reading durable run manifest: %w", err)
+	}
+	if manifest.SchemaVersion != "nyann-bench-run-v1" || manifest.RunID == "" || manifest.Fingerprint == "" {
+		return manifest, fmt.Errorf("durable run manifest is invalid")
+	}
+	if err := ensureEOF(dec); err != nil {
+		return manifest, err
+	}
+	return manifest, nil
+}
+
+func ensureDirectoryBelowRoot(root, dir string) error {
+	root = filepath.Clean(root)
+	dir = filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes configured root")
+	}
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return err
+	}
+	current := root
+	if rel == "." {
+		return nil
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			info, statErr = os.Lstat(current)
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %s is not a real directory", current)
+		}
+	}
+	return nil
+}
+
+func (s *Server) loadRunManifest(id string) (durableRunManifest, error) {
+	if len(validation.IsDNS1123Subdomain(id)) > 0 || len(id) > 63 {
+		return durableRunManifest{}, os.ErrNotExist
+	}
+	return readManifestFile(filepath.Join(s.options.ResultRoot, ".nyann-bench", "runs", id+".json"))
+}
+
+func (s *Server) manifestHasBenchmarkArtifacts(manifest durableRunManifest) (bool, error) {
+	dir, err := s.safeResultDirectory(manifest.Results)
+	if err != nil {
+		return false, err
+	}
+	entries, err := readBoundedDirectory(dir, s.options.MaxArtifactFiles)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Name() != "run-manifest.json" && artifactPattern.MatchString(entry.Name()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func runFromManifest(manifest durableRunManifest, status string) Run {
+	return Run{ID: manifest.RunID, Status: status, Workers: manifest.Workers, CreatedAt: manifest.CreatedAt, Results: manifest.Results, ActiveDeadlineSeconds: manifest.DeadlineSeconds, TTLSecondsAfterFinished: manifest.RetentionSeconds}
 }
 
 func (s *Server) listBenchmarksMCP(ctx context.Context, input benchmarkListInput) (any, error) {
@@ -464,7 +745,7 @@ func (s *Server) listBenchmarksMCP(ctx context.Context, input benchmarkListInput
 	if input.Limit < 1 || input.Limit > 100 {
 		return nil, fmt.Errorf("limit must be between 1 and 100")
 	}
-	if input.Status != "" && !containsString([]string{"pending", "running", "succeeded", "failed"}, input.Status) {
+	if input.Status != "" && !containsString([]string{"pending", "running", "succeeded", "failed", "archived"}, input.Status) {
 		return nil, fmt.Errorf("status filter is invalid")
 	}
 	jobs, err := s.client.BatchV1().Jobs(s.namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.Set{managedLabel: "true"}.String()})
@@ -472,12 +753,53 @@ func (s *Server) listBenchmarksMCP(ctx context.Context, input benchmarkListInput
 		return nil, friendlyKubeError(err)
 	}
 	runs := make([]Run, 0, len(jobs.Items))
+	activeIDs := make(map[string]bool, len(jobs.Items))
 	for i := range jobs.Items {
+		activeIDs[jobs.Items[i].Name] = true
 		run := mcpRunFromJob(&jobs.Items[i])
 		if input.Status != "" && run.Status != input.Status {
 			continue
 		}
 		if input.Label != "" && jobs.Items[i].Annotations[resultLabelAnnotation] != input.Label {
+			continue
+		}
+		runs = append(runs, run)
+	}
+	manifestDir := filepath.Join(s.options.ResultRoot, ".nyann-bench", "runs")
+	var entries []os.DirEntry
+	indexDir, openErr := os.Open(manifestDir)
+	if openErr == nil {
+		entries, err = indexDir.ReadDir(s.options.MaxIndexedRuns + 1)
+		closeErr := indexDir.Close()
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("reading durable run index: %w", err)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("opening durable run index: %w", openErr)
+	}
+	if len(entries) > s.options.MaxIndexedRuns {
+		return nil, fmt.Errorf("durable run index exceeds the configured entry limit")
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if activeIDs[id] {
+			continue
+		}
+		manifest, manifestErr := s.loadRunManifest(id)
+		if manifestErr != nil {
+			return nil, manifestErr
+		}
+		run := runFromManifest(manifest, "archived")
+		if input.Status != "" && input.Status != run.Status {
+			continue
+		}
+		if input.Label != "" && manifest.ResultLabel != input.Label {
 			continue
 		}
 		runs = append(runs, run)
@@ -501,33 +823,36 @@ func (s *Server) cancelBenchmarkMCP(ctx context.Context, id string) (any, error)
 	if status := jobStatus(job); status == "succeeded" || status == "failed" {
 		return nil, fmt.Errorf("terminal benchmark runs cannot be canceled")
 	}
-	if err := s.client.CoreV1().Services(s.namespace).Delete(ctx, id, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return nil, friendlyKubeError(err)
-	}
 	propagation := metav1.DeletePropagationBackground
 	if err := s.client.BatchV1().Jobs(s.namespace).Delete(ctx, id, metav1.DeleteOptions{PropagationPolicy: &propagation}); err != nil && !apierrors.IsNotFound(err) {
+		return nil, friendlyKubeError(err)
+	}
+	if err := s.deleteServiceIfFingerprint(ctx, id, job.Annotations[requestAnnotation]); err != nil && !apierrors.IsNotFound(err) {
 		return nil, friendlyKubeError(err)
 	}
 	return map[string]any{"run_id": id, "canceled": true, "already_absent": false}, nil
 }
 
-func (s *Server) listArtifacts(run Run) ([]artifactMetadata, error) {
+func (s *Server) listArtifacts(ctx context.Context, run Run) ([]artifactMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.options.ArtifactProcessTimeout)
+	defer cancel()
 	dir, err := s.safeResultDirectory(run.Results)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := readBoundedDirectory(dir, s.options.MaxArtifactFiles)
 	if errors.Is(err, os.ErrNotExist) {
 		return []artifactMetadata{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading benchmark artifacts: %w", err)
 	}
-	if len(entries) > 512 {
-		return nil, fmt.Errorf("artifact directory exceeds the bounded entry limit")
-	}
 	artifacts := make([]artifactMetadata, 0, len(entries))
+	totalBytes := int64(0)
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		matches := artifactPattern.FindStringSubmatch(entry.Name())
 		if entry.IsDir() || matches == nil {
 			continue
@@ -541,49 +866,104 @@ func (s *Server) listArtifacts(run Run) ([]artifactMetadata, error) {
 			return nil, fmt.Errorf("opening artifact metadata: %w", err)
 		}
 		hash := sha256.New()
-		_, copyErr := io.Copy(hash, file)
+		remaining := s.options.MaxArtifactBytes - totalBytes
+		copied, copyErr := io.CopyBuffer(hash, &contextReader{ctx: ctx, reader: io.LimitReader(file, remaining+1)}, make([]byte, 128<<10))
 		closeErr := file.Close()
 		if copyErr != nil || closeErr != nil {
 			return nil, fmt.Errorf("hashing artifact %s", entry.Name())
 		}
+		if copied > remaining {
+			return nil, fmt.Errorf("artifact bytes exceed the configured %d-byte processing limit", s.options.MaxArtifactBytes)
+		}
+		totalBytes += copied
 		kind := "prometheus"
 		workerText := ""
 		if matches[2] != "" {
 			kind, workerText = "requests_jsonl", matches[2]
 		} else if matches[3] != "" {
 			kind, workerText = "timestamps", matches[3]
+		} else if entry.Name() == "run-manifest.json" {
+			kind = "run_manifest"
 		}
 		var worker *int
 		if workerText != "" {
 			value, _ := strconv.Atoi(workerText)
 			worker = &value
 		}
-		artifacts = append(artifacts, artifactMetadata{Name: entry.Name(), Kind: kind, Worker: worker, SizeBytes: info.Size(), SHA256: hex.EncodeToString(hash.Sum(nil)), ModifiedAt: info.ModTime().UTC()})
+		artifacts = append(artifacts, artifactMetadata{Name: entry.Name(), Kind: kind, Worker: worker, SizeBytes: copied, SHA256: hex.EncodeToString(hash.Sum(nil)), ModifiedAt: info.ModTime().UTC()})
 	}
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Name < artifacts[j].Name })
 	return artifacts, nil
 }
 
-func (s *Server) getBenchmarkReport(ctx context.Context, id string) (*benchmarkReport, error) {
-	job, err := s.getManagedJob(ctx, id)
-	if err != nil {
-		return nil, friendlyKubeError(err)
-	}
-	run := runFromJob(job)
-	artifacts, err := s.listArtifacts(run)
+func readBoundedDirectory(dir string, limit int) ([]os.DirEntry, error) {
+	directory, err := os.Open(dir)
 	if err != nil {
 		return nil, err
 	}
-	image := ""
-	if len(job.Spec.Template.Spec.Containers) > 0 {
-		image = job.Spec.Template.Spec.Containers[0].Image
+	entries, readErr := directory.ReadDir(limit + 1)
+	closeErr := directory.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if len(entries) > limit {
+		return nil, fmt.Errorf("artifact directory exceeds the bounded entry limit")
+	}
+	return entries, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
+}
+
+func (s *Server) getBenchmarkReport(ctx context.Context, id string) (*benchmarkReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.options.ArtifactProcessTimeout)
+	defer cancel()
+	job, err := s.getManagedJob(ctx, id)
+	var run Run
+	var target, resultLabel, workstream, image string
+	var effectiveScenarioJSON json.RawMessage
+	if apierrors.IsNotFound(err) {
+		manifest, manifestErr := s.loadRunManifest(id)
+		if manifestErr != nil {
+			if !errors.Is(manifestErr, os.ErrNotExist) {
+				return nil, manifestErr
+			}
+			return nil, friendlyKubeError(err)
+		}
+		run = runFromManifest(manifest, "archived")
+		target, resultLabel, workstream, image = manifest.Target.Name, manifest.ResultLabel, manifest.VDPWorkstream, manifest.Image
+		effectiveScenarioJSON = manifest.EffectiveScenario
+	} else if err != nil {
+		return nil, friendlyKubeError(err)
+	} else {
+		run = runFromJob(job)
+		target, resultLabel, workstream = job.Annotations[targetAnnotation], job.Annotations[resultLabelAnnotation], job.Annotations[workstreamAnnotation]
+		if len(job.Spec.Template.Spec.Containers) > 0 {
+			image = job.Spec.Template.Spec.Containers[0].Image
+		}
+		if value := job.Annotations[scenarioAnnotation]; json.Valid([]byte(value)) {
+			effectiveScenarioJSON = json.RawMessage(value)
+		}
+	}
+	artifacts, err := s.listArtifacts(ctx, run)
+	if err != nil {
+		return nil, err
 	}
 	reportRun := run
 	reportRun.Command = nil
-	report := &benchmarkReport{SchemaVersion: "nyann-bench-report-v1", Run: reportRun, Target: job.Annotations[targetAnnotation], ResultLabel: job.Annotations[resultLabelAnnotation], VDPWorkstream: job.Annotations[workstreamAnnotation], Image: image, Artifacts: artifacts, Warnings: []string{}}
-	if value := job.Annotations[scenarioAnnotation]; json.Valid([]byte(value)) {
-		report.EffectiveScenario = json.RawMessage(value)
-	}
+	report := &benchmarkReport{SchemaVersion: "nyann-bench-report-v1", Run: reportRun, Target: target, ResultLabel: resultLabel, VDPWorkstream: workstream, Image: image, EffectiveScenario: effectiveScenarioJSON, Artifacts: artifacts, Warnings: []string{}}
 	requestWorkers := map[int]bool{}
 	timestampWorkers := map[int]bool{}
 	for _, artifact := range artifacts {
@@ -609,24 +989,18 @@ func (s *Server) getBenchmarkReport(ctx context.Context, id string) (*benchmarkR
 		return nil, err
 	}
 	if len(requestWorkers) > 0 {
-		records, loadErr := analysis.LoadRecords(dir)
-		start, end, timeErr := analysis.LoadTimestamps(dir)
-		if loadErr == nil {
-			if timeErr == nil {
-				report.MeasurementWindow = &measurementWindow{StartUnixSeconds: start, EndUnixSeconds: end}
-				report.Summary = analysis.Compute(records, start, end)
-				if duration := end - start; duration > 0 {
-					report.Summary.TotalDurationS = duration
-					report.Summary.RequestsPerSec = float64(report.Summary.SuccessRequests) / duration
-					report.Summary.OutputTokensPerS = float64(report.Summary.TotalOutputTokens) / duration
-				}
-			} else {
-				report.Summary = analysis.Compute(records, 0, 0)
-				report.Warnings = append(report.Warnings, "exact measurement window is unavailable: "+timeErr.Error())
-			}
+		start, end, timeErr := s.loadMeasurementWindow(ctx, dir, artifacts)
+		if timeErr == nil {
+			report.MeasurementWindow = &measurementWindow{StartUnixSeconds: start, EndUnixSeconds: end}
 		} else {
-			report.Warnings = append(report.Warnings, "request artifacts are incomplete: "+loadErr.Error())
+			report.Warnings = append(report.Warnings, "exact measurement window is unavailable: "+timeErr.Error())
 		}
+		summary, aggregateWarnings, aggregateErr := s.aggregateRequestArtifacts(ctx, dir, artifacts, start, end, timeErr == nil)
+		if aggregateErr != nil {
+			return nil, aggregateErr
+		}
+		report.Summary = summary
+		report.Warnings = append(report.Warnings, aggregateWarnings...)
 	} else {
 		report.Warnings = append(report.Warnings, "no request artifacts are available yet")
 	}
@@ -634,6 +1008,200 @@ func (s *Server) getBenchmarkReport(ctx context.Context, id string) (*benchmarkR
 		report.Warnings = append(report.Warnings, "one or more Indexed Job partitions are incomplete")
 	}
 	return report, nil
+}
+
+func (s *Server) loadMeasurementWindow(ctx context.Context, dir string, artifacts []artifactMetadata) (float64, float64, error) {
+	first := true
+	var start, end float64
+	for _, artifact := range artifacts {
+		if artifact.Kind != "timestamps" {
+			continue
+		}
+		if artifact.SizeBytes > int64(s.options.MaxRecordBytes) {
+			return 0, 0, fmt.Errorf("timestamp artifact %s exceeds the record-size limit", artifact.Name)
+		}
+		file, err := os.Open(filepath.Join(dir, artifact.Name))
+		if err != nil {
+			return 0, 0, err
+		}
+		var timestamps recorder.Timestamps
+		dec := json.NewDecoder(io.LimitReader(&contextReader{ctx: ctx, reader: file}, int64(s.options.MaxRecordBytes)+1))
+		decodeErr := dec.Decode(&timestamps)
+		closeErr := file.Close()
+		if decodeErr != nil || closeErr != nil {
+			return 0, 0, fmt.Errorf("reading timestamp artifact %s", artifact.Name)
+		}
+		if first {
+			start, end, first = timestamps.RampupEndTime, timestamps.EndTime, false
+		} else {
+			if timestamps.RampupEndTime > start {
+				start = timestamps.RampupEndTime
+			}
+			if timestamps.EndTime < end {
+				end = timestamps.EndTime
+			}
+		}
+	}
+	if first || start <= 0 || end <= start {
+		return 0, 0, fmt.Errorf("no valid common worker measurement window")
+	}
+	return start, end, nil
+}
+
+func (s *Server) aggregateRequestArtifacts(ctx context.Context, dir string, artifacts []artifactMetadata, start, end float64, useWindow bool) (*analysis.Summary, []string, error) {
+	ttft := newBoundedSample(s.options.MaxLatencySamples)
+	itl := newBoundedSample(s.options.MaxLatencySamples)
+	e2e := newBoundedSample(s.options.MaxLatencySamples)
+	// Store fixed-size identifiers so even a maximum-size JSONL string cannot
+	// multiply the configured conversation-map memory bound.
+	conversations := make(map[[sha256.Size]byte]int, s.options.MaxLatencySamples)
+	conversationOverflow := false
+	summary := &analysis.Summary{}
+	firstRecord := true
+	var minTime, maxTime float64
+	var recordsSeen int64
+	for _, artifact := range artifacts {
+		if artifact.Kind != "requests_jsonl" {
+			continue
+		}
+		file, err := os.Open(filepath.Join(dir, artifact.Name))
+		if err != nil {
+			return nil, nil, err
+		}
+		scanner := bufio.NewScanner(&contextReader{ctx: ctx, reader: file})
+		scanner.Buffer(make([]byte, 64<<10), s.options.MaxRecordBytes)
+		for scanner.Scan() {
+			recordsSeen++
+			if recordsSeen > s.options.MaxReportRecords {
+				_ = file.Close()
+				return nil, nil, fmt.Errorf("report exceeds the configured %d-record aggregation limit", s.options.MaxReportRecords)
+			}
+			var record recorder.Record
+			if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+				_ = file.Close()
+				return nil, nil, fmt.Errorf("decoding %s record %d: %w", artifact.Name, recordsSeen, err)
+			}
+			if useWindow && (record.StartTime < start || record.EndTime > end) {
+				continue
+			}
+			summary.TotalRequests++
+			if record.Status == "ok" {
+				summary.SuccessRequests++
+				summary.TotalOutputTokens += record.OutputTokens
+				summary.TotalPromptTokens += record.PromptTokens
+				ttft.Add(record.TTFT)
+				e2e.Add(record.TotalLatencyMs)
+				for _, value := range record.ITLs {
+					itl.Add(value)
+				}
+			} else {
+				summary.ErrorRequests++
+			}
+			if record.EvalCorrect != nil {
+				summary.EvalTotal++
+				if *record.EvalCorrect {
+					summary.EvalCorrect++
+				} else {
+					summary.EvalIncorrect++
+				}
+			}
+			conversationID := sha256.Sum256([]byte(record.ConversationID))
+			if count, ok := conversations[conversationID]; ok {
+				conversations[conversationID] = count + 1
+			} else if len(conversations) < s.options.MaxLatencySamples {
+				conversations[conversationID] = 1
+			} else {
+				conversationOverflow = true
+			}
+			if firstRecord {
+				minTime, maxTime, firstRecord = record.StartTime, record.EndTime, false
+			} else {
+				if record.StartTime < minTime {
+					minTime = record.StartTime
+				}
+				if record.EndTime > maxTime {
+					maxTime = record.EndTime
+				}
+			}
+		}
+		scanErr := scanner.Err()
+		closeErr := file.Close()
+		if scanErr != nil {
+			return nil, nil, fmt.Errorf("scanning %s: %w", artifact.Name, scanErr)
+		}
+		if closeErr != nil {
+			return nil, nil, closeErr
+		}
+	}
+	if useWindow {
+		summary.TotalDurationS = end - start
+	} else if !firstRecord {
+		summary.TotalDurationS = maxTime - minTime
+	}
+	if summary.TotalDurationS > 0 {
+		summary.RequestsPerSec = float64(summary.SuccessRequests) / summary.TotalDurationS
+		summary.OutputTokensPerS = float64(summary.TotalOutputTokens) / summary.TotalDurationS
+	}
+	if summary.EvalTotal > 0 {
+		summary.EvalAccuracy = float64(summary.EvalCorrect) / float64(summary.EvalTotal)
+	}
+	summary.TTFTMs, summary.ITLMs, summary.E2EMs = ttft.Stats(), itl.Stats(), e2e.Stats()
+	summary.Conversations = len(conversations)
+	turns := newBoundedSample(s.options.MaxLatencySamples)
+	for _, count := range conversations {
+		turns.Add(float64(count))
+	}
+	summary.TurnsPerConv = turns.Stats()
+	warnings := []string{}
+	if ttft.Sampled() || itl.Sampled() || e2e.Sampled() {
+		warnings = append(warnings, fmt.Sprintf("latency statistics use a deterministic bounded sample of at most %d values", s.options.MaxLatencySamples))
+	}
+	if conversationOverflow {
+		warnings = append(warnings, fmt.Sprintf("conversation statistics are bounded to %d distinct IDs", s.options.MaxLatencySamples))
+	}
+	return summary, warnings, nil
+}
+
+type boundedSample struct {
+	values []float64
+	seen   uint64
+	limit  uint64
+}
+
+func newBoundedSample(limit int) *boundedSample {
+	return &boundedSample{values: make([]float64, 0, limit), limit: uint64(limit)}
+}
+
+func (s *boundedSample) Add(value float64) {
+	s.seen++
+	if uint64(len(s.values)) < s.limit {
+		s.values = append(s.values, value)
+		return
+	}
+	// Deterministic reservoir sampling keeps restart reports reproducible.
+	hash := s.seen + 0x9e3779b97f4a7c15
+	hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9
+	hash = (hash ^ (hash >> 27)) * 0x94d049bb133111eb
+	hash ^= hash >> 31
+	index := hash % s.seen
+	if index < s.limit {
+		s.values[index] = value
+	}
+}
+
+func (s *boundedSample) Sampled() bool { return s.seen > s.limit }
+
+func (s *boundedSample) Stats() analysis.LatencyStats {
+	if len(s.values) == 0 {
+		return analysis.LatencyStats{}
+	}
+	values := append([]float64(nil), s.values...)
+	sort.Float64s(values)
+	sum := 0.0
+	for _, value := range values {
+		sum += value
+	}
+	return analysis.LatencyStats{Mean: sum / float64(len(values)), P10: statsutil.Percentile(values, 0.10), P50: statsutil.Percentile(values, 0.50), P90: statsutil.Percentile(values, 0.90), P95: statsutil.Percentile(values, 0.95), P99: statsutil.Percentile(values, 0.99), Min: values[0], Max: values[len(values)-1]}
 }
 
 func (s *Server) safeResultDirectory(results ResultMetadata) (string, error) {
@@ -693,6 +1261,21 @@ func benchmarkDetails(job *batchv1.Job) map[string]any {
 	return details
 }
 
+func benchmarkDetailsFromManifest(manifest durableRunManifest) map[string]any {
+	details := map[string]any{
+		"run":                runFromManifest(manifest, "archived"),
+		"target":             manifest.Target.Name,
+		"result_label":       manifest.ResultLabel,
+		"platform":           manifest.Resources.Platform,
+		"effective_scenario": manifest.EffectiveScenario,
+		"image":              manifest.Image,
+	}
+	if manifest.VDPWorkstream != "" {
+		details["vdp_workstream"] = manifest.VDPWorkstream
+	}
+	return details
+}
+
 func decodeBenchmarkRef(raw json.RawMessage) (benchmarkRef, error) {
 	var ref benchmarkRef
 	if err := decodeStrict(raw, &ref); err != nil {
@@ -729,11 +1312,26 @@ func validateScenarioBounds(sc *config.ScenarioConfig) error {
 	if sc.Workload.ISL < 0 || sc.Workload.ISL > 1048576 || sc.Workload.OSL < 0 || sc.Workload.OSL > 1048576 || sc.Workload.Turns < 1 || sc.Workload.Turns > 1024 {
 		return fmt.Errorf("workload token or turn settings exceed service bounds")
 	}
+	if sc.Workload.SubsequentISL != nil && (*sc.Workload.SubsequentISL < 0 || *sc.Workload.SubsequentISL > 1048576) {
+		return fmt.Errorf("workload subsequent_isl exceeds service bounds")
+	}
+	if sc.Workload.NumFewShot != nil && (*sc.Workload.NumFewShot < 0 || *sc.Workload.NumFewShot > 128) {
+		return fmt.Errorf("workload num_fewshot exceeds service bounds")
+	}
+	if math.IsNaN(sc.Workload.CharsPerToken) || math.IsInf(sc.Workload.CharsPerToken, 0) || sc.Workload.CharsPerToken < 0 || sc.Workload.CharsPerToken > 100 {
+		return fmt.Errorf("workload chars_per_token exceeds service bounds")
+	}
+	if len(sc.Workload.Name) > 128 || len(sc.Workload.CorpusPath) > 4096 || len(sc.Workload.GSM8KPath) > 4096 || len(sc.Workload.GSM8KTrainPath) > 4096 || len(sc.Workload.GPQAPath) > 4096 {
+		return fmt.Errorf("workload string field exceeds service bounds")
+	}
 	if sc.Workload.CacheSalt != nil && sc.Workload.CacheSalt.Mode != "random" && sc.Workload.CacheSalt.Mode != "fixed" {
 		return fmt.Errorf("cache_salt.mode must be random or fixed")
 	}
 	if sc.Workload.CacheSalt != nil && sc.Workload.CacheSalt.Mode == "fixed" && sc.Workload.CacheSalt.Value == "" {
 		return fmt.Errorf("fixed cache_salt requires a value")
+	}
+	if sc.Workload.CacheSalt != nil && len(sc.Workload.CacheSalt.Value) > 4096 {
+		return fmt.Errorf("cache_salt.value exceeds service bounds")
 	}
 	for i, stage := range sc.Stages {
 		if stage.Barrier {
@@ -743,7 +1341,7 @@ func validateScenarioBounds(sc *config.ScenarioConfig) error {
 			return fmt.Errorf("stage %d duration must be positive and at most 24h", i)
 		}
 		total += stage.Duration
-		if stage.Concurrency < 0 || stage.Concurrency > 65536 || stage.Rate < 0 || stage.Rate > 1000000 || stage.MaxInFlight < 0 || stage.MaxInFlight > 65536 || stage.MaxRequests < 0 || stage.MaxRequests > 1000000000 {
+		if stage.Concurrency < 0 || stage.Concurrency > 65536 || stage.ConversationPoolSize < 0 || stage.ConversationPoolSize > 1000000 || stage.Rate < 0 || stage.Rate > 1000000 || stage.MaxInFlight < 0 || stage.MaxInFlight > 65536 || stage.MaxRequests < 0 || stage.MaxRequests > 1000000000 {
 			return fmt.Errorf("stage %d load exceeds service bounds", i)
 		}
 		if (stage.Mode == "constant" || stage.Mode == "poisson") && stage.Rate <= 0 {
@@ -986,7 +1584,7 @@ func (s *Server) mcpTools() []map[string]any {
 	cancel := map[string]bool{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
 	benchmarkSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target", "scenario", "result_label"}, "properties": map[string]any{"run_id": boundedString(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, 63), "target": map[string]any{"type": "string", "enum": s.targetNames()}, "scenario": map[string]any{"type": "object", "additionalProperties": false, "required": []string{}, "maxProperties": 5, "properties": scenarioProperties()}, "workers": map[string]any{"type": "integer", "minimum": 1, "maximum": s.options.MaxWorkers}, "cpu": boundedString(`^[0-9]+(?:m|(?:\.[0-9]+)?)?$`, 16), "memory": boundedString(`^[0-9]+(?:Ki|Mi|Gi|Ti)?$`, 16), "platform": map[string]any{"type": "string", "enum": s.options.allowedPlatforms()}, "architecture": map[string]any{"type": "string", "enum": []string{"amd64", "arm64"}}, "deadline_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": int64(s.options.MaxActiveDeadline / time.Second)}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "vdp_workstream": boundedString(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, 128)}}
 	refSchema := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"run_id"}, "properties": map[string]any{"run_id": boundedString(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, 63)}}
-	listSchema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed"}}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
+	listSchema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed", "archived"}}, "result_label": boundedString(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`, 63), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}}
 	tools := []map[string]any{
 		toolDefinition("plan_benchmark", "Validate and render a benchmark without cluster mutation.", benchmarkSchema, readOnly),
 		toolDefinition("submit_benchmark", "Submit a previously plannable CPU Indexed Job using an operator-owned logical target.", benchmarkSchema, submit),

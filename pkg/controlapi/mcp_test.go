@@ -10,21 +10,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 const mcpScenario = `{"load":{"mode":"concurrent","concurrency":10,"duration":"10s"},"workload":{"type":"faker","isl":128,"osl":64,"turns":1}}`
 
 func TestMCPPlanUsesLogicalTargetAndCLIParityWithoutMutation(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	server := NewServer(client, "test", mcpTestOptions(root))
 	input := map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 3, "cpu": "2", "memory": "1Gi", "result_label": "smoke", "vdp_workstream": "env/kimi-bringup"}
-	plan, err := server.planBenchmark(decodeInput(t, input))
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, input))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +44,19 @@ func TestMCPPlanUsesLogicalTargetAndCLIParityWithoutMutation(t *testing.T) {
 	if plan.job.Spec.CompletionMode == nil || *plan.job.Spec.CompletionMode != batchv1.IndexedCompletion || plan.job.Spec.Template.Spec.AutomountServiceAccountToken == nil || *plan.job.Spec.Template.Spec.AutomountServiceAccountToken {
 		t.Fatalf("rendered job lost Indexed/CPU safety: %+v", plan.job.Spec)
 	}
-	if len(client.Actions()) != 0 {
-		t.Fatalf("plan mutated Kubernetes: %+v", client.Actions())
+	if len(client.Actions()) != 2 {
+		t.Fatalf("plan did not perform Service and Job dry-runs: %+v", client.Actions())
+	}
+	for _, action := range client.Actions() {
+		create, ok := action.(interface{ GetCreateOptions() metav1.CreateOptions })
+		if !ok || fmt.Sprint(create.GetCreateOptions().DryRun) != "[All]" {
+			t.Fatalf("plan action was not server-side dry-run: %+v", action)
+		}
+	}
+	services, _ := client.CoreV1().Services("test").List(context.Background(), metav1.ListOptions{})
+	jobs, _ := client.BatchV1().Jobs("test").List(context.Background(), metav1.ListOptions{})
+	if len(services.Items) != 0 || len(jobs.Items) != 0 {
+		t.Fatalf("dry-run persisted resources: services=%d jobs=%d", len(services.Items), len(jobs.Items))
 	}
 	payload, _ := json.Marshal(plan)
 	if bytes.Contains(payload, []byte("http://kimi-k3-api")) {
@@ -51,11 +66,11 @@ func TestMCPPlanUsesLogicalTargetAndCLIParityWithoutMutation(t *testing.T) {
 
 func TestMCPSubmitIsIdempotentAndRestartRecoverable(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	options := mcpTestOptions(root)
 	server := NewServer(client, "test", options)
 	input := decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 2, "result_label": "sustained", "vdp_workstream": "ws-17"})
-	plan, err := server.planBenchmark(input)
+	plan, err := server.planBenchmark(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +78,7 @@ func TestMCPSubmitIsIdempotentAndRestartRecoverable(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first submit: run=%+v created=%v err=%v", run, created, err)
 	}
-	secondPlan, err := server.planBenchmark(input)
+	secondPlan, err := server.planBenchmark(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +100,10 @@ func TestMCPSubmitIsIdempotentAndRestartRecoverable(t *testing.T) {
 
 func TestMCPReportAggregatesWorkersAndReportsPartialFailure(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	options := mcpTestOptions(root)
 	server := NewServer(client, "test", options)
-	plan, err := server.planBenchmark(decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 3, "result_label": "partial"}))
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 3, "result_label": "partial"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +150,7 @@ func TestMCPReportAggregatesWorkersAndReportsPartialFailure(t *testing.T) {
 
 func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	handler := NewServer(client, "test", mcpTestOptions(root)).Handler()
 	discover := mcpRequest(t, handler, "server/discover", map[string]any{})
 	if discover.Code != http.StatusOK || !strings.Contains(discover.Body.String(), `"supportedVersions":["2026-07-28"]`) || !strings.Contains(discover.Body.String(), `"resultType":"complete"`) || !strings.Contains(discover.Body.String(), `"io.modelcontextprotocol/serverInfo"`) {
@@ -192,22 +207,22 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 
 func TestMCPValidationRejectsPathsTargetsAndReplacement(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	server := NewServer(client, "test", mcpTestOptions(root))
 	badPath := strings.Replace(mcpScenario, `"type":"faker"`, `"type":"gsm8k","gsm8k_path":"/etc/passwd"`, 1)
-	if _, err := server.planBenchmark(decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(badPath), "result_label": "bad-path"})); err == nil || !strings.Contains(err.Error(), "dataset root") {
+	if _, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(badPath), "result_label": "bad-path"})); err == nil || !strings.Contains(err.Error(), "dataset root") {
 		t.Fatalf("unsafe dataset path error = %v", err)
 	}
-	if _, err := server.planBenchmark(decodeInput(t, map[string]any{"target": "http://attacker", "scenario": json.RawMessage(mcpScenario), "result_label": "bad-target"})); err == nil || !strings.Contains(err.Error(), "logical") {
+	if _, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "http://attacker", "scenario": json.RawMessage(mcpScenario), "result_label": "bad-target"})); err == nil || !strings.Contains(err.Error(), "logical") {
 		t.Fatalf("arbitrary URL target error = %v", err)
 	}
 	first := decodeInput(t, map[string]any{"run_id": "named", "target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "one"})
-	plan, _ := server.planBenchmark(first)
+	plan, _ := server.planBenchmark(context.Background(), first)
 	if _, _, err := server.submitBenchmark(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
 	secondScenario := strings.Replace(mcpScenario, `"concurrency":10`, `"concurrency":11`, 1)
-	second, _ := server.planBenchmark(decodeInput(t, map[string]any{"run_id": "named", "target": "kimi-k3", "scenario": json.RawMessage(secondScenario), "result_label": "two"}))
+	second, _ := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"run_id": "named", "target": "kimi-k3", "scenario": json.RawMessage(secondScenario), "result_label": "two"}))
 	if _, _, err := server.submitBenchmark(context.Background(), second); err == nil || !strings.Contains(err.Error(), "different validated specification") {
 		t.Fatalf("named replacement was not rejected: %v", err)
 	}
@@ -215,9 +230,9 @@ func TestMCPValidationRejectsPathsTargetsAndReplacement(t *testing.T) {
 
 func TestMCPCancelIsIdempotentAndCleansResources(t *testing.T) {
 	root := t.TempDir()
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	server := NewServer(client, "test", mcpTestOptions(root))
-	plan, err := server.planBenchmark(decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "cancel"}))
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "cancel"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +256,7 @@ func TestMCPListResponseIsBounded(t *testing.T) {
 	for i := range jobs {
 		jobs[i] = &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("large-%02d", i), Namespace: "test", Labels: map[string]string{managedLabel: "true"}, Annotations: map[string]string{createdAnnotation: "2026-08-17T00:00:00Z", resultsAnnotation: string(largeResults)}}}
 	}
-	client := fake.NewSimpleClientset()
+	client := newMCPClient()
 	for _, job := range jobs {
 		if _, err := client.BatchV1().Jobs("test").Create(context.Background(), job, metav1.CreateOptions{}); err != nil {
 			t.Fatal(err)
@@ -254,6 +269,252 @@ func TestMCPListResponseIsBounded(t *testing.T) {
 	}
 }
 
+func TestConcurrentIdenticalSubmissionsPreserveWinningService(t *testing.T) {
+	root := t.TempDir()
+	client := newMCPClient()
+	server := NewServer(client, "test", mcpTestOptions(root))
+	const callers = 12
+	plans := make([]*plannedBenchmark, callers)
+	for i := range plans {
+		plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "concurrent"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans[i] = plan
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, callers)
+	created := make(chan bool, callers)
+	for _, plan := range plans {
+		wg.Add(1)
+		go func(plan *plannedBenchmark) {
+			defer wg.Done()
+			_, wasCreated, err := server.submitBenchmark(context.Background(), plan)
+			created <- wasCreated
+			results <- err
+		}(plan)
+	}
+	wg.Wait()
+	close(results)
+	close(created)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("concurrent submit failed: %v", err)
+		}
+	}
+	createdCount := 0
+	for value := range created {
+		if value {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created count = %d, want 1", createdCount)
+	}
+	id := plans[0].RunID
+	if _, err := client.BatchV1().Jobs("test").Get(context.Background(), id, metav1.GetOptions{}); err != nil {
+		t.Fatalf("winning Job missing: %v", err)
+	}
+	if _, err := client.CoreV1().Services("test").Get(context.Background(), id, metav1.GetOptions{}); err != nil {
+		t.Fatalf("winning Service was deleted: %v", err)
+	}
+}
+
+func TestFailedJobCreateRetainsServiceForSafeRetry(t *testing.T) {
+	client := newMCPClient()
+	failCreate := true
+	client.PrependReactor("create", "jobs", func(action ktesting.Action) (bool, runtime.Object, error) {
+		create, ok := action.(interface{ GetCreateOptions() metav1.CreateOptions })
+		if !ok || len(create.GetCreateOptions().DryRun) > 0 || !failCreate {
+			return false, nil, nil
+		}
+		failCreate = false
+		return true, nil, fmt.Errorf("transient create failure")
+	})
+	server := NewServer(client, "test", mcpTestOptions(t.TempDir()))
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "safe-retry"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := server.submitBenchmark(context.Background(), plan); err == nil {
+		t.Fatal("first submit unexpectedly succeeded")
+	}
+	if _, err := client.CoreV1().Services("test").Get(context.Background(), plan.RunID, metav1.GetOptions{}); err != nil {
+		t.Fatalf("failed create removed reusable Service: %v", err)
+	}
+	if _, created, err := server.submitBenchmark(context.Background(), plan); err != nil || !created {
+		t.Fatalf("retry created=%v err=%v", created, err)
+	}
+}
+
+func TestServiceOwnerAndFingerprintSafeCancellation(t *testing.T) {
+	root := t.TempDir()
+	client := newMCPClient()
+	server := NewServer(client, "test", mcpTestOptions(root))
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "owner"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := server.submitBenchmark(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := client.BatchV1().Jobs("test").Get(context.Background(), run.ID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.UID = types.UID("job-uid")
+	if _, err := client.BatchV1().Jobs("test").Update(context.Background(), job, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.attachServiceOwner(context.Background(), run.ID, job, plan.fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	service, err := client.CoreV1().Services("test").Get(context.Background(), run.ID, metav1.GetOptions{})
+	if err != nil || len(service.OwnerReferences) != 1 || service.OwnerReferences[0].UID != job.UID {
+		t.Fatalf("Service owner reference = %+v, err=%v", service.OwnerReferences, err)
+	}
+	service.Annotations[requestAnnotation] = "replacement-owner"
+	if _, err := client.CoreV1().Services("test").Update(context.Background(), service, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.cancelBenchmarkMCP(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CoreV1().Services("test").Get(context.Background(), run.ID, metav1.GetOptions{}); err != nil {
+		t.Fatalf("cancellation deleted a Service with changed ownership: %v", err)
+	}
+}
+
+func TestDurableManifestSurvivesJobTTLAndPreventsStaleRerun(t *testing.T) {
+	root := t.TempDir()
+	client := newMCPClient()
+	options := mcpTestOptions(root)
+	server := NewServer(client, "test", options)
+	input := decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 1, "result_label": "durable"})
+	plan, err := server.planBenchmark(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := server.submitBenchmark(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, filepath.Join(run.Results.Path, "requests_0.jsonl"), `{"id":"0","conv_id":"a","t0":100.1,"tend":100.5,"prompt_tokens":10,"output_tokens":5,"latency_ms":400,"status":"ok"}`+"\n")
+	writeFixture(t, filepath.Join(run.Results.Path, "timestamps_0.json"), `{"start_time":100,"rampup_end_time":100,"end_time":101}`)
+	if err := client.BatchV1().Jobs("test").Delete(context.Background(), run.ID, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.CoreV1().Services("test").Delete(context.Background(), run.ID, metav1.DeleteOptions{})
+	restarted := NewServer(client, "test", options)
+	report, err := restarted.getBenchmarkReport(context.Background(), run.ID)
+	if err != nil || report.Run.Status != "archived" || report.Summary == nil || report.Summary.TotalRequests != 1 {
+		t.Fatalf("archived report = %+v, err=%v", report, err)
+	}
+	details, err := restarted.callMCPTool(context.Background(), "get_benchmark", mustJSON(t, benchmarkRef{RunID: run.ID}))
+	if err != nil || details.(map[string]any)["target"] != "kimi-k3" {
+		t.Fatalf("archived details = %+v, err=%v", details, err)
+	}
+	secondPlan, err := restarted.planBenchmark(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, created, err := restarted.submitBenchmark(context.Background(), secondPlan)
+	if err != nil || created || archived.Status != "archived" {
+		t.Fatalf("stale rerun result = %+v created=%v err=%v", archived, created, err)
+	}
+	if _, err := client.BatchV1().Jobs("test").Get(context.Background(), run.ID, metav1.GetOptions{}); err == nil {
+		t.Fatal("archived run was resubmitted over stale artifacts")
+	}
+}
+
+func TestMCPServerEnforcesAllAdvertisedScenarioBounds(t *testing.T) {
+	server := NewServer(newMCPClient(), "test", mcpTestOptions(t.TempDir()))
+	tests := []struct {
+		name     string
+		scenario string
+		want     string
+	}{
+		{"subsequent ISL", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","turns":1,"subsequent_isl":1048577}}`, "subsequent_isl"},
+		{"conversation pool", `{"load":{"mode":"conversation_pool","concurrency":1,"conversation_pool_size":1000001,"duration":"1s"},"workload":{"type":"faker","turns":1}}`, "load exceeds"},
+		{"few shot", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","turns":1,"num_fewshot":129}}`, "num_fewshot"},
+		{"chars per token", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","turns":1,"chars_per_token":101}}`, "chars_per_token"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(test.scenario), "result_label": "bounds"}))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestMCPPlanFailsClosedOnAdmissionDryRun(t *testing.T) {
+	client := newMCPClient()
+	client.PrependReactor("create", "jobs", func(action ktesting.Action) (bool, runtime.Object, error) {
+		create, ok := action.(interface{ GetCreateOptions() metav1.CreateOptions })
+		if ok && len(create.GetCreateOptions().DryRun) > 0 {
+			return true, nil, fmt.Errorf("admission denied")
+		}
+		return false, nil, nil
+	})
+	server := NewServer(client, "test", mcpTestOptions(t.TempDir()))
+	_, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "denied"}))
+	if err == nil || !strings.Contains(err.Error(), "server-side dry-run rejected Job") {
+		t.Fatalf("dry-run admission error = %v", err)
+	}
+	jobs, _ := client.BatchV1().Jobs("test").List(context.Background(), metav1.ListOptions{})
+	services, _ := client.CoreV1().Services("test").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 0 || len(services.Items) != 0 {
+		t.Fatal("failed dry-run persisted resources")
+	}
+}
+
+func TestArtifactAndReportProcessingLimits(t *testing.T) {
+	root := t.TempDir()
+	client := newMCPClient()
+	options := mcpTestOptions(root)
+	server := NewServer(client, "test", options)
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "limits"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := server.submitBenchmark(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, filepath.Join(run.Results.Path, "requests_0.jsonl"), `{"id":"0","t0":1,"tend":2,"status":"ok"}`+"\n"+`{"id":"1","t0":2,"tend":3,"status":"ok"}`+"\n")
+	writeFixture(t, filepath.Join(run.Results.Path, "timestamps_0.json"), `{"rampup_end_time":1,"end_time":4}`)
+	byteLimited := options
+	byteLimited.MaxArtifactBytes = 1
+	if _, err := NewServer(client, "test", byteLimited).getBenchmarkReport(context.Background(), run.ID); err == nil || !strings.Contains(err.Error(), "artifact bytes exceed") {
+		t.Fatalf("artifact byte limit error = %v", err)
+	}
+	recordLimited := options
+	recordLimited.MaxReportRecords = 1
+	if _, err := NewServer(client, "test", recordLimited).getBenchmarkReport(context.Background(), run.ID); err == nil || !strings.Contains(err.Error(), "record aggregation limit") {
+		t.Fatalf("record count limit error = %v", err)
+	}
+	entryLimited := options
+	entryLimited.MaxArtifactFiles = 2
+	if _, err := NewServer(client, "test", entryLimited).getBenchmarkReport(context.Background(), run.ID); err == nil || !strings.Contains(err.Error(), "bounded entry limit") {
+		t.Fatalf("artifact entry limit error = %v", err)
+	}
+}
+
+func TestLegacyRESTIsDisabledByDefaultAndUnderscoreLabelsAreNormalized(t *testing.T) {
+	server := NewServer(newMCPClient(), "test", mcpTestOptions(t.TempDir()))
+	response := request(t, server.Handler(), http.MethodPost, "/v1/runs", `{"command":["generate","--target","http://model/v1"]}`)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("legacy REST status = %d, want 404", response.Code)
+	}
+	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "smoke_test"}))
+	if err != nil || strings.Contains(plan.RunID, "_") {
+		t.Fatalf("underscore result label plan = %+v, err=%v", plan, err)
+	}
+}
+
 func mcpTestOptions(root string) Options {
 	options := testOptions()
 	options.InferenceTargets = map[string]InferenceTarget{"kimi-k3": {URL: "http://model/v1", Model: "mgoin/Kimi-K3-pruned75"}}
@@ -262,7 +523,23 @@ func mcpTestOptions(root string) Options {
 	options.DatasetPVC = "benchmark-datasets"
 	options.DatasetRoot = filepath.Join(root, "datasets")
 	options.AllowedPlatforms = []string{"kubernetes", "openshift"}
+	options.EnableLegacyREST = false
 	return options
+}
+
+func newMCPClient(objects ...runtime.Object) *fake.Clientset {
+	client := fake.NewSimpleClientset(objects...)
+	client.PrependReactor("create", "*", func(action ktesting.Action) (bool, runtime.Object, error) {
+		create, ok := action.(interface {
+			ktesting.CreateAction
+			GetCreateOptions() metav1.CreateOptions
+		})
+		if !ok || len(create.GetCreateOptions().DryRun) == 0 {
+			return false, nil, nil
+		}
+		return true, create.GetObject().DeepCopyObject(), nil
+	})
+	return client
 }
 
 func decodeInput(t *testing.T, value any) benchmarkInput {
@@ -276,6 +553,15 @@ func decodeInput(t *testing.T, value any) benchmarkInput {
 		t.Fatal(err)
 	}
 	return input
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func writeFixture(t *testing.T, name, value string) {

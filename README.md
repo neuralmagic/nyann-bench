@@ -268,6 +268,10 @@ and any Kueue admission.
 
 Create a native generate run against a vLLM or llm-d inference service:
 
+The command-vector REST API is disabled by default. A trusted-operator-only
+deployment must explicitly add `-enable-legacy-rest`; do not expose that
+deployment to agent clients.
+
 ```bash
 curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
   -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
@@ -299,8 +303,10 @@ per-stage target overrides. The API also rejects Prometheus and auxiliary URL
 overrides. It owns `--workers`, `--worker-id`, `--metrics`,
 `--output-dir`, and all `--kube*` flags. Durable runs report a `pvc://` URI and
 write nyann-bench's existing `requests_N.jsonl` and `timestamps_N.json` files.
-The API mounts the result PVC read-only so reports and immutable artifact
-hashes can be reconstructed after a controller restart.
+The API writes an immutable run manifest and bounded run index to the result
+PVC, then reads benchmark artifacts from the same volume. This provenance
+survives Kubernetes Job TTL cleanup and prevents an old result directory from
+being silently reused by a new run.
 
 An eval uses the same endpoint and the native eval command:
 
@@ -345,12 +351,14 @@ MCP requests choose an operator-owned logical `target`. They cannot supply a
 URL, image, command, shell fragment, kubectl flag, or arbitrary path. A typed
 JSON `scenario` uses the same `load`, `stages`, `warmup`, and `workload` schema
 as the CLI. Dataset paths must be under `-dataset-root`; results always go
-under `-result-root`. Plans are read-only and show exact total/per-worker load,
-the CPU Indexed Job shape, target identity, durable result location, and
-warnings. Reports aggregate all present `requests_N.jsonl` partitions and
-include latency distributions, throughput, tokens, evaluation accuracy,
-worker completeness, the exact common measurement window, image digest, and
-artifact SHA-256 values. Raw JSONL and Prometheus payloads are never returned.
+under `-result-root`. Plans perform Kubernetes server-side dry-run admission
+for the exact Service and CPU Indexed Job, then show exact total/per-worker
+load, target identity, durable result location, and warnings. Reports stream
+bounded `requests_N.jsonl` partitions, use bounded deterministic latency
+samples, and include latency distributions, throughput, tokens, evaluation
+accuracy, worker completeness, the exact common measurement window, image
+digest, and artifact SHA-256 values. Raw JSONL and Prometheus payloads are
+never returned.
 
 The following smoke call targets a multinode Kimi K3 service. Change
 `plan_benchmark` to `submit_benchmark` only after inspecting the plan:
@@ -408,9 +416,11 @@ A sustained-load `arguments` object for the same endpoint is:
 }
 ```
 
-The native `/v1/runs` command-vector API remains available for trusted legacy
-operators. Existing CLI flags and manifests are unchanged. New agents should
-use MCP because its logical-target and typed-scenario boundary is narrower.
+The native `/v1/runs` command-vector API is opt-in with
+`-enable-legacy-rest` and is intended only for a network-isolated deployment
+used by trusted legacy operators. Existing CLI flags and manifests are
+unchanged. Agent-facing deployments should leave it disabled and use MCP's
+logical-target and typed-scenario boundary.
 Apply `deploy/networkpolicy.example.yaml` only after replacing its Kubernetes
 API CIDR and matching the cluster's monitoring and inference labels.
 
@@ -422,8 +432,9 @@ explicit allowlists; their secure default is deny-all. The runner image is
 operator-managed and must be an immutable official digest.
 
 The supplied RBAC can only manage Jobs, their headless Services, and pod logs
-in its own namespace. Bearer authentication is required for every `/v1`
-and `/mcp` endpoint, but NetworkPolicy should still limit callers. Apply a namespace
+in its own namespace. Services are owned by their Jobs so TTL garbage
+collection removes both. Bearer authentication is required for every enabled
+`/v1` and `/mcp` endpoint, but NetworkPolicy should still limit callers. Apply a namespace
 `ResourceQuota` as defense in depth because aggregate namespace capacity and
 other workload controllers are outside this API's scope, for example:
 

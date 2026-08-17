@@ -32,6 +32,7 @@ func main() {
 	datasetPVC := flag.String("dataset-pvc", "", "PVC containing MCP benchmark datasets")
 	datasetRoot := flag.String("dataset-root", "", "absolute dataset root mounted in benchmark Jobs")
 	allowedPlatforms := flag.String("allowed-platforms", "kubernetes,openshift", "comma-separated platforms accepted by MCP plans")
+	enableLegacyREST := flag.Bool("enable-legacy-rest", false, "enable the trusted command-vector /v1/runs compatibility API")
 	runnerImage := flag.String("runner-image", "", "immutable nyann-bench image digest used for run Jobs")
 	maxWorkers := flag.Int("max-workers", 16, "maximum workers per run")
 	maxCPU := flag.String("max-cpu", "16", "maximum CPU per worker")
@@ -40,6 +41,13 @@ func main() {
 	maxDeadline := flag.Duration("max-active-deadline", 6*time.Hour, "maximum run active deadline")
 	defaultTTL := flag.Duration("default-retention-ttl", 24*time.Hour, "default completed Job retention")
 	maxTTL := flag.Duration("max-retention-ttl", 7*24*time.Hour, "maximum completed Job retention")
+	maxArtifactFiles := flag.Int("max-artifact-files", 512, "maximum files inspected in one result directory")
+	maxArtifactBytes := flag.Int64("max-artifact-bytes", 64<<30, "maximum total artifact bytes hashed or aggregated per request")
+	maxReportRecords := flag.Int64("max-report-records", 50_000_000, "maximum JSONL records aggregated per report")
+	maxLatencySamples := flag.Int("max-latency-samples", 100_000, "bounded reservoir size for each latency distribution")
+	maxRecordBytes := flag.Int("max-record-bytes", 8<<20, "maximum bytes in one JSONL request record")
+	maxIndexedRuns := flag.Int("max-indexed-runs", 10_000, "maximum durable run manifests scanned by list_benchmarks")
+	artifactProcessTimeout := flag.Duration("artifact-processing-timeout", 5*time.Minute, "maximum time spent hashing or aggregating artifacts per request")
 	flag.Parse()
 	if *namespace == "" {
 		*namespace = currentNamespace()
@@ -82,6 +90,11 @@ func main() {
 		DefaultRetentionTTL: *defaultTTL, MaxRetentionTTL: *maxTTL,
 		InferenceTargets: targets, ResultPVC: *resultPVC, ResultRoot: *resultRoot,
 		DatasetPVC: *datasetPVC, DatasetRoot: *datasetRoot, AllowedPlatforms: csv(*allowedPlatforms),
+		EnableLegacyREST: *enableLegacyREST,
+		MaxArtifactFiles: *maxArtifactFiles, MaxArtifactBytes: *maxArtifactBytes,
+		MaxReportRecords: *maxReportRecords, MaxLatencySamples: *maxLatencySamples, MaxRecordBytes: *maxRecordBytes,
+		MaxIndexedRuns:         *maxIndexedRuns,
+		ArtifactProcessTimeout: *artifactProcessTimeout,
 	}
 	if err := options.Validate(); err != nil {
 		fatal("invalid API policy: %v", err)
