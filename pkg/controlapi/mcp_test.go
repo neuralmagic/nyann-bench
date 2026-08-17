@@ -503,12 +503,8 @@ func TestArtifactAndReportProcessingLimits(t *testing.T) {
 	}
 }
 
-func TestLegacyRESTIsDisabledByDefaultAndUnderscoreLabelsAreNormalized(t *testing.T) {
+func TestUnderscoreLabelsAreNormalized(t *testing.T) {
 	server := NewServer(newMCPClient(), "test", mcpTestOptions(t.TempDir()))
-	response := request(t, server.Handler(), http.MethodPost, "/v1/runs", `{"command":["generate","--target","http://model/v1"]}`)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("legacy REST status = %d, want 404", response.Code)
-	}
 	plan, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "result_label": "smoke_test"}))
 	if err != nil || strings.Contains(plan.RunID, "_") {
 		t.Fatalf("underscore result label plan = %+v, err=%v", plan, err)
@@ -523,7 +519,6 @@ func mcpTestOptions(root string) Options {
 	options.DatasetPVC = "benchmark-datasets"
 	options.DatasetRoot = filepath.Join(root, "datasets")
 	options.AllowedPlatforms = []string{"kubernetes", "openshift"}
-	options.EnableLegacyREST = false
 	return options
 }
 

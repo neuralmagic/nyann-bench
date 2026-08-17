@@ -38,8 +38,8 @@ func TestContainerAndDeploymentUseNumericNonRootIdentity(t *testing.T) {
 	if strings.Contains(text, ":latest") {
 		t.Fatal("deployment must not use a mutable :latest image")
 	}
-	if strings.Contains(text, "-enable-legacy-rest") {
-		t.Fatal("agent-facing deployment must not enable the legacy REST API")
+	if strings.Contains(text, "/v1/runs") {
+		t.Fatal("deployment must not expose the removed command-vector REST API")
 	}
 }
 
@@ -77,8 +77,6 @@ func TestDeploymentRBACIsNamespaceScopedAndMinimal(t *testing.T) {
 	want := []rbacv1.PolicyRule{
 		{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"create", "delete", "get", "list"}},
 		{APIGroups: []string{""}, Resources: []string{"services"}, Verbs: []string{"create", "delete", "get", "update"}},
-		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}},
-		{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get"}},
 	}
 	if !reflect.DeepEqual(role.Rules, want) {
 		t.Fatalf("RBAC grew beyond the reviewed minimum:\n got: %#v\nwant: %#v", role.Rules, want)

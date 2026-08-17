@@ -3,7 +3,6 @@ package controlapi
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -15,7 +14,6 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +23,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
@@ -36,33 +33,30 @@ import (
 const (
 	managedLabel      = "nyann-bench.neuralmagic.com/managed"
 	createdAnnotation = "nyann-bench.neuralmagic.com/created-at"
-	commandAnnotation = "nyann-bench.neuralmagic.com/command"
 	resultsAnnotation = "nyann-bench.neuralmagic.com/results"
 	requestAnnotation = "nyann-bench.neuralmagic.com/request-sha256"
 )
 
-type CreateRunRequest struct {
-	Name                    string      `json:"name,omitempty"`
-	Command                 []string    `json:"command"`
-	Workers                 int         `json:"workers,omitempty"`
-	Image                   string      `json:"image,omitempty"`
-	Arch                    string      `json:"arch,omitempty"`
-	CPU                     string      `json:"cpu,omitempty"`
-	Memory                  string      `json:"memory,omitempty"`
-	ActiveDeadlineSeconds   int64       `json:"active_deadline_seconds,omitempty"`
-	TTLSecondsAfterFinished int32       `json:"ttl_seconds_after_finished,omitempty"`
-	Mounts                  []MountSpec `json:"mounts,omitempty"`
-	Results                 *ResultSpec `json:"results,omitempty"`
+type runSpec struct {
+	Name                  string      `json:"name,omitempty"`
+	Command               []string    `json:"command"`
+	Workers               int         `json:"workers,omitempty"`
+	Arch                  string      `json:"arch,omitempty"`
+	CPU                   string      `json:"cpu,omitempty"`
+	Memory                string      `json:"memory,omitempty"`
+	ActiveDeadlineSeconds int64       `json:"active_deadline_seconds,omitempty"`
+	Mounts                []mountSpec `json:"mounts,omitempty"`
+	Results               *resultSpec `json:"results,omitempty"`
 }
 
-type MountSpec struct {
+type mountSpec struct {
 	PVC       string `json:"pvc"`
 	MountPath string `json:"mount_path"`
 }
 
-// ResultSpec describes storage, not a benchmark result format. nyann-bench
+// resultSpec describes storage, not a benchmark result format. nyann-bench
 // continues to write its native requests_N.jsonl and timestamps_N.json files.
-type ResultSpec struct {
+type resultSpec struct {
 	PVC       string `json:"pvc"`
 	MountPath string `json:"mount_path"`
 	Subdir    string `json:"subdir,omitempty"`
@@ -79,7 +73,6 @@ type ResultMetadata struct {
 type Run struct {
 	ID                      string         `json:"id"`
 	Status                  string         `json:"status"`
-	Command                 []string       `json:"command,omitempty"`
 	Workers                 int32          `json:"workers"`
 	Succeeded               int32          `json:"succeeded"`
 	Failed                  int32          `json:"failed"`
@@ -92,22 +85,11 @@ type Run struct {
 	TTLSecondsAfterFinished int32          `json:"ttl_seconds_after_finished"`
 }
 
-type PodLogs struct {
-	Pod  string `json:"pod"`
-	Logs string `json:"logs"`
-}
-
-type LogsResponse struct {
-	RunID string    `json:"run_id"`
-	Pods  []PodLogs `json:"pods"`
-}
-
 type Server struct {
 	client    kubernetes.Interface
 	namespace string
 	options   Options
 	now       func() time.Time
-	readLogs  func(context.Context, string, int64) (string, error)
 }
 
 // InferenceTarget is an operator-owned logical destination. MCP clients select
@@ -136,7 +118,6 @@ type Options struct {
 	DatasetPVC             string
 	DatasetRoot            string
 	AllowedPlatforms       []string
-	EnableLegacyREST       bool
 	MaxArtifactFiles       int
 	MaxArtifactBytes       int64
 	MaxReportRecords       int64
@@ -300,15 +281,7 @@ func NewServer(client kubernetes.Interface, namespace string, options Options) *
 	if options.ArtifactProcessTimeout == 0 {
 		options.ArtifactProcessTimeout = defaults.ArtifactProcessTimeout
 	}
-	s := &Server{client: client, namespace: namespace, options: options, now: time.Now}
-	s.readLogs = func(ctx context.Context, pod string, tail int64) (string, error) {
-		body, err := client.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
-			Container: "nyann-bench",
-			TailLines: &tail,
-		}).DoRaw(ctx)
-		return string(body), err
-	}
-	return s
+	return &Server{client: client, namespace: namespace, options: options, now: time.Now}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -316,13 +289,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.Handle("POST /mcp", s.MCPHandler())
-	if s.options.EnableLegacyREST {
-		mux.HandleFunc("POST /v1/runs", s.createRun)
-		mux.HandleFunc("GET /v1/runs", s.listRuns)
-		mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
-		mux.HandleFunc("GET /v1/runs/{id}/logs", s.getLogs)
-		mux.HandleFunc("DELETE /v1/runs/{id}", s.cancelRun)
-	}
 	return s.authenticate(mux)
 }
 
@@ -352,106 +318,6 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
-	var req CreateRunRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
-		return
-	}
-	if err := ensureEOF(dec); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	name, cfg, command, results, err := s.prepare(req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	service, job, err := kube.RenderCoreResources(cfg, commandDefaultName(command), command)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	activeDeadline, retentionTTL, err := s.runtimeLimits(req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	job.Spec.ActiveDeadlineSeconds = &activeDeadline
-	job.Spec.TTLSecondsAfterFinished = &retentionTTL
-	created := s.now().UTC()
-	commandJSON, _ := json.Marshal(command)
-	resultsJSON, _ := json.Marshal(results)
-	fingerprintJSON, _ := json.Marshal(struct {
-		Command        []string
-		Config         kube.KubeConfig
-		ActiveDeadline int64
-		RetentionTTL   int32
-	}{command, cfg, activeDeadline, retentionTTL})
-	fingerprint := fmt.Sprintf("%x", sha256.Sum256(fingerprintJSON))
-	metadata := map[string]string{
-		createdAnnotation: created.Format(time.RFC3339Nano),
-		commandAnnotation: string(commandJSON),
-		resultsAnnotation: string(resultsJSON),
-		requestAnnotation: fingerprint,
-	}
-	decorate(&service.ObjectMeta, name, metadata)
-	decorate(&job.ObjectMeta, name, metadata)
-	decorate(&job.Spec.Template.ObjectMeta, name, nil)
-
-	existingJob, err := s.client.BatchV1().Jobs(s.namespace).Get(r.Context(), name, metav1.GetOptions{})
-	if err == nil {
-		if existingJob.Labels[managedLabel] != "true" || existingJob.Annotations[requestAnnotation] != fingerprint {
-			writeError(w, http.StatusConflict, "run name already exists with a different specification")
-			return
-		}
-		if err := s.upsertManagedService(r.Context(), service, fingerprint); err != nil {
-			writeKubeError(w, err)
-			return
-		}
-		if err := s.attachServiceOwner(r.Context(), name, existingJob, fingerprint); err != nil {
-			writeKubeError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, runFromJob(existingJob))
-		return
-	}
-	if !apierrors.IsNotFound(err) {
-		writeKubeError(w, err)
-		return
-	}
-	if err := s.upsertManagedService(r.Context(), service, fingerprint); err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	createdJob, err := s.client.BatchV1().Jobs(s.namespace).Create(r.Context(), job, metav1.CreateOptions{})
-	if err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			existingJob, getErr := s.client.BatchV1().Jobs(s.namespace).Get(r.Context(), name, metav1.GetOptions{})
-			if getErr == nil && existingJob.Labels[managedLabel] == "true" && existingJob.Annotations[requestAnnotation] == fingerprint {
-				if ownerErr := s.attachServiceOwner(r.Context(), name, existingJob, fingerprint); ownerErr != nil {
-					writeKubeError(w, ownerErr)
-					return
-				}
-				writeJSON(w, http.StatusOK, runFromJob(existingJob))
-				return
-			}
-		}
-		// Retain the fingerprinted Service on a failed Job create. Deleting it
-		// cannot be made atomic with another identical submit winning the Job
-		// create race; a retry can safely reuse it.
-		writeKubeError(w, err)
-		return
-	}
-	if err := s.attachServiceOwner(r.Context(), name, createdJob, fingerprint); err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, runFromJob(createdJob))
 }
 
 func (s *Server) upsertManagedService(ctx context.Context, desired *corev1.Service, fingerprint string) error {
@@ -517,83 +383,6 @@ func (s *Server) deleteServiceIfFingerprint(ctx context.Context, name, fingerpri
 	return s.client.CoreV1().Services(s.namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.client.BatchV1().Jobs(s.namespace).List(r.Context(), metav1.ListOptions{
-		LabelSelector: labels.Set{managedLabel: "true"}.String(),
-	})
-	if err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	runs := make([]Run, 0, len(jobs.Items))
-	for i := range jobs.Items {
-		runs = append(runs, runFromJob(&jobs.Items[i]))
-	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
-	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
-}
-
-func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
-	job, err := s.getManagedJob(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, runFromJob(job))
-}
-
-func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, err := s.getManagedJob(r.Context(), id); err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	tail := int64(500)
-	if value := r.URL.Query().Get("tail_lines"); value != "" {
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || parsed < 1 || parsed > 10000 {
-			writeError(w, http.StatusBadRequest, "tail_lines must be between 1 and 10000")
-			return
-		}
-		tail = parsed
-	}
-	pods, err := s.client.CoreV1().Pods(s.namespace).List(r.Context(), metav1.ListOptions{
-		LabelSelector: labels.Set{"job-name": id}.String(),
-	})
-	if err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	response := LogsResponse{RunID: id, Pods: make([]PodLogs, 0, len(pods.Items))}
-	for _, pod := range pods.Items {
-		body, err := s.readLogs(r.Context(), pod.Name, tail)
-		if err != nil {
-			body = "log unavailable: " + err.Error()
-		}
-		response.Pods = append(response.Pods, PodLogs{Pod: pod.Name, Logs: body})
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	job, err := s.getManagedJob(r.Context(), id)
-	if err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	propagation := metav1.DeletePropagationBackground
-	if err := s.client.BatchV1().Jobs(s.namespace).Delete(r.Context(), id, metav1.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
-		writeKubeError(w, err)
-		return
-	}
-	if err := s.deleteServiceIfFingerprint(r.Context(), id, job.Annotations[requestAnnotation]); err != nil && !apierrors.IsNotFound(err) {
-		writeKubeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) getManagedJob(ctx context.Context, id string) (*batchv1.Job, error) {
 	if errs := validation.IsDNS1123Subdomain(id); len(errs) > 0 || len(id) > 63 {
 		return nil, apierrors.NewNotFound(batchv1.Resource("jobs"), id)
@@ -608,7 +397,7 @@ func (s *Server) getManagedJob(ctx context.Context, id string) (*batchv1.Job, er
 	return job, nil
 }
 
-func (s *Server) prepare(req CreateRunRequest) (string, kube.KubeConfig, []string, ResultMetadata, error) {
+func (s *Server) prepareRun(req runSpec) (string, kube.KubeConfig, []string, ResultMetadata, error) {
 	name := req.Name
 	if name == "" {
 		var suffix [4]byte
@@ -665,10 +454,6 @@ func (s *Server) prepare(req CreateRunRequest) (string, kube.KubeConfig, []strin
 	if !validRunnerImage(s.options.RunnerImage) {
 		return "", kube.KubeConfig{}, nil, ResultMetadata{}, fmt.Errorf("server runner image must be an immutable ghcr.io/neuralmagic/nyann-bench digest")
 	}
-	if req.Image != "" && req.Image != s.options.RunnerImage {
-		return "", kube.KubeConfig{}, nil, ResultMetadata{}, fmt.Errorf("image is operator-managed and cannot be overridden")
-	}
-
 	resultMeta := ResultMetadata{}
 	volumes, err := s.validateMounts(req.Mounts)
 	if err != nil {
@@ -862,7 +647,7 @@ func containsAuxiliaryDestination(value any) bool {
 	return false
 }
 
-func validateResults(spec ResultSpec, runName string) (string, error) {
+func validateResults(spec resultSpec, runName string) (string, error) {
 	if errs := validation.IsDNS1123Subdomain(spec.PVC); len(errs) > 0 {
 		return "", fmt.Errorf("results.pvc must be a valid PVC name")
 	}
@@ -879,7 +664,7 @@ func validateResults(spec ResultSpec, runName string) (string, error) {
 	return path.Join(spec.MountPath, subdir, runName), nil
 }
 
-func (s *Server) validateMounts(specs []MountSpec) ([]kube.VolumeSpec, error) {
+func (s *Server) validateMounts(specs []mountSpec) ([]kube.VolumeSpec, error) {
 	if len(specs) > 8 {
 		return nil, fmt.Errorf("mounts may contain at most 8 entries")
 	}
@@ -913,7 +698,7 @@ func (s *Server) pvcAllowed(name string) bool {
 	return false
 }
 
-func (s *Server) runtimeLimits(req CreateRunRequest) (int64, int32, error) {
+func (s *Server) resolveRuntimeLimits(req runSpec) (int64, int32, error) {
 	active := time.Duration(req.ActiveDeadlineSeconds) * time.Second
 	if active == 0 {
 		active = s.options.DefaultActiveDeadline
@@ -921,10 +706,7 @@ func (s *Server) runtimeLimits(req CreateRunRequest) (int64, int32, error) {
 	if active < time.Second || active > s.options.MaxActiveDeadline {
 		return 0, 0, fmt.Errorf("active_deadline_seconds must be between 1 and %d", int64(s.options.MaxActiveDeadline/time.Second))
 	}
-	ttl := time.Duration(req.TTLSecondsAfterFinished) * time.Second
-	if ttl == 0 {
-		ttl = s.options.DefaultRetentionTTL
-	}
+	ttl := s.options.DefaultRetentionTTL
 	if ttl < time.Second || ttl > s.options.MaxRetentionTTL {
 		return 0, 0, fmt.Errorf("ttl_seconds_after_finished must be between 1 and %d", int64(s.options.MaxRetentionTTL/time.Second))
 	}
@@ -962,7 +744,6 @@ func runFromJob(job *batchv1.Job) Run {
 	if job.Spec.TTLSecondsAfterFinished != nil {
 		run.TTLSecondsAfterFinished = *job.Spec.TTLSecondsAfterFinished
 	}
-	_ = json.Unmarshal([]byte(job.Annotations[commandAnnotation]), &run.Command)
 	_ = json.Unmarshal([]byte(job.Annotations[resultsAnnotation]), &run.Results)
 	if value := job.Annotations[createdAnnotation]; value != "" {
 		run.CreatedAt, _ = time.Parse(time.RFC3339Nano, value)
@@ -1011,17 +792,6 @@ func ensureEOF(dec *json.Decoder) error {
 		return fmt.Errorf("request body must contain exactly one JSON object")
 	}
 	return nil
-}
-
-func writeKubeError(w http.ResponseWriter, err error) {
-	switch {
-	case apierrors.IsNotFound(err):
-		writeError(w, http.StatusNotFound, "run not found")
-	case apierrors.IsAlreadyExists(err):
-		writeError(w, http.StatusConflict, "run already exists")
-	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
-	}
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

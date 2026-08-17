@@ -231,13 +231,12 @@ nyann-bench eval gsm8k \
   --kube.config '{"volumes":[{"pvc":"shared-cache","mountPath":"/mnt/shared"}]}'
 ```
 
-## In-cluster run API
+## In-cluster MCP benchmark service
 
-`nyann-bench-api` is a small control plane for agents and other automation. It
-keeps Kubernetes credentials inside the cluster and accepts nyann-bench's
-native command vector; it does not define another workload or evaluation
-schema. The command must target an existing service URL, normally a vLLM or
-llm-d inference service.
+`nyann-bench-api` is a small MCP control plane for agents. It keeps Kubernetes
+credentials inside the cluster and exposes a bounded typed benchmark schema;
+clients cannot submit command vectors, URLs, shell, manifests, or paths. Runs
+target operator-owned logical inference destinations.
 
 Create a strong bearer token and an explicit policy. Empty host/PVC lists deny
 all corresponding access. The DNS suffix should be scoped to the namespace(s)
@@ -265,76 +264,6 @@ The API and every benchmark run are CPU-only. Runs are ordinary Indexed Jobs:
 they have no GPU requests, Kueue queue labels, or suspended admission state.
 The vLLM or llm-d deployment remains responsible for its GPU-serving workloads
 and any Kueue admission.
-
-Create a native generate run against a vLLM or llm-d inference service:
-
-The command-vector REST API is disabled by default. A trusted-operator-only
-deployment must explicitly add `-enable-legacy-rest`; do not expose that
-deployment to agent clients.
-
-```bash
-curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
-  -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
-  -H 'content-type: application/json' \
-  -d '{
-    "name": "llama-smoke",
-    "command": [
-      "generate",
-      "--target", "http://llama-decode.models.svc:8000/v1",
-      "--config", "{\"load\":{\"concurrency\":32,\"duration\":\"2m\"}}"
-    ],
-    "workers": 2,
-    "cpu": "4",
-    "memory": "8Gi",
-    "active_deadline_seconds": 3600,
-    "ttl_seconds_after_finished": 86400,
-    "results": {
-      "pvc": "benchmark-results",
-      "mount_path": "/results",
-      "subdir": "nightly"
-    }
-  }'
-```
-
-`command` is passed as an argument array, so inline JSON does not undergo shell
-expansion. For the secure API path, `--config` must be inline JSON; file and
-Starlark configs are rejected because the control plane cannot inspect them for
-per-stage target overrides. The API also rejects Prometheus and auxiliary URL
-overrides. It owns `--workers`, `--worker-id`, `--metrics`,
-`--output-dir`, and all `--kube*` flags. Durable runs report a `pvc://` URI and
-write nyann-bench's existing `requests_N.jsonl` and `timestamps_N.json` files.
-The API writes an immutable run manifest and bounded run index to the result
-PVC, then reads benchmark artifacts from the same volume. This provenance
-survives Kubernetes Job TTL cleanup and prevents an old result directory from
-being silently reused by a new run.
-
-An eval uses the same endpoint and the native eval command:
-
-```bash
-curl -sS http://nyann-bench-api.benchmarks.svc:8080/v1/runs \
-  -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
-  -H 'content-type: application/json' \
-  -d '{
-    "command": [
-      "eval", "gsm8k",
-      "--target", "http://llama-decode.models.svc:8000/v1",
-      "--gsm8k-path", "/datasets/gsm8k_test.jsonl",
-      "--gsm8k-train-path", "/datasets/gsm8k_train.jsonl"
-    ],
-    "mounts": [
-      {"pvc": "benchmark-datasets", "mount_path": "/datasets"}
-    ]
-  }'
-```
-
-Inspect and control runs:
-
-```bash
-curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs
-curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke
-curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' 'http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke/logs?tail_lines=500'
-curl -i -X DELETE -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke
-```
 
 ### Stateless MCP benchmark tools
 
@@ -416,11 +345,6 @@ A sustained-load `arguments` object for the same endpoint is:
 }
 ```
 
-The native `/v1/runs` command-vector API is opt-in with
-`-enable-legacy-rest` and is intended only for a network-isolated deployment
-used by trusted legacy operators. Existing CLI flags and manifests are
-unchanged. Agent-facing deployments should leave it disabled and use MCP's
-logical-target and typed-scenario boundary.
 Apply `deploy/networkpolicy.example.yaml` only after replacing its Kubernetes
 API CIDR and matching the cluster's monitoring and inference labels.
 
@@ -431,11 +355,11 @@ days maximum retention. PVC access and inference-service target hosts are
 explicit allowlists; their secure default is deny-all. The runner image is
 operator-managed and must be an immutable official digest.
 
-The supplied RBAC can only manage Jobs, their headless Services, and pod logs
-in its own namespace. Services are owned by their Jobs so TTL garbage
-collection removes both. Bearer authentication is required for every enabled
-`/v1` and `/mcp` endpoint, but NetworkPolicy should still limit callers. Apply a namespace
-`ResourceQuota` as defense in depth because aggregate namespace capacity and
+The supplied RBAC can only manage Jobs and their headless Services in its own
+namespace. Services are owned by their Jobs so TTL garbage
+collection removes both. Bearer authentication is required for `/mcp`, but
+NetworkPolicy should still limit callers. Apply a namespace `ResourceQuota` as
+defense in depth because aggregate namespace capacity and
 other workload controllers are outside this API's scope, for example:
 
 ```yaml

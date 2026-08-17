@@ -32,7 +32,6 @@ func main() {
 	datasetPVC := flag.String("dataset-pvc", "", "PVC containing MCP benchmark datasets")
 	datasetRoot := flag.String("dataset-root", "", "absolute dataset root mounted in benchmark Jobs")
 	allowedPlatforms := flag.String("allowed-platforms", "kubernetes,openshift", "comma-separated platforms accepted by MCP plans")
-	enableLegacyREST := flag.Bool("enable-legacy-rest", false, "enable the trusted command-vector /v1/runs compatibility API")
 	runnerImage := flag.String("runner-image", "", "immutable nyann-bench image digest used for run Jobs")
 	maxWorkers := flag.Int("max-workers", 16, "maximum workers per run")
 	maxCPU := flag.String("max-cpu", "16", "maximum CPU per worker")
@@ -90,7 +89,6 @@ func main() {
 		DefaultRetentionTTL: *defaultTTL, MaxRetentionTTL: *maxTTL,
 		InferenceTargets: targets, ResultPVC: *resultPVC, ResultRoot: *resultRoot,
 		DatasetPVC: *datasetPVC, DatasetRoot: *datasetRoot, AllowedPlatforms: csv(*allowedPlatforms),
-		EnableLegacyREST: *enableLegacyREST,
 		MaxArtifactFiles: *maxArtifactFiles, MaxArtifactBytes: *maxArtifactBytes,
 		MaxReportRecords: *maxReportRecords, MaxLatencySamples: *maxLatencySamples, MaxRecordBytes: *maxRecordBytes,
 		MaxIndexedRuns:         *maxIndexedRuns,
