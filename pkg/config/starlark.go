@@ -15,6 +15,11 @@ const (
 	starlarkTypeWorkload = "Workload"
 	starlarkTypeStage    = "Stage"
 	starlarkTypeBarrier  = "Barrier"
+
+	// MaxStarlarkExecutionSteps bounds programmable scenario evaluation.
+	MaxStarlarkExecutionSteps uint64 = 100_000
+	MaxScenarioInputBytes            = 64 << 10
+	MaxScenarioStages                = 128
 )
 
 // ParseStarlark evaluates a .star file and returns the ScenarioConfig
@@ -24,7 +29,20 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
+	return parseStarlark(path, string(data), false, 0)
+}
 
+// ParseStarlarkSource evaluates an in-memory Starlark scenario with bounded
+// execution. Module loads and program output are disabled, so source cannot
+// grant itself filesystem access or amplify service logs.
+func ParseStarlarkSource(filename, source string) (*ScenarioConfig, error) {
+	if len(source) == 0 || len(source) > MaxScenarioInputBytes || strings.ContainsRune(source, '\x00') {
+		return nil, fmt.Errorf("Starlark source must contain between 1 and %d bytes without NUL characters", MaxScenarioInputBytes)
+	}
+	return parseStarlark(filename, source, true, MaxScenarioStages)
+}
+
+func parseStarlark(filename, source string, bounded bool, maxStages int) (*ScenarioConfig, error) {
 	var result *ScenarioConfig
 	var scenarioCalled bool
 
@@ -37,7 +55,7 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 				return nil, fmt.Errorf("scenario() can only be called once")
 			}
 			scenarioCalled = true
-			sc, err := parseScenarioCall(args, kwargs)
+			sc, err := parseScenarioCall(args, kwargs, maxStages)
 			if err != nil {
 				return nil, err
 			}
@@ -46,14 +64,21 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 		}),
 	}
 
-	thread := &starlark.Thread{Name: path}
-	_, err = starlark.ExecFile(thread, path, data, builtins)
+	thread := &starlark.Thread{Name: filename}
+	if bounded {
+		thread.Load = func(_ *starlark.Thread, module string) (starlark.StringDict, error) {
+			return nil, fmt.Errorf("load(%q) is disabled", module)
+		}
+		thread.Print = func(_ *starlark.Thread, _ string) {}
+		thread.SetMaxExecutionSteps(MaxStarlarkExecutionSteps)
+	}
+	_, err := starlark.ExecFile(thread, filename, source, builtins)
 	if err != nil {
-		return nil, fmt.Errorf("executing %s: %w", path, err)
+		return nil, fmt.Errorf("executing %s: %w", filename, err)
 	}
 
 	if result == nil {
-		return nil, fmt.Errorf("%s: no scenario() call found", path)
+		return nil, fmt.Errorf("%s: no scenario() call found", filename)
 	}
 
 	if err := result.Validate(); err != nil {
@@ -247,7 +272,7 @@ func builtinBarrier(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple
 }
 
 // parseScenarioCall processes the arguments to scenario().
-func parseScenarioCall(args starlark.Tuple, kwargs []starlark.Tuple) (*ScenarioConfig, error) {
+func parseScenarioCall(args starlark.Tuple, kwargs []starlark.Tuple, maxStages int) (*ScenarioConfig, error) {
 	var (
 		stagesList *starlark.List
 		target     starlark.Value = starlark.None
@@ -266,6 +291,9 @@ func parseScenarioCall(args starlark.Tuple, kwargs []starlark.Tuple) (*ScenarioC
 
 	if stagesList.Len() == 0 {
 		return nil, fmt.Errorf("stages must contain at least one stage")
+	}
+	if maxStages > 0 && stagesList.Len() > maxStages {
+		return nil, fmt.Errorf("stages must contain at most %d entries", maxStages)
 	}
 
 	sc := &ScenarioConfig{

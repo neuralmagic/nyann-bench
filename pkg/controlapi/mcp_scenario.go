@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -12,61 +13,72 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 )
 
+func (s *Server) parseBenchmarkScenario(ctx context.Context, input benchmarkInput) (*config.ScenarioConfig, error) {
+	hasJSON := len(input.Scenario) > 0
+	hasStarlark := input.Starlark != ""
+	if hasJSON == hasStarlark {
+		return nil, fmt.Errorf("exactly one of scenario or starlark must be supplied")
+	}
+	if hasStarlark {
+		if len(input.Starlark) > mcpMaximumScenarioBytes || strings.ContainsRune(input.Starlark, '\x00') {
+			return nil, fmt.Errorf("starlark must be non-empty source no larger than %d bytes", mcpMaximumScenarioBytes)
+		}
+		scenario, err := s.compileStarlark(ctx, input.Starlark)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Starlark scenario: %w", err)
+		}
+		return scenario, nil
+	}
+	if len(input.Scenario) > mcpMaximumScenarioBytes || !jsonObject(input.Scenario) {
+		return nil, fmt.Errorf("scenario must be a JSON object no larger than %d bytes", mcpMaximumScenarioBytes)
+	}
+	var typed config.Config
+	if err := decodeStrict(input.Scenario, &typed); err != nil {
+		return nil, fmt.Errorf("invalid typed scenario: %w", err)
+	}
+	scenario, err := config.Parse(string(input.Scenario))
+	if err != nil {
+		return nil, fmt.Errorf("invalid typed scenario: %w", err)
+	}
+	return scenario, nil
+}
+
 func validateScenarioBounds(sc *config.ScenarioConfig) error {
-	if len(sc.Stages) == 0 || len(sc.Stages) > 128 {
-		return fmt.Errorf("scenario must contain between 1 and 128 stages")
+	if len(sc.Stages) == 0 || len(sc.Stages) > config.MaxScenarioStages {
+		return fmt.Errorf("scenario must contain between 1 and %d stages", config.MaxScenarioStages)
+	}
+	if sc.Target != "" || sc.Model != "" {
+		return fmt.Errorf("scenario target and model overrides are not allowed; use the operator-configured logical target")
 	}
 	var total time.Duration
-	switch sc.Workload.Type {
-	case "synthetic", "faker":
-	case "corpus":
-		if sc.Workload.CorpusPath == "" {
-			return fmt.Errorf("corpus workload requires corpus_path")
-		}
-	case "gsm8k":
-		if sc.Workload.GSM8KPath == "" {
-			return fmt.Errorf("gsm8k workload requires gsm8k_path")
-		}
-	case "gpqa":
-		if sc.Workload.GPQAPath == "" {
-			return fmt.Errorf("gpqa workload requires gpqa_path")
-		}
-	default:
-		return fmt.Errorf("unsupported workload type %q", sc.Workload.Type)
+	if err := validateWorkloadBounds(sc.Workload, "workload"); err != nil {
+		return err
 	}
-	if sc.Workload.ISL < 0 || sc.Workload.ISL > 1048576 || sc.Workload.OSL < 0 || sc.Workload.OSL > 1048576 || sc.Workload.Turns < 1 || sc.Workload.Turns > 1024 {
-		return fmt.Errorf("workload token or turn settings exceed service bounds")
-	}
-	if sc.Workload.SubsequentISL != nil && (*sc.Workload.SubsequentISL < 0 || *sc.Workload.SubsequentISL > 1048576) {
-		return fmt.Errorf("workload subsequent_isl exceeds service bounds")
-	}
-	if sc.Workload.NumFewShot != nil && (*sc.Workload.NumFewShot < 0 || *sc.Workload.NumFewShot > 128) {
-		return fmt.Errorf("workload num_fewshot exceeds service bounds")
-	}
-	if math.IsNaN(sc.Workload.CharsPerToken) || math.IsInf(sc.Workload.CharsPerToken, 0) || sc.Workload.CharsPerToken < 0 || sc.Workload.CharsPerToken > 100 {
-		return fmt.Errorf("workload chars_per_token exceeds service bounds")
-	}
-	if len(sc.Workload.Name) > 128 || len(sc.Workload.CorpusPath) > 4096 || len(sc.Workload.GSM8KPath) > 4096 || len(sc.Workload.GSM8KTrainPath) > 4096 || len(sc.Workload.GPQAPath) > 4096 {
-		return fmt.Errorf("workload string field exceeds service bounds")
-	}
-	if sc.Workload.CacheSalt != nil && sc.Workload.CacheSalt.Mode != "random" && sc.Workload.CacheSalt.Mode != "fixed" {
-		return fmt.Errorf("cache_salt.mode must be random or fixed")
-	}
-	if sc.Workload.CacheSalt != nil && sc.Workload.CacheSalt.Mode == "fixed" && sc.Workload.CacheSalt.Value == "" {
-		return fmt.Errorf("fixed cache_salt requires a value")
-	}
-	if sc.Workload.CacheSalt != nil && len(sc.Workload.CacheSalt.Value) > 4096 {
-		return fmt.Errorf("cache_salt.value exceeds service bounds")
-	}
+	workStages := 0
 	for i, stage := range sc.Stages {
+		if len(stage.Name) > 128 || strings.ContainsRune(stage.Name, '\x00') {
+			return fmt.Errorf("stage %d name exceeds service bounds", i)
+		}
+		if stage.Target != "" || stage.Model != "" {
+			return fmt.Errorf("stage %d target and model overrides are not allowed; use the operator-configured logical target", i)
+		}
+		if stage.Workload != nil {
+			if err := validateWorkloadBounds(*stage.Workload, fmt.Sprintf("stage %d workload", i)); err != nil {
+				return err
+			}
+		}
 		if stage.Barrier {
 			continue
 		}
+		workStages++
 		if stage.Duration <= 0 || stage.Duration > 24*time.Hour {
 			return fmt.Errorf("stage %d duration must be positive and at most 24h", i)
 		}
 		total += stage.Duration
-		if stage.Concurrency < 0 || stage.Concurrency > 65536 || stage.ConversationPoolSize < 0 || stage.ConversationPoolSize > 1000000 || stage.Rate < 0 || stage.Rate > 1000000 || stage.MaxInFlight < 0 || stage.MaxInFlight > 65536 || stage.MaxRequests < 0 || stage.MaxRequests > 1000000000 {
+		if stage.Rampup < 0 || stage.Rampup > 24*time.Hour {
+			return fmt.Errorf("stage %d rampup exceeds service bounds", i)
+		}
+		if stage.Concurrency < 0 || stage.Concurrency > 65536 || stage.ConversationPoolSize < 0 || stage.ConversationPoolSize > 1000000 || math.IsNaN(stage.Rate) || math.IsInf(stage.Rate, 0) || stage.Rate < 0 || stage.Rate > 1000000 || stage.MaxInFlight < 0 || stage.MaxInFlight > 65536 || stage.MaxRequests < 0 || stage.MaxRequests > 1000000000 {
 			return fmt.Errorf("stage %d load exceeds service bounds", i)
 		}
 		if (stage.Mode == "constant" || stage.Mode == "poisson") && stage.Rate <= 0 {
@@ -76,19 +88,81 @@ func validateScenarioBounds(sc *config.ScenarioConfig) error {
 			return fmt.Errorf("stage %d requires positive concurrency", i)
 		}
 	}
+	if workStages == 0 {
+		return fmt.Errorf("scenario must contain at least one benchmark stage")
+	}
 	if total > 7*24*time.Hour {
 		return fmt.Errorf("total scenario duration exceeds 7 days")
 	}
 	return nil
 }
 
-func validateDatasetPaths(workload config.Workload, root string) error {
+func validateWorkloadBounds(workload config.Workload, location string) error {
+	switch workload.Type {
+	case "synthetic", "faker":
+	case "corpus":
+		if workload.CorpusPath == "" {
+			return fmt.Errorf("%s corpus workload requires corpus_path", location)
+		}
+	case "gsm8k":
+		if workload.GSM8KPath == "" {
+			return fmt.Errorf("%s gsm8k workload requires gsm8k_path", location)
+		}
+	case "gpqa":
+		if workload.GPQAPath == "" {
+			return fmt.Errorf("%s gpqa workload requires gpqa_path", location)
+		}
+	default:
+		return fmt.Errorf("%s has unsupported workload type %q", location, workload.Type)
+	}
+	if workload.ISL < 0 || workload.ISL > 1048576 || workload.OSL < 0 || workload.OSL > 1048576 || workload.Turns < 1 || workload.Turns > 1024 {
+		return fmt.Errorf("%s token or turn settings exceed service bounds", location)
+	}
+	if workload.SubsequentISL != nil && (*workload.SubsequentISL < 0 || *workload.SubsequentISL > 1048576) {
+		return fmt.Errorf("%s subsequent_isl exceeds service bounds", location)
+	}
+	if workload.NumFewShot != nil && (*workload.NumFewShot < 0 || *workload.NumFewShot > 128) {
+		return fmt.Errorf("%s num_fewshot exceeds service bounds", location)
+	}
+	if math.IsNaN(workload.CharsPerToken) || math.IsInf(workload.CharsPerToken, 0) || workload.CharsPerToken < 0 || workload.CharsPerToken > 100 {
+		return fmt.Errorf("%s chars_per_token exceeds service bounds", location)
+	}
+	if len(workload.Name) > 128 || len(workload.CorpusPath) > 4096 || len(workload.GSM8KPath) > 4096 || len(workload.GSM8KTrainPath) > 4096 || len(workload.GPQAPath) > 4096 || strings.ContainsRune(workload.Name, '\x00') {
+		return fmt.Errorf("%s string field exceeds service bounds", location)
+	}
+	if workload.CacheSalt != nil && workload.CacheSalt.Mode != "random" && workload.CacheSalt.Mode != "fixed" {
+		return fmt.Errorf("cache_salt.mode must be random or fixed")
+	}
+	if workload.CacheSalt != nil && workload.CacheSalt.Mode == "fixed" && workload.CacheSalt.Value == "" {
+		return fmt.Errorf("fixed cache_salt requires a value")
+	}
+	if workload.CacheSalt != nil && (len(workload.CacheSalt.Value) > 4096 || strings.ContainsRune(workload.CacheSalt.Value, '\x00')) {
+		return fmt.Errorf("cache_salt.value exceeds service bounds")
+	}
+	return nil
+}
+
+func validateDatasetPaths(workload config.Workload, root, location string) error {
 	for field, value := range map[string]string{"corpus_path": workload.CorpusPath, "gsm8k_path": workload.GSM8KPath, "gsm8k_train_path": workload.GSM8KTrainPath, "gpqa_path": workload.GPQAPath} {
 		if value == "" {
 			continue
 		}
 		if root == "" || !pathWithinRoot(root, value) {
-			return fmt.Errorf("workload.%s must be beneath the operator-configured dataset root", field)
+			return fmt.Errorf("%s.%s must be beneath the operator-configured dataset root", location, field)
+		}
+	}
+	return nil
+}
+
+func validateScenarioDatasetPaths(sc *config.ScenarioConfig, root string) error {
+	if err := validateDatasetPaths(sc.Workload, root, "workload"); err != nil {
+		return err
+	}
+	for i, stage := range sc.Stages {
+		if stage.Workload != nil {
+			if err := validateDatasetPaths(*stage.Workload, root, fmt.Sprintf("stage %d workload", i)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -102,8 +176,20 @@ func pathWithinRoot(root, value string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func scenarioUsesDataset(workload config.Workload) bool {
+func workloadUsesDataset(workload config.Workload) bool {
 	return workload.CorpusPath != "" || workload.GSM8KPath != "" || workload.GSM8KTrainPath != "" || workload.GPQAPath != ""
+}
+
+func scenarioUsesDataset(sc *config.ScenarioConfig) bool {
+	if workloadUsesDataset(sc.Workload) {
+		return true
+	}
+	for _, stage := range sc.Stages {
+		if stage.Workload != nil && workloadUsesDataset(*stage.Workload) {
+			return true
+		}
+	}
+	return false
 }
 
 func effectiveScenario(sc *config.ScenarioConfig) map[string]any {
@@ -117,7 +203,14 @@ func effectiveScenario(sc *config.ScenarioConfig) map[string]any {
 		if mode == "" {
 			mode = "concurrent"
 		}
-		stages = append(stages, map[string]any{"name": stage.Name, "mode": mode, "duration_seconds": stage.Duration.Seconds(), "concurrency": stage.Concurrency, "conversation_pool_size": stage.ConversationPoolSize, "rate": stage.Rate, "max_inflight": stage.MaxInFlight, "max_requests": stage.MaxRequests, "warmup": stage.Warmup})
+		effective := map[string]any{"name": stage.Name, "mode": mode, "duration_seconds": stage.Duration.Seconds(), "concurrency": stage.Concurrency, "conversation_pool_size": stage.ConversationPoolSize, "rate": stage.Rate, "max_inflight": stage.MaxInFlight, "max_requests": stage.MaxRequests, "warmup": stage.Warmup}
+		if stage.Rampup > 0 {
+			effective["rampup_seconds"] = stage.Rampup.Seconds()
+		}
+		if stage.Workload != nil {
+			effective["workload"] = *stage.Workload
+		}
+		stages = append(stages, effective)
 	}
 	return map[string]any{"workload": sc.Workload, "stages": stages}
 }

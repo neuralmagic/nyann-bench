@@ -277,10 +277,19 @@ schemas for:
 - `list_benchmark_artifacts`, `get_benchmark_report`
 
 MCP requests choose an operator-owned logical `target`. They cannot supply a
-URL, image, command, shell fragment, kubectl flag, or arbitrary path. A typed
-JSON `scenario` uses the same `load`, `stages`, `warmup`, and `workload` schema
-as the CLI. Dataset paths must be under `-dataset-root`; results always go
-under `-result-root`. Plans perform Kubernetes server-side dry-run admission
+URL, image, command, shell fragment, kubectl flag, or arbitrary path. Each
+request supplies exactly one scenario form: a typed JSON `scenario` using the
+same `load`, `stages`, `warmup`, and `workload` schema as the CLI, or inline
+`starlark` source using the full nyann-bench scenario DSL. Starlark `load()` and
+output are disabled. The API serializes compilation through one separate helper
+process at a time, with a three-second timeout, a 128 MiB Linux address-space
+limit, bounded output, a 100,000-step interpreter limit, and a 128-stage
+pre-iteration limit. Only the validated compiled scenario is sent to benchmark
+Jobs; agent source is never evaluated a second time. Generated target/model
+overrides are rejected. Every generated stage and workload still
+passes the service's duration, load, string, and dataset-path bounds. Dataset
+paths must be under `-dataset-root`; results always go under `-result-root`.
+Plans perform Kubernetes server-side dry-run admission
 for the exact Service and CPU Indexed Job, then show exact total/per-worker
 load, target identity, durable result location, and warnings. Reports stream
 bounded `requests_N.jsonl` partitions, use bounded deterministic latency
@@ -342,6 +351,21 @@ A sustained-load `arguments` object for the same endpoint is:
     ],
     "workload": {"type": "faker", "isl": 4096, "osl": 1024, "turns": 2}
   }
+}
+```
+
+The equivalent programmable form can generate stages with ordinary Starlark
+loops, functions, and conditionals:
+
+```json
+{
+  "target": "kimi-k3",
+  "workers": 8,
+  "cpu": "8",
+  "memory": "16Gi",
+  "deadline_seconds": 10800,
+  "result_label": "kimi-k3-ramp",
+  "starlark": "def ramp(start, stop, step):\n    return [stage(\"10m\", concurrency=c) for c in range(start, stop, step)]\n\nscenario(\n    stages=ramp(128, 513, 128),\n    workload=workload(\"faker\", isl=4096, osl=1024, turns=2),\n)"
 }
 ```
 

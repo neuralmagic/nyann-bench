@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,9 +20,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
+
+	"github.com/neuralmagic/nyann-bench/pkg/config"
 )
 
 const mcpScenario = `{"load":{"mode":"concurrent","concurrency":10,"duration":"10s"},"workload":{"type":"faker","isl":128,"osl":64,"turns":1}}`
+
+const mcpStarlark = `
+scenario(
+    stages = [stage("10s", concurrency=c) for c in range(4, 13, 4)],
+    workload = workload("faker", isl=128, osl=64),
+)
+`
 
 func TestMCPPlanUsesLogicalTargetAndCLIParityWithoutMutation(t *testing.T) {
 	root := t.TempDir()
@@ -61,6 +71,72 @@ func TestMCPPlanUsesLogicalTargetAndCLIParityWithoutMutation(t *testing.T) {
 	payload, _ := json.Marshal(plan)
 	if bytes.Contains(payload, []byte("http://kimi-k3-api")) {
 		t.Fatalf("plan leaked operator-owned target URL: %s", payload)
+	}
+}
+
+func TestMCPPlanAcceptsBoundedStarlarkSource(t *testing.T) {
+	server := NewServer(newMCPClient(), "test", mcpTestOptions(t.TempDir()))
+	input := decodeInput(t, map[string]any{"target": "kimi-k3", "starlark": mcpStarlark, "workers": 3, "result_label": "starlark"})
+	plan, err := server.planBenchmark(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Load) != 3 || plan.Load[2].TotalConcurrency != 12 || fmt.Sprint(plan.Load[2].PerWorkerConcurrency) != "[4 4 4]" {
+		t.Fatalf("Starlark load = %+v", plan.Load)
+	}
+	joined := strings.Join(plan.command, "\x00")
+	if !strings.Contains(joined, "--scenario-ir\x00") || strings.Contains(joined, mcpStarlark) || strings.Contains(joined, "--config\x00") {
+		t.Fatalf("runner command did not use compiled scenario IR: %q", plan.command)
+	}
+	for index, argument := range plan.command {
+		if argument == "--scenario-ir" && index+1 < len(plan.command) {
+			compiled, err := config.ParseScenarioIR(plan.command[index+1])
+			if err != nil || len(compiled.Stages) != 3 {
+				t.Fatalf("compiled runner IR = %+v, err=%v", compiled, err)
+			}
+			return
+		}
+	}
+	t.Fatal("runner command omitted --scenario-ir")
+}
+
+func TestMCPStarlarkCannotOverrideAuthorityOrEscapeDatasetRoot(t *testing.T) {
+	options := mcpTestOptions(t.TempDir())
+	server := NewServer(newMCPClient(), "test", options)
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"scenario target", `scenario(target="http://attacker/v1", stages=[stage("1s")])`, "target and model overrides"},
+		{"stage target", `scenario(stages=[stage("1s", target="http://attacker/v1")])`, "target and model overrides"},
+		{"stage dataset", `scenario(stages=[stage("1s", workload=workload("corpus", corpus_path="/etc/passwd"))])`, "dataset root"},
+		{"non-finite rate", `scenario(stages=[stage("1s", mode="constant", rate=float("nan"))])`, "rate must be finite"},
+		{"too many stages", `scenario(stages=[stage("1s")] * 129)`, "at most 128"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "starlark": test.source, "result_label": "unsafe"}))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	for _, input := range []map[string]any{
+		{"target": "kimi-k3", "result_label": "missing"},
+		{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "starlark": mcpStarlark, "result_label": "both"},
+	} {
+		if _, err := server.planBenchmark(context.Background(), decodeInput(t, input)); err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Fatalf("scenario selection error = %v", err)
+		}
+	}
+
+	longPath := filepath.Join(options.DatasetRoot, strings.Repeat("a", 3500))
+	expanded := fmt.Sprintf(`w = workload("corpus", corpus_path=%q)
+scenario(stages=[stage("1s", workload=w) for _ in range(128)])`, longPath)
+	if _, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "starlark": expanded, "result_label": "expanded"})); err == nil || !strings.Contains(err.Error(), "scenario exceeds") {
+		t.Fatalf("expanded scenario error = %v", err)
 	}
 }
 
@@ -176,9 +252,17 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 	if tools["plan_benchmark"]["annotations"].(map[string]any)["readOnlyHint"] != true || tools["cancel_benchmark"]["annotations"].(map[string]any)["destructiveHint"] != true {
 		t.Fatalf("tool annotations = %+v", tools)
 	}
+	planSchema := tools["plan_benchmark"]["inputSchema"].(map[string]any)
+	if len(planSchema["oneOf"].([]any)) != 2 || planSchema["properties"].(map[string]any)["starlark"] == nil {
+		t.Fatalf("plan schema does not advertise exclusive Starlark input: %+v", planSchema)
+	}
 	plan := mcpRequest(t, handler, "tools/call", map[string]any{"name": "plan_benchmark", "arguments": map[string]any{"target": "kimi-k3", "scenario": json.RawMessage(mcpScenario), "workers": 3, "result_label": "smoke"}})
 	if plan.Code != http.StatusOK || !strings.Contains(plan.Body.String(), `"isError":false`) {
 		t.Fatalf("plan response = %d %s", plan.Code, plan.Body.String())
+	}
+	starlarkPlan := mcpRequest(t, handler, "tools/call", map[string]any{"name": "plan_benchmark", "arguments": map[string]any{"target": "kimi-k3", "starlark": mcpStarlark, "result_label": "starlark"}})
+	if starlarkPlan.Code != http.StatusOK || !strings.Contains(starlarkPlan.Body.String(), `"isError":false`) || !strings.Contains(starlarkPlan.Body.String(), `"total_concurrency":12`) {
+		t.Fatalf("Starlark plan response = %d %s", starlarkPlan.Code, starlarkPlan.Body.String())
 	}
 	unknown := mcpRequest(t, handler, "tools/call", map[string]any{"name": "plan_benchmark", "arguments": map[string]any{"target": "kimi-k3", "target_url": "http://attacker", "scenario": json.RawMessage(mcpScenario), "result_label": "bad"}})
 	if !strings.Contains(unknown.Body.String(), `"isError":true`) || !strings.Contains(unknown.Body.String(), "unknown field") {
@@ -202,6 +286,14 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 	handler.ServeHTTP(get, getRequest)
 	if get.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /mcp = %d", get.Code)
+	}
+}
+
+func TestMCPJSONEncodingFailsClosed(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeMCPJSON(recorder, http.StatusOK, map[string]any{"invalid": math.NaN()})
+	if recorder.Code != http.StatusInternalServerError || !json.Valid(recorder.Body.Bytes()) || !strings.Contains(recorder.Body.String(), `"code":-32603`) {
+		t.Fatalf("encoding failure = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -519,6 +611,9 @@ func mcpTestOptions(root string) Options {
 	options.DatasetPVC = "benchmark-datasets"
 	options.DatasetRoot = filepath.Join(root, "datasets")
 	options.AllowedPlatforms = []string{"kubernetes", "openshift"}
+	options.starlarkCompiler = func(_ context.Context, source string) (*config.ScenarioConfig, error) {
+		return config.ParseStarlarkSource("<test-mcp>", source)
+	}
 	return options
 }
 

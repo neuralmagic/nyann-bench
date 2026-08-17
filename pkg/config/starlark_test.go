@@ -45,6 +45,31 @@ scenario(
 	}
 }
 
+func TestStarlarkSourceIsBoundedAndCannotLoadModules(t *testing.T) {
+	sc, err := config.ParseStarlarkSource("agent.star", `
+scenario(
+    stages = [stage("10s", concurrency=c) for c in range(2, 7, 2)],
+    workload = workload("faker", isl=64, osl=32),
+)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.Stages) != 3 || sc.Stages[2].Concurrency != 6 {
+		t.Fatalf("source stages = %+v", sc.Stages)
+	}
+
+	if _, err := config.ParseStarlarkSource("agent.star", `load("other.star", "value")`); err == nil || !contains(err.Error(), "disabled") {
+		t.Fatalf("load error = %v", err)
+	}
+	if _, err := config.ParseStarlarkSource("agent.star", `
+values = [i for i in range(1000000)]
+scenario(stages=[stage("1s")])
+`); err == nil || !contains(err.Error(), "too many steps") {
+		t.Fatalf("execution limit error = %v", err)
+	}
+}
+
 func TestStarlarkWorkloadTypes(t *testing.T) {
 	path := writeStarFile(t, `
 scenario(
