@@ -284,8 +284,9 @@ same `load`, `stages`, `warmup`, and `workload` schema as the CLI, or inline
 output are disabled. The API serializes compilation through one separate helper
 process at a time, with a three-second timeout, a 128 MiB Linux address-space
 limit, bounded output, a 100,000-step interpreter limit, and a 128-stage
-pre-iteration limit. Generated target/model overrides are rejected. Every
-generated stage and workload still
+pre-iteration limit. Only the validated compiled scenario is sent to benchmark
+Jobs; agent source is never evaluated a second time. Generated target/model
+overrides are rejected. Every generated stage and workload still
 passes the service's duration, load, string, and dataset-path bounds. Dataset
 paths must be under `-dataset-root`; results always go under `-result-root`.
 Plans perform Kubernetes server-side dry-run admission

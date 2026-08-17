@@ -23,17 +23,17 @@ import (
 
 func generateCmd() *cobra.Command {
 	var (
-		target         string
-		model          string
-		cfgInput       string
-		starlarkSource string
-		outputDir      string
-		workerID       int
-		workersFlag    string
-		metricsAddr    string
-		prometheusURL  string
-		deployName     string
-		kubeFlags      kube.Flags
+		target        string
+		model         string
+		cfgInput      string
+		scenarioIR    string
+		outputDir     string
+		workerID      int
+		workersFlag   string
+		metricsAddr   string
+		prometheusURL string
+		deployName    string
+		kubeFlags     kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -75,8 +75,8 @@ Workload types:
 			// Parse config early — needed to resolve --workers auto.
 			var sc *config.ScenarioConfig
 			var err error
-			if starlarkSource != "" {
-				sc, err = config.ParseStarlarkSource("<inline>", starlarkSource)
+			if scenarioIR != "" {
+				sc, err = config.ParseScenarioIR(scenarioIR)
 			} else {
 				sc, err = config.Parse(cfgInput)
 			}
@@ -249,8 +249,9 @@ Workload types:
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
-	cmd.Flags().StringVar(&starlarkSource, "starlark-source", "", "Inline Starlark scenario source")
-	cmd.MarkFlagsMutuallyExclusive("config", "starlark-source")
+	cmd.Flags().StringVar(&scenarioIR, "scenario-ir", "", "Internal compiled scenario representation")
+	_ = cmd.Flags().MarkHidden("scenario-ir")
+	cmd.MarkFlagsMutuallyExclusive("config", "scenario-ir")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)

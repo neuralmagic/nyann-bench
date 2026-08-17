@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/neuralmagic/nyann-bench/pkg/analysis"
+	"github.com/neuralmagic/nyann-bench/pkg/config"
 	"github.com/neuralmagic/nyann-bench/pkg/kube"
 )
 
@@ -23,7 +24,7 @@ const (
 	mcpProtocolVersion      = "2026-07-28"
 	mcpMaximumRequestBytes  = 1 << 20
 	mcpMaximumResultBytes   = 1 << 20
-	mcpMaximumScenarioBytes = 64 << 10
+	mcpMaximumScenarioBytes = config.MaxScenarioInputBytes
 	scenarioAnnotation      = "nyann-bench.neuralmagic.com/effective-scenario"
 	targetAnnotation        = "nyann-bench.neuralmagic.com/target"
 	resultLabelAnnotation   = "nyann-bench.neuralmagic.com/result-label"

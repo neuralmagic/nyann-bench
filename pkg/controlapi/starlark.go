@@ -14,7 +14,7 @@ import (
 
 const (
 	starlarkCompileTimeout = 3 * time.Second
-	starlarkCompilerOutput = 1 << 20
+	starlarkCompilerOutput = config.MaxScenarioInputBytes
 	starlarkCompilerError  = 8 << 10
 )
 

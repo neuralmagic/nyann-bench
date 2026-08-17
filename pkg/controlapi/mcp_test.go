@@ -85,9 +85,19 @@ func TestMCPPlanAcceptsBoundedStarlarkSource(t *testing.T) {
 		t.Fatalf("Starlark load = %+v", plan.Load)
 	}
 	joined := strings.Join(plan.command, "\x00")
-	if !strings.Contains(joined, "--starlark-source\x00"+mcpStarlark) || strings.Contains(joined, "--config\x00") {
-		t.Fatalf("runner command did not preserve Starlark source: %q", plan.command)
+	if !strings.Contains(joined, "--scenario-ir\x00") || strings.Contains(joined, mcpStarlark) || strings.Contains(joined, "--config\x00") {
+		t.Fatalf("runner command did not use compiled scenario IR: %q", plan.command)
 	}
+	for index, argument := range plan.command {
+		if argument == "--scenario-ir" && index+1 < len(plan.command) {
+			compiled, err := config.ParseScenarioIR(plan.command[index+1])
+			if err != nil || len(compiled.Stages) != 3 {
+				t.Fatalf("compiled runner IR = %+v, err=%v", compiled, err)
+			}
+			return
+		}
+	}
+	t.Fatal("runner command omitted --scenario-ir")
 }
 
 func TestMCPStarlarkCannotOverrideAuthorityOrEscapeDatasetRoot(t *testing.T) {
@@ -125,7 +135,7 @@ func TestMCPStarlarkCannotOverrideAuthorityOrEscapeDatasetRoot(t *testing.T) {
 	longPath := filepath.Join(options.DatasetRoot, strings.Repeat("a", 3500))
 	expanded := fmt.Sprintf(`w = workload("corpus", corpus_path=%q)
 scenario(stages=[stage("1s", workload=w) for _ in range(128)])`, longPath)
-	if _, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "starlark": expanded, "result_label": "expanded"})); err == nil || !strings.Contains(err.Error(), "effective scenario exceeds") {
+	if _, err := server.planBenchmark(context.Background(), decodeInput(t, map[string]any{"target": "kimi-k3", "starlark": expanded, "result_label": "expanded"})); err == nil || !strings.Contains(err.Error(), "scenario exceeds") {
 		t.Fatalf("expanded scenario error = %v", err)
 	}
 }

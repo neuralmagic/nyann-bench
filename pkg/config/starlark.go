@@ -16,11 +16,10 @@ const (
 	starlarkTypeStage    = "Stage"
 	starlarkTypeBarrier  = "Barrier"
 
-	// MaxStarlarkExecutionSteps bounds programmable scenario evaluation. The
-	// same limit applies when a scenario is parsed by the API and by a runner.
+	// MaxStarlarkExecutionSteps bounds programmable scenario evaluation.
 	MaxStarlarkExecutionSteps uint64 = 100_000
-	MaxStarlarkSourceBytes           = 64 << 10
-	MaxStarlarkSourceStages          = 128
+	MaxScenarioInputBytes            = 64 << 10
+	MaxScenarioStages                = 128
 )
 
 // ParseStarlark evaluates a .star file and returns the ScenarioConfig
@@ -37,10 +36,10 @@ func ParseStarlark(path string) (*ScenarioConfig, error) {
 // execution. Module loads and program output are disabled, so source cannot
 // grant itself filesystem access or amplify service logs.
 func ParseStarlarkSource(filename, source string) (*ScenarioConfig, error) {
-	if len(source) == 0 || len(source) > MaxStarlarkSourceBytes || strings.ContainsRune(source, '\x00') {
-		return nil, fmt.Errorf("Starlark source must contain between 1 and %d bytes without NUL characters", MaxStarlarkSourceBytes)
+	if len(source) == 0 || len(source) > MaxScenarioInputBytes || strings.ContainsRune(source, '\x00') {
+		return nil, fmt.Errorf("Starlark source must contain between 1 and %d bytes without NUL characters", MaxScenarioInputBytes)
 	}
-	return parseStarlark(filename, source, true, MaxStarlarkSourceStages)
+	return parseStarlark(filename, source, true, MaxScenarioStages)
 }
 
 func parseStarlark(filename, source string, bounded bool, maxStages int) (*ScenarioConfig, error) {

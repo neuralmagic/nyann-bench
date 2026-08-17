@@ -13,39 +13,39 @@ import (
 	"github.com/neuralmagic/nyann-bench/pkg/config"
 )
 
-func (s *Server) parseBenchmarkScenario(ctx context.Context, input benchmarkInput) (*config.ScenarioConfig, []string, error) {
+func (s *Server) parseBenchmarkScenario(ctx context.Context, input benchmarkInput) (*config.ScenarioConfig, error) {
 	hasJSON := len(input.Scenario) > 0
 	hasStarlark := input.Starlark != ""
 	if hasJSON == hasStarlark {
-		return nil, nil, fmt.Errorf("exactly one of scenario or starlark must be supplied")
+		return nil, fmt.Errorf("exactly one of scenario or starlark must be supplied")
 	}
 	if hasStarlark {
 		if len(input.Starlark) > mcpMaximumScenarioBytes || strings.ContainsRune(input.Starlark, '\x00') {
-			return nil, nil, fmt.Errorf("starlark must be non-empty source no larger than %d bytes", mcpMaximumScenarioBytes)
+			return nil, fmt.Errorf("starlark must be non-empty source no larger than %d bytes", mcpMaximumScenarioBytes)
 		}
 		scenario, err := s.compileStarlark(ctx, input.Starlark)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid Starlark scenario: %w", err)
+			return nil, fmt.Errorf("invalid Starlark scenario: %w", err)
 		}
-		return scenario, []string{"--starlark-source", input.Starlark}, nil
+		return scenario, nil
 	}
 	if len(input.Scenario) > mcpMaximumScenarioBytes || !jsonObject(input.Scenario) {
-		return nil, nil, fmt.Errorf("scenario must be a JSON object no larger than %d bytes", mcpMaximumScenarioBytes)
+		return nil, fmt.Errorf("scenario must be a JSON object no larger than %d bytes", mcpMaximumScenarioBytes)
 	}
 	var typed config.Config
 	if err := decodeStrict(input.Scenario, &typed); err != nil {
-		return nil, nil, fmt.Errorf("invalid typed scenario: %w", err)
+		return nil, fmt.Errorf("invalid typed scenario: %w", err)
 	}
 	scenario, err := config.Parse(string(input.Scenario))
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid typed scenario: %w", err)
+		return nil, fmt.Errorf("invalid typed scenario: %w", err)
 	}
-	return scenario, []string{"--config", string(input.Scenario)}, nil
+	return scenario, nil
 }
 
 func validateScenarioBounds(sc *config.ScenarioConfig) error {
-	if len(sc.Stages) == 0 || len(sc.Stages) > 128 {
-		return fmt.Errorf("scenario must contain between 1 and 128 stages")
+	if len(sc.Stages) == 0 || len(sc.Stages) > config.MaxScenarioStages {
+		return fmt.Errorf("scenario must contain between 1 and %d stages", config.MaxScenarioStages)
 	}
 	if sc.Target != "" || sc.Model != "" {
 		return fmt.Errorf("scenario target and model overrides are not allowed; use the operator-configured logical target")

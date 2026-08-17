@@ -23,7 +23,7 @@ import (
 )
 
 func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plannedBenchmark, error) {
-	scenario, configArgs, err := s.parseBenchmarkScenario(ctx, input)
+	scenario, err := s.parseBenchmarkScenario(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,13 @@ func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plan
 	if err := validateScenarioDatasetPaths(scenario, s.options.DatasetRoot); err != nil {
 		return nil, err
 	}
+	runnerIR, err := json.Marshal(scenario)
+	if err != nil {
+		return nil, fmt.Errorf("encoding runner scenario: %w", err)
+	}
+	if len(runnerIR) > mcpMaximumScenarioBytes {
+		return nil, fmt.Errorf("compiled runner scenario exceeds the %d-byte service bound", mcpMaximumScenarioBytes)
+	}
 	canonical, _ := json.Marshal(input)
 	digest := sha256.Sum256(canonical)
 	runID := input.RunID
@@ -70,8 +77,7 @@ func (s *Server) planBenchmark(ctx context.Context, input benchmarkInput) (*plan
 	if len(validation.IsDNS1123Subdomain(runID)) > 0 || len(runID) > 63 {
 		return nil, fmt.Errorf("run_id must be a DNS-safe Kubernetes name of at most 63 characters")
 	}
-	command := []string{"generate", "--target", target.URL}
-	command = append(command, configArgs...)
+	command := []string{"generate", "--target", target.URL, "--scenario-ir", string(runnerIR)}
 	if target.Model != "" {
 		command = append(command, "--model", target.Model)
 	}

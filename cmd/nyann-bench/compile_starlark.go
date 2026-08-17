@@ -21,19 +21,26 @@ func compileStarlarkCmd() *cobra.Command {
 			if err := limitStarlarkCompilerMemory(); err != nil {
 				return fmt.Errorf("setting Starlark compiler memory limit: %w", err)
 			}
-			source, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), config.MaxStarlarkSourceBytes+1))
+			source, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), config.MaxScenarioInputBytes+1))
 			if err != nil {
 				return fmt.Errorf("reading Starlark source: %w", err)
 			}
-			if len(source) > config.MaxStarlarkSourceBytes {
-				return fmt.Errorf("Starlark source exceeds %d bytes", config.MaxStarlarkSourceBytes)
+			if len(source) > config.MaxScenarioInputBytes {
+				return fmt.Errorf("Starlark source exceeds %d bytes", config.MaxScenarioInputBytes)
 			}
 			scenario, err := config.ParseStarlarkSource("<mcp>", string(source))
 			if err != nil {
 				return err
 			}
-			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(scenario); err != nil {
+			encoded, err := json.Marshal(scenario)
+			if err != nil {
 				return fmt.Errorf("encoding scenario: %w", err)
+			}
+			if len(encoded) > config.MaxScenarioInputBytes {
+				return fmt.Errorf("compiled scenario exceeds %d bytes", config.MaxScenarioInputBytes)
+			}
+			if _, err := cmd.OutOrStdout().Write(encoded); err != nil {
+				return fmt.Errorf("writing scenario: %w", err)
 			}
 			return nil
 		},

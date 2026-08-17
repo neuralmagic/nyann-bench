@@ -526,7 +526,7 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 	}
 	var target string
 	var configValue string
-	var starlarkValue string
+	var scenarioIRValue string
 	for i, arg := range input {
 		flag := strings.SplitN(arg, "=", 2)[0]
 		if strings.HasPrefix(flag, "--kube") || flag == "--worker-id" || flag == "--workers" || flag == "--metrics" || flag == "--output-dir" {
@@ -555,20 +555,20 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 				return nil, "", fmt.Errorf("command may contain at most one --config")
 			}
 			configValue = strings.TrimPrefix(arg, "--config=")
-		} else if arg == "--starlark-source" {
-			if i+1 >= len(input) || starlarkValue != "" {
-				return nil, "", fmt.Errorf("command may contain at most one --starlark-source with a value")
+		} else if arg == "--scenario-ir" {
+			if i+1 >= len(input) || scenarioIRValue != "" {
+				return nil, "", fmt.Errorf("command may contain at most one --scenario-ir with a value")
 			}
-			starlarkValue = input[i+1]
-		} else if strings.HasPrefix(arg, "--starlark-source=") {
-			if starlarkValue != "" {
-				return nil, "", fmt.Errorf("command may contain at most one --starlark-source")
+			scenarioIRValue = input[i+1]
+		} else if strings.HasPrefix(arg, "--scenario-ir=") {
+			if scenarioIRValue != "" {
+				return nil, "", fmt.Errorf("command may contain at most one --scenario-ir")
 			}
-			starlarkValue = strings.TrimPrefix(arg, "--starlark-source=")
+			scenarioIRValue = strings.TrimPrefix(arg, "--scenario-ir=")
 		}
 	}
-	if configValue != "" && starlarkValue != "" {
-		return nil, "", fmt.Errorf("command may contain only one of --config or --starlark-source")
+	if configValue != "" && scenarioIRValue != "" {
+		return nil, "", fmt.Errorf("command may contain only one of --config or --scenario-ir")
 	}
 	u, err := url.Parse(target)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
@@ -589,8 +589,17 @@ func validateCommand(input []string, options Options) ([]string, string, error) 
 			return nil, "", err
 		}
 	}
-	if len(starlarkValue) > config.MaxStarlarkSourceBytes {
-		return nil, "", fmt.Errorf("--starlark-source exceeds %d bytes", config.MaxStarlarkSourceBytes)
+	if scenarioIRValue != "" {
+		scenario, err := config.ParseScenarioIR(scenarioIRValue)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := validateScenarioBounds(scenario); err != nil {
+			return nil, "", err
+		}
+		if err := validateScenarioDatasetPaths(scenario, options.DatasetRoot); err != nil {
+			return nil, "", err
+		}
 	}
 	return append([]string(nil), input...), target, nil
 }

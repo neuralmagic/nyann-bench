@@ -1,11 +1,38 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"time"
 )
+
+// ParseScenarioIR decodes the bounded internal representation passed from the
+// control API to a benchmark runner after source compilation and validation.
+func ParseScenarioIR(input string) (*ScenarioConfig, error) {
+	if len(input) == 0 || len(input) > MaxScenarioInputBytes {
+		return nil, fmt.Errorf("scenario IR must contain between 1 and %d bytes", MaxScenarioInputBytes)
+	}
+	var scenario ScenarioConfig
+	decoder := json.NewDecoder(bytes.NewBufferString(input))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&scenario); err != nil {
+		return nil, fmt.Errorf("decoding scenario IR: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decoding scenario IR: multiple JSON values")
+		}
+		return nil, fmt.Errorf("decoding scenario IR: %w", err)
+	}
+	if err := scenario.Validate(); err != nil {
+		return nil, err
+	}
+	return &scenario, nil
+}
 
 // ScenarioConfig is the universal intermediate representation for benchmark
 // configurations. Both JSON configs and Starlark scripts produce this type.
