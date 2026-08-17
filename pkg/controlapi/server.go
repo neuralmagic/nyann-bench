@@ -78,7 +78,7 @@ type ResultMetadata struct {
 type Run struct {
 	ID                      string         `json:"id"`
 	Status                  string         `json:"status"`
-	Command                 []string       `json:"command"`
+	Command                 []string       `json:"command,omitempty"`
 	Workers                 int32          `json:"workers"`
 	Succeeded               int32          `json:"succeeded"`
 	Failed                  int32          `json:"failed"`
@@ -109,6 +109,13 @@ type Server struct {
 	readLogs  func(context.Context, string, int64) (string, error)
 }
 
+// InferenceTarget is an operator-owned logical destination. MCP clients select
+// its configured map key; they never provide URLs or other network destinations.
+type InferenceTarget struct {
+	URL   string `json:"url"`
+	Model string `json:"model,omitempty"`
+}
+
 type Options struct {
 	Token                 string
 	AllowedTargetHosts    []string
@@ -122,6 +129,12 @@ type Options struct {
 	MaxActiveDeadline     time.Duration
 	DefaultRetentionTTL   time.Duration
 	MaxRetentionTTL       time.Duration
+	InferenceTargets      map[string]InferenceTarget
+	ResultPVC             string
+	ResultRoot            string
+	DatasetPVC            string
+	DatasetRoot           string
+	AllowedPlatforms      []string
 }
 
 func DefaultOptions() Options {
@@ -172,7 +185,56 @@ func (o Options) Validate() error {
 			return fmt.Errorf("allowed PVC %q is invalid", pvc)
 		}
 	}
+	for name, target := range o.InferenceTargets {
+		if len(validation.IsDNS1123Label(name)) > 0 {
+			return fmt.Errorf("logical inference target %q must be a DNS label", name)
+		}
+		if _, _, err := validateCommand([]string{"generate", "--target", target.URL}, o); err != nil {
+			return fmt.Errorf("logical inference target %q: %w", name, err)
+		}
+	}
+	if (o.ResultPVC == "") != (o.ResultRoot == "") {
+		return fmt.Errorf("result PVC and result root must be configured together")
+	}
+	if o.ResultRoot != "" {
+		if !o.pvcConfigured(o.ResultPVC) || !validAbsoluteRoot(o.ResultRoot) {
+			return fmt.Errorf("result storage must use an allowed PVC and clean absolute root")
+		}
+	}
+	if (o.DatasetPVC == "") != (o.DatasetRoot == "") {
+		return fmt.Errorf("dataset PVC and dataset root must be configured together")
+	}
+	if o.DatasetRoot != "" {
+		if !o.pvcConfigured(o.DatasetPVC) || !validAbsoluteRoot(o.DatasetRoot) {
+			return fmt.Errorf("dataset storage must use an allowed PVC and clean absolute root")
+		}
+	}
+	for _, platform := range o.allowedPlatforms() {
+		if platform != "kubernetes" && platform != "openshift" {
+			return fmt.Errorf("unsupported allowed platform %q", platform)
+		}
+	}
 	return nil
+}
+
+func (o Options) pvcConfigured(name string) bool {
+	for _, allowed := range o.AllowedPVCs {
+		if strings.TrimSpace(allowed) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (o Options) allowedPlatforms() []string {
+	if len(o.AllowedPlatforms) == 0 {
+		return []string{"kubernetes", "openshift"}
+	}
+	return o.AllowedPlatforms
+}
+
+func validAbsoluteRoot(value string) bool {
+	return strings.HasPrefix(value, "/") && path.Clean(value) == value && value != "/"
 }
 
 func NewServer(client kubernetes.Interface, namespace string, options Options) *Server {
@@ -212,6 +274,8 @@ func NewServer(client kubernetes.Interface, namespace string, options Options) *
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("GET /readyz", s.ready)
+	mux.Handle("POST /mcp", s.MCPHandler())
 	mux.HandleFunc("POST /v1/runs", s.createRun)
 	mux.HandleFunc("GET /v1/runs", s.listRuns)
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
@@ -222,7 +286,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -238,6 +302,14 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.client.BatchV1().Jobs(s.namespace).List(r.Context(), metav1.ListOptions{Limit: 1}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "Kubernetes API is not ready")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {

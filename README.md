@@ -247,9 +247,10 @@ where the vLLM or llm-d inference Services are deployed:
 kubectl -n benchmarks create secret generic nyann-bench-api-auth \
   --from-literal=token='REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS'
 kubectl -n benchmarks create configmap nyann-bench-api-policy \
-  --from-literal=allowed-target-hosts='' \
+  --from-literal=allowed-target-hosts='kimi-k3-api' \
   --from-literal=allowed-target-suffixes='.models.svc' \
-  --from-literal=allowed-pvcs='benchmark-results,benchmark-datasets'
+  --from-literal=allowed-pvcs='benchmark-results,benchmark-datasets' \
+  --from-literal='targets.json={"kimi-k3":{"url":"http://kimi-k3-api:8000/v1","model":"mgoin/Kimi-K3-pruned75"}}'
 ```
 
 Replace every `REPLACE_WITH_IMAGE_DIGEST` in `deploy/api.yaml` with the same
@@ -297,9 +298,9 @@ Starlark configs are rejected because the control plane cannot inspect them for
 per-stage target overrides. The API also rejects Prometheus and auxiliary URL
 overrides. It owns `--workers`, `--worker-id`, `--metrics`,
 `--output-dir`, and all `--kube*` flags. Durable runs report a `pvc://` URI and
-write nyann-bench's existing `requests_N.jsonl` and `timestamps_N.json` files;
-uploading those files to an artifact store is intentionally left for a later
-integration.
+write nyann-bench's existing `requests_N.jsonl` and `timestamps_N.json` files.
+The API mounts the result PVC read-only so reports and immutable artifact
+hashes can be reconstructed after a controller restart.
 
 An eval uses the same endpoint and the native eval command:
 
@@ -329,6 +330,90 @@ curl -sS -H 'authorization: Bearer REPLACE_WITH_TOKEN' 'http://nyann-bench-api.b
 curl -i -X DELETE -H 'authorization: Bearer REPLACE_WITH_TOKEN' http://nyann-bench-api.benchmarks.svc:8080/v1/runs/llama-smoke
 ```
 
+### Stateless MCP benchmark tools
+
+Agent clients use `POST /mcp`, protocol `2026-07-28`. Every request repeats its
+protocol metadata and correlation headers; the server creates no session and
+does not implement legacy `initialize`. `tools/list` publishes strict bounded
+schemas for:
+
+- `plan_benchmark`, `submit_benchmark`
+- `list_benchmarks`, `get_benchmark`, `cancel_benchmark`
+- `list_benchmark_artifacts`, `get_benchmark_report`
+
+MCP requests choose an operator-owned logical `target`. They cannot supply a
+URL, image, command, shell fragment, kubectl flag, or arbitrary path. A typed
+JSON `scenario` uses the same `load`, `stages`, `warmup`, and `workload` schema
+as the CLI. Dataset paths must be under `-dataset-root`; results always go
+under `-result-root`. Plans are read-only and show exact total/per-worker load,
+the CPU Indexed Job shape, target identity, durable result location, and
+warnings. Reports aggregate all present `requests_N.jsonl` partitions and
+include latency distributions, throughput, tokens, evaluation accuracy,
+worker completeness, the exact common measurement window, image digest, and
+artifact SHA-256 values. Raw JSONL and Prometheus payloads are never returned.
+
+The following smoke call targets a multinode Kimi K3 service. Change
+`plan_benchmark` to `submit_benchmark` only after inspecting the plan:
+
+```bash
+curl -sS http://nyann-bench-api.benchmarks.svc:8080/mcp \
+  -H 'authorization: Bearer REPLACE_WITH_TOKEN' \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'mcp-protocol-version: 2026-07-28' \
+  -H 'mcp-method: tools/call' \
+  -H 'mcp-name: plan_benchmark' \
+  -d '{
+    "jsonrpc":"2.0","id":1,"method":"tools/call",
+    "params":{
+      "_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientInfo":{"name":"vdp","version":"1"},
+        "io.modelcontextprotocol/clientCapabilities":{}
+      },
+      "name":"plan_benchmark",
+      "arguments":{
+        "target":"kimi-k3","workers":4,"cpu":"4","memory":"8Gi",
+        "platform":"kubernetes","deadline_seconds":900,
+        "result_label":"kimi-k3-smoke","vdp_workstream":"kimi-k3/bringup",
+        "scenario":{
+          "load":{"mode":"concurrent","concurrency":32,"duration":"2m"},
+          "workload":{"type":"faker","isl":1024,"osl":256,"turns":1}
+        }
+      }
+    }
+  }'
+```
+
+A sustained-load `arguments` object for the same endpoint is:
+
+```json
+{
+  "target": "kimi-k3",
+  "workers": 8,
+  "cpu": "8",
+  "memory": "16Gi",
+  "platform": "kubernetes",
+  "deadline_seconds": 10800,
+  "result_label": "kimi-k3-sustained",
+  "vdp_workstream": "kimi-k3/bringup",
+  "scenario": {
+    "warmup": {"duration": "10m", "stagger": true},
+    "stages": [
+      {"concurrency": 256, "duration": "30m"},
+      {"concurrency": 512, "duration": "2h"}
+    ],
+    "workload": {"type": "faker", "isl": 4096, "osl": 1024, "turns": 2}
+  }
+}
+```
+
+The native `/v1/runs` command-vector API remains available for trusted legacy
+operators. Existing CLI flags and manifests are unchanged. New agents should
+use MCP because its logical-target and typed-scenario boundary is narrower.
+Apply `deploy/networkpolicy.example.yaml` only after replacing its Kubernetes
+API CIDR and matching the cluster's monitoring and inference labels.
+
 The server enforces operator-configured ceilings for workers, per-worker CPU
 and memory, active runtime, and completed-Job retention. The defaults in the
 manifest are 16 workers, 16 CPU, 64 GiB, six hours maximum runtime, and seven
@@ -338,7 +423,7 @@ operator-managed and must be an immutable official digest.
 
 The supplied RBAC can only manage Jobs, their headless Services, and pod logs
 in its own namespace. Bearer authentication is required for every `/v1`
-endpoint, but NetworkPolicy should still limit callers. Apply a namespace
+and `/mcp` endpoint, but NetworkPolicy should still limit callers. Apply a namespace
 `ResourceQuota` as defense in depth because aggregate namespace capacity and
 other workload controllers are outside this API's scope, for example:
 

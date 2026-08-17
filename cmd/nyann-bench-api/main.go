@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +26,12 @@ func main() {
 	allowedHosts := flag.String("allowed-target-hosts", "", "comma-separated exact vLLM or llm-d inference service hosts")
 	allowedSuffixes := flag.String("allowed-target-suffixes", "", "comma-separated vLLM or llm-d inference service DNS suffixes")
 	allowedPVCs := flag.String("allowed-pvcs", "", "comma-separated PVC names benchmark Jobs may mount")
+	targetsFile := flag.String("targets-file", "", "JSON file mapping logical MCP target names to operator-owned inference destinations")
+	resultPVC := flag.String("result-pvc", "", "PVC used for durable MCP benchmark results")
+	resultRoot := flag.String("result-root", "", "absolute result path mounted in the API and benchmark Jobs")
+	datasetPVC := flag.String("dataset-pvc", "", "PVC containing MCP benchmark datasets")
+	datasetRoot := flag.String("dataset-root", "", "absolute dataset root mounted in benchmark Jobs")
+	allowedPlatforms := flag.String("allowed-platforms", "kubernetes,openshift", "comma-separated platforms accepted by MCP plans")
 	runnerImage := flag.String("runner-image", "", "immutable nyann-bench image digest used for run Jobs")
 	maxWorkers := flag.Int("max-workers", 16, "maximum workers per run")
 	maxCPU := flag.String("max-cpu", "16", "maximum CPU per worker")
@@ -55,6 +63,10 @@ func main() {
 	if err != nil || memoryLimit.Sign() <= 0 {
 		fatal("invalid -max-memory")
 	}
+	targets, err := loadTargets(*targetsFile)
+	if err != nil {
+		fatal("loading logical inference targets: %v", err)
+	}
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		fatal("loading in-cluster Kubernetes config: %v", err)
@@ -68,6 +80,8 @@ func main() {
 		AllowedPVCs: csv(*allowedPVCs), RunnerImage: *runnerImage, MaxWorkers: *maxWorkers, MaxCPU: cpuLimit, MaxMemory: memoryLimit,
 		DefaultActiveDeadline: *defaultDeadline, MaxActiveDeadline: *maxDeadline,
 		DefaultRetentionTTL: *defaultTTL, MaxRetentionTTL: *maxTTL,
+		InferenceTargets: targets, ResultPVC: *resultPVC, ResultRoot: *resultRoot,
+		DatasetPVC: *datasetPVC, DatasetRoot: *datasetRoot, AllowedPlatforms: csv(*allowedPlatforms),
 	}
 	if err := options.Validate(); err != nil {
 		fatal("invalid API policy: %v", err)
@@ -90,6 +104,35 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fatal("serving API: %v", err)
 	}
+}
+
+func loadTargets(filename string) (map[string]controlapi.InferenceTarget, error) {
+	if strings.TrimSpace(filename) == "" {
+		return map[string]controlapi.InferenceTarget{}, nil
+	}
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > 256<<10 {
+		return nil, fmt.Errorf("targets file exceeds 256 KiB")
+	}
+	dec := json.NewDecoder(io.LimitReader(file, 256<<10))
+	dec.DisallowUnknownFields()
+	var targets map[string]controlapi.InferenceTarget
+	if err := dec.Decode(&targets); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("targets file must contain exactly one JSON object")
+	}
+	return targets, nil
 }
 
 func csv(value string) []string {

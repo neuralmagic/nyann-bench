@@ -1,0 +1,87 @@
+# Example baseline. Label authorized VDP/client Pods with
+# nyann-bench.neuralmagic.com/client=true and inference Pods with
+# nyann-bench.neuralmagic.com/target=true. Adapt the Kubernetes API egress CIDR
+# to the cluster's Service CIDR before applying; the API Pod needs TCP/443 to
+# create and inspect Jobs and Services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nyann-bench-api
+spec:
+  podSelector:
+    matchLabels:
+      app: nyann-bench-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              nyann-bench.neuralmagic.com/client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32 # REPLACE_WITH_KUBERNETES_API_SERVICE_IP/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Benchmark workers need only DNS and the explicitly labelled inference Pods.
+# The generated Job label is selected here; no GPU or Kueue queue is requested.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nyann-bench-workers
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nyann-bench
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nyann-bench
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              nyann-bench.neuralmagic.com/targets: "true"
+          podSelector:
+            matchLabels:
+              nyann-bench.neuralmagic.com/target: "true"
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8001
