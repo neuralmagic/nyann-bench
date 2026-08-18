@@ -18,7 +18,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-      - run: go test ./... -count=1 -race
+      - name: Test process-isolation paths
+        run: go test ./... -count=1
+      - name: Test with the race detector
+        run: go test ./... -count=1 -race
 
   container:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository

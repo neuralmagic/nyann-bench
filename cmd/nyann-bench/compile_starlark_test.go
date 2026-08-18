@@ -11,6 +11,9 @@ import (
 )
 
 func TestCompileStarlarkCommandEmitsBoundedScenarioIR(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("race runtime cannot start below the compiler subprocess memory limit")
+	}
 	command := exec.Command(os.Args[0], "-test.run=^TestCompileStarlarkHelperProcess$")
 	command.Env = append(os.Environ(), "NYANN_BENCH_COMPILE_STARLARK_HELPER=1")
 	command.Stdin = bytes.NewBufferString(`scenario(stages=[stage("1s", concurrency=3)])`)
