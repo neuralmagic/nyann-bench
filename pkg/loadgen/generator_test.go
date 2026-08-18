@@ -477,10 +477,10 @@ type evalDataset struct {
 
 func (d *evalDataset) NextConversation() dataset.Conversation {
 	return dataset.Conversation{
-		Turns: [][]client.Message{
-			{
+		Turns: []*dataset.LazyTurn{
+			dataset.Resolved([]client.Message{
 				{Role: "user", Content: "What is 6 * 7?"},
-			},
+			}),
 		},
 		MaxTokens:      100,
 		ExpectedAnswer: d.answer,
@@ -1291,8 +1291,8 @@ type mcEvalDataset struct {
 func (d *mcEvalDataset) NextConversation() dataset.Conversation {
 	greedy := 0.0
 	return dataset.Conversation{
-		Turns: [][]client.Message{
-			{{Role: "user", Content: "What is the correct answer?\n(A) Wrong\n(B) Right\n(C) Wrong\n(D) Wrong\nExpress your final answer as 'A', 'B', 'C', or 'D'."}},
+		Turns: []*dataset.LazyTurn{
+			dataset.Resolved([]client.Message{{Role: "user", Content: "What is the correct answer?\n(A) Wrong\n(B) Right\n(C) Wrong\n(D) Wrong\nExpress your final answer as 'A', 'B', 'C', or 'D'."}}),
 		},
 		MaxTokens:      256,
 		Temperature:    &greedy,

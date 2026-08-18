@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/neuralmagic/nyann-bench/pkg/client"
 	"github.com/neuralmagic/nyann-bench/pkg/dataset"
 )
 
@@ -20,12 +21,12 @@ func TestSyntheticBasic(t *testing.T) {
 		t.Errorf("expected MaxTokens=256, got %d", conv.MaxTokens)
 	}
 	// Turn 0: 1 user message
-	if len(conv.Turns[0]) != 1 {
-		t.Errorf("turn 0: expected 1 message, got %d", len(conv.Turns[0]))
+	if len(conv.Turn(0)) != 1 {
+		t.Errorf("turn 0: expected 1 message, got %d", len(conv.Turn(0)))
 	}
 	// Turn 1: user + assistant + user = 3 messages
-	if len(conv.Turns[1]) != 3 {
-		t.Errorf("turn 1: expected 3 messages, got %d", len(conv.Turns[1]))
+	if len(conv.Turn(1)) != 3 {
+		t.Errorf("turn 1: expected 3 messages, got %d", len(conv.Turn(1)))
 	}
 }
 
@@ -41,7 +42,7 @@ func TestFakerBasic(t *testing.T) {
 	}
 
 	// Check content is non-trivial
-	content := conv.Turns[0][0].Content
+	content := conv.Turn(0)[0].Content
 	if len(content) < 100 {
 		t.Errorf("expected substantial content, got %d chars", len(content))
 	}
@@ -54,7 +55,7 @@ func TestFakerDeterministic(t *testing.T) {
 	c1 := ds.NextConversation()
 	c2 := ds.NextConversation()
 
-	if c1.Turns[0][0].Content == c2.Turns[0][0].Content {
+	if c1.Turn(0)[0].Content == c2.Turn(0)[0].Content {
 		t.Error("expected different content for sequential conversations")
 	}
 }
@@ -64,7 +65,7 @@ func TestSyntheticExactTokenTrim(t *testing.T) {
 	ds := dataset.NewSyntheticWithTokenCounter(100000, 100, 1, 5.28, counter)
 	conv := ds.NextConversation()
 
-	content := conv.Turns[0][0].Content
+	content := conv.Turn(0)[0].Content
 	tokens, err := counter(content)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +85,7 @@ func TestFakerExactTokenTrim(t *testing.T) {
 	ds := dataset.NewFakerWithTokenCounter(100000, 100, 1, 5.28, counter)
 	conv := ds.NextConversation()
 
-	content := conv.Turns[0][0].Content
+	content := conv.Turn(0)[0].Content
 	tokens, err := counter(content)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +118,7 @@ func TestCorpusFromFile(t *testing.T) {
 		t.Errorf("expected MaxTokens=16, got %d", conv.MaxTokens)
 	}
 
-	content := conv.Turns[0][0].Content
+	content := conv.Turn(0)[0].Content
 	// 32 tokens * 4 chars = 128 chars
 	if len(content) != 128 {
 		t.Errorf("expected 128 chars, got %d", len(content))
@@ -145,8 +146,9 @@ func TestCorpusFromDirectory(t *testing.T) {
 	}
 
 	conv := ds.NextConversation()
-	if len(conv.Turns[0][0].Content) != 128 {
-		t.Errorf("expected 128 chars, got %d", len(conv.Turns[0][0].Content))
+	content := conv.Turn(0)[0].Content
+	if len(content) != 128 {
+		t.Errorf("expected 128 chars, got %d", len(content))
 	}
 }
 
@@ -172,8 +174,8 @@ func TestCorpusSlidingWindow(t *testing.T) {
 	c1 := ds.NextConversation()
 	c2 := ds.NextConversation()
 
-	content1 := c1.Turns[0][0].Content
-	content2 := c2.Turns[0][0].Content
+	content1 := c1.Turn(0)[0].Content
+	content2 := c2.Turn(0)[0].Content
 
 	if content1 == content2 {
 		t.Error("expected different content for sequential corpus reads")
@@ -189,19 +191,21 @@ func TestSubsequentISL(t *testing.T) {
 		ds.SubsequentISL = 50
 		conv := ds.NextConversation()
 
-		turn0Len := len(conv.Turns[0][0].Content)
+		turn0Len := len(conv.Turn(0)[0].Content)
 		// Turn 0 user message: 200 tokens * 4 chars = 800
 		if turn0Len != 800 {
 			t.Errorf("turn 0: expected 800 chars, got %d", turn0Len)
 		}
 		// Turn 1 new user message is the last in the slice
-		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		turn1Msgs := conv.Turn(1)
+		turn1User := turn1Msgs[len(turn1Msgs)-1].Content
 		// 50 tokens * 4 chars = 200
 		if len(turn1User) != 200 {
 			t.Errorf("turn 1 user: expected 200 chars, got %d", len(turn1User))
 		}
 		// Turn 2 new user message
-		turn2User := conv.Turns[2][len(conv.Turns[2])-1].Content
+		turn2Msgs := conv.Turn(2)
+		turn2User := turn2Msgs[len(turn2Msgs)-1].Content
 		if len(turn2User) != 200 {
 			t.Errorf("turn 2 user: expected 200 chars, got %d", len(turn2User))
 		}
@@ -212,11 +216,12 @@ func TestSubsequentISL(t *testing.T) {
 		ds.SubsequentISL = 50
 		conv := ds.NextConversation()
 
-		turn0Len := len(conv.Turns[0][0].Content)
+		turn0Len := len(conv.Turn(0)[0].Content)
 		if turn0Len != 800 {
 			t.Errorf("turn 0: expected 800 chars, got %d", turn0Len)
 		}
-		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		turn1Msgs := conv.Turn(1)
+		turn1User := turn1Msgs[len(turn1Msgs)-1].Content
 		if len(turn1User) != 200 {
 			t.Errorf("turn 1 user: expected 200 chars, got %d", len(turn1User))
 		}
@@ -227,8 +232,9 @@ func TestSubsequentISL(t *testing.T) {
 		ds := dataset.NewSynthetic(100, 64, 2, charsPerToken)
 		conv := ds.NextConversation()
 
-		turn0Len := len(conv.Turns[0][0].Content)
-		turn1User := conv.Turns[1][len(conv.Turns[1])-1].Content
+		turn0Len := len(conv.Turn(0)[0].Content)
+		turn1Msgs := conv.Turn(1)
+		turn1User := turn1Msgs[len(turn1Msgs)-1].Content
 		if turn0Len != 400 {
 			t.Errorf("turn 0: expected 400 chars, got %d", turn0Len)
 		}
@@ -278,7 +284,7 @@ func TestCorpusPreTokenize(t *testing.T) {
 	// Generate several conversations and verify token counts are close to 100
 	for i := 0; i < 10; i++ {
 		conv := ds.NextConversation()
-		content := conv.Turns[0][0].Content
+		content := conv.Turn(0)[0].Content
 		tokens := len(strings.Fields(content))
 		// With pre-tokenization, should be within ~10% of target
 		if tokens < 80 || tokens > 120 {
@@ -295,7 +301,7 @@ func TestCorpusPreTokenize(t *testing.T) {
 	var charBasedTokens []int
 	for i := 0; i < 10; i++ {
 		conv := dsCharBased.NextConversation()
-		content := conv.Turns[0][0].Content
+		content := conv.Turn(0)[0].Content
 		charBasedTokens = append(charBasedTokens, len(strings.Fields(content)))
 	}
 
@@ -315,5 +321,51 @@ func TestCorpusPreTokenize(t *testing.T) {
 func fixedCharsPerTokenCounter(charsPerToken int) func(string) (int, error) {
 	return func(s string) (int, error) {
 		return (len(s) + charsPerToken - 1) / charsPerToken, nil
+	}
+}
+
+func lazyTurnStub(built *bool) *dataset.LazyTurn {
+	return dataset.NewLazyTurn(func() []client.Message {
+		*built = true
+		return []client.Message{{Role: "user", Content: "x"}}
+	})
+}
+
+func TestConversationPrefetchWithinConversation(t *testing.T) {
+	built := make([]bool, dataset.ConversationPrefetchLookahead+1)
+	turns := make([]*dataset.LazyTurn, len(built))
+	for i := range turns {
+		turns[i] = lazyTurnStub(&built[i])
+	}
+	conv := dataset.Conversation{Turns: turns}
+
+	conv.Prefetch(0)
+	conv.Turn(dataset.ConversationPrefetchLookahead) // blocks until the background build finishes
+
+	if !built[dataset.ConversationPrefetchLookahead] {
+		t.Errorf("expected turn %d to be prefetched", dataset.ConversationPrefetchLookahead)
+	}
+}
+
+func TestConversationPrefetchCrossesIntoNext(t *testing.T) {
+	// Conversation shorter than the lookahead window, so Prefetch must land
+	// on turn 0 of Next instead of indexing past the end of Turns.
+	turns := make([]*dataset.LazyTurn, dataset.ConversationPrefetchLookahead-2)
+	for i := range turns {
+		turns[i] = lazyTurnStub(new(bool))
+	}
+	var nextTurn0Built bool
+	conv := dataset.Conversation{
+		Turns: turns,
+		Next: dataset.NewLazyConversation(func() dataset.Conversation {
+			return dataset.Conversation{Turns: []*dataset.LazyTurn{lazyTurnStub(&nextTurn0Built)}}
+		}),
+	}
+
+	conv.Prefetch(0)
+	conv.Successor().Turn(0) // blocks until the background build finishes
+
+	if !nextTurn0Built {
+		t.Errorf("expected Next's turn 0 to be prefetched")
 	}
 }

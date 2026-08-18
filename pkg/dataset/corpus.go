@@ -65,8 +65,11 @@ func (c *Corpus) turnISL(t int) int {
 	return c.ISL
 }
 
+// NextConversation builds all turns eagerly - Corpus's generation is cheap
+// enough (in-memory text slicing) that deferring it isn't worth the
+// indirection, unless a TokenCounter is set (see nextChunk's doc comment).
 func (c *Corpus) NextConversation() Conversation {
-	turns := make([][]client.Message, c.Turns)
+	turns := make([]*LazyTurn, c.Turns)
 	var history []client.Message
 
 	for t := 0; t < c.Turns; t++ {
@@ -79,7 +82,7 @@ func (c *Corpus) NextConversation() Conversation {
 
 		turnMsgs := make([]client.Message, len(history))
 		copy(turnMsgs, history)
-		turns[t] = turnMsgs
+		turns[t] = Resolved(turnMsgs)
 
 		if t < c.Turns-1 {
 			history = append(history, client.Message{

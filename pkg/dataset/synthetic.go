@@ -36,8 +36,10 @@ func (s *Synthetic) turnISL(t int) int {
 	return s.ISL
 }
 
+// NextConversation builds all turns eagerly - Synthetic's generation is
+// cheap enough that deferring it isn't worth the indirection.
 func (s *Synthetic) NextConversation() Conversation {
-	turns := make([][]client.Message, s.Turns)
+	turns := make([]*LazyTurn, s.Turns)
 
 	var history []client.Message
 	for t := 0; t < s.Turns; t++ {
@@ -50,7 +52,7 @@ func (s *Synthetic) NextConversation() Conversation {
 
 		turnMsgs := make([]client.Message, len(history))
 		copy(turnMsgs, history)
-		turns[t] = turnMsgs
+		turns[t] = Resolved(turnMsgs)
 
 		if t < s.Turns-1 {
 			history = append(history, client.Message{

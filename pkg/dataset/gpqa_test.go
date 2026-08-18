@@ -11,10 +11,14 @@ import (
 )
 
 func gpqaPrompt(conv dataset.Conversation) string {
-	if len(conv.Turns) == 0 || len(conv.Turns[0]) == 0 {
+	if len(conv.Turns) == 0 {
 		return ""
 	}
-	return conv.Turns[0][0].Content
+	msgs := conv.Turn(0)
+	if len(msgs) == 0 {
+		return ""
+	}
+	return msgs[0].Content
 }
 
 func TestGPQAFromJSONL(t *testing.T) {

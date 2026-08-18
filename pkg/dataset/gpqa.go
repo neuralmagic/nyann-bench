@@ -106,9 +106,7 @@ func (g *GPQA) NextConversation() Conversation {
 
 	greedy := 0.0
 	return Conversation{
-		Turns: [][]client.Message{
-			{{Role: "user", Content: prompt}},
-		},
+		Turns:          []*LazyTurn{Resolved([]client.Message{{Role: "user", Content: prompt}})},
 		MaxTokens:      g.maxTokens,
 		Temperature:    &greedy,
 		ExpectedAnswer: item.Answer,
