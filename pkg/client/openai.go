@@ -39,11 +39,11 @@ type CompletionRequest struct {
 }
 
 type TokenEvent struct {
-	Content  string
-	Time     time.Time
-	IsFirst  bool
-	IsFinal  bool
-	Usage    *Usage
+	Content string
+	Time    time.Time
+	IsFirst bool
+	IsFinal bool
+	Usage   *Usage
 }
 
 type Usage struct {
@@ -53,16 +53,16 @@ type Usage struct {
 }
 
 type Result struct {
-	RequestStart time.Time
-	FirstToken   time.Time
-	TokenTimes   []time.Time // Time of each token arrival
-	EndTime      time.Time
-	Content      string // Visible assistant response, used for evaluation
-	Reasoning    string // Reasoning emitted separately by the server
+	RequestStart  time.Time
+	FirstToken    time.Time
+	TokenTimes    []time.Time // Time of each token arrival
+	EndTime       time.Time
+	Content       string // Visible assistant response, used for evaluation
+	Reasoning     string // Reasoning emitted separately by the server
 	GeneratedText string // Reasoning and visible content in streamed order, used for workload replay
-	FinishReason string // "stop", "length", etc.
-	Usage        *Usage
-	Err          error
+	FinishReason  string // "stop", "length", etc.
+	Usage         *Usage
+	Err           error
 }
 
 func (r *Result) TTFT() time.Duration {
@@ -107,8 +107,16 @@ func New(baseURL string) *Client {
 		IdleConnTimeout:     90 * time.Second,
 	}
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTPClient: &http.Client{Transport: transport},
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		HTTPClient: &http.Client{
+			Transport: transport,
+			// Benchmark targets are selected explicitly. Following redirects can
+			// escape an in-cluster target allowlist and is never required by the
+			// OpenAI-compatible serving protocol.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 

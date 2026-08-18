@@ -26,6 +26,7 @@ func generateCmd() *cobra.Command {
 		target        string
 		model         string
 		cfgInput      string
+		scenarioIR    string
 		outputDir     string
 		workerID      int
 		workersFlag   string
@@ -72,8 +73,14 @@ Workload types:
   corpus      Sliding window over real text files
   gsm8k       GSM8K math problems with streaming eval`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Parse config early — needed to resolve --workers auto
-			sc, err := config.Parse(cfgInput)
+			// Parse config early — needed to resolve --workers auto.
+			var sc *config.ScenarioConfig
+			var err error
+			if scenarioIR != "" {
+				sc, err = config.ParseScenarioIR(scenarioIR)
+			} else {
+				sc, err = config.Parse(cfgInput)
+			}
 			if err != nil {
 				return fmt.Errorf("config: %w", err)
 			}
@@ -281,6 +288,9 @@ Workload types:
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
+	cmd.Flags().StringVar(&scenarioIR, "scenario-ir", "", "Internal compiled scenario representation")
+	_ = cmd.Flags().MarkHidden("scenario-ir")
+	cmd.MarkFlagsMutuallyExclusive("config", "scenario-ir")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory for JSONL + timestamp files (omit for stdout-only)")
 	cmd.Flags().IntVar(&workerID, "worker-id", 0, "Worker identifier (for multi-container runs)")
 	cmd.Flags().StringVar(&workersFlag, "workers", "1", `Number of workers: integer or "auto" (auto = ceil(max_concurrency/1024))`)

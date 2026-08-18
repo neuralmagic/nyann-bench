@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestClientDoesNotFollowRedirects(t *testing.T) {
+	reached := false
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"should-not-be-read"}]}`))
+	}))
+	defer destination.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+
+	if _, err := New(redirect.URL).DetectModel(context.Background()); err == nil {
+		t.Fatal("redirect response unexpectedly produced a model")
+	}
+	if reached {
+		t.Fatal("client followed a redirect outside the selected target")
+	}
+}
+
 func TestChatStreamSeparatesReasoningFromGeneratedText(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

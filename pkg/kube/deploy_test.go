@@ -140,6 +140,7 @@ func TestRenderYAML(t *testing.T) {
 		"completions: 1",
 		"parallelism: 1",
 		"restartPolicy: Never",
+		"automountServiceAccountToken: false",
 		"backoffLimit: 0",
 		`"arm64"`,
 		"lustre-pvc-vllm",
