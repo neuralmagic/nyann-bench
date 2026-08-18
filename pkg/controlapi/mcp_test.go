@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -278,8 +279,8 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 		t.Fatalf("legacy tools/call = %d %s", legacyCall.Code, legacyCall.Body.String())
 	}
 	legacyUnsupported := legacyInitializeRequest(t, handler, "2025-06-18")
-	if legacyUnsupported.Code != http.StatusBadRequest {
-		t.Fatalf("unsupported legacy initialize = %d %s", legacyUnsupported.Code, legacyUnsupported.Body.String())
+	if legacyUnsupported.Code != http.StatusOK || !strings.Contains(legacyUnsupported.Body.String(), `"protocolVersion":"2025-11-25"`) {
+		t.Fatalf("legacy version negotiation = %d %s", legacyUnsupported.Code, legacyUnsupported.Body.String())
 	}
 	unsupported := mcpRequestVersion(t, handler, "server/discover", map[string]any{}, "2025-11-25", nil)
 	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), `"code":-32022`) || !strings.Contains(unsupported.Body.String(), `"supported":["2026-07-28","2025-11-25"]`) {
@@ -367,6 +368,22 @@ func TestMCPListResponseIsBounded(t *testing.T) {
 	response := mcpRequest(t, handler, "tools/call", map[string]any{"name": "list_benchmarks", "arguments": map[string]any{"limit": 100}})
 	if response.Body.Len() > mcpMaximumResultBytes+4096 || !strings.Contains(response.Body.String(), "exceeds the 1 MiB") || !strings.Contains(response.Body.String(), `"isError":true`) {
 		t.Fatalf("unbounded response (%d bytes): %.500s", response.Body.Len(), response.Body.String())
+	}
+	legacySession := initializeLegacyMCP(t, handler)
+	legacyResponse := legacyMCPRequest(t, handler, legacySession, 2, "tools/call", map[string]any{"name": "list_benchmarks", "arguments": map[string]any{"limit": 100}})
+	if legacyResponse.Body.Len() > mcpMaximumResultBytes || !strings.Contains(legacyResponse.Body.String(), "exceeds the 1 MiB") || !strings.Contains(legacyResponse.Body.String(), `"isError":true`) {
+		t.Fatalf("unbounded legacy response (%d bytes): %.500s", legacyResponse.Body.Len(), legacyResponse.Body.String())
+	}
+}
+
+func TestLegacyMCPSessionExpires(t *testing.T) {
+	server := NewServer(newMCPClient(), "test", mcpTestOptions(t.TempDir()))
+	handler := server.legacyMCPHandlerWithTimeout(10 * time.Millisecond)
+	session := initializeLegacyMCP(t, handler)
+	time.Sleep(50 * time.Millisecond)
+	response := legacyMCPRequest(t, handler, session, 2, "tools/list", map[string]any{})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("expired legacy session = %d %s", response.Code, response.Body.String())
 	}
 }
 

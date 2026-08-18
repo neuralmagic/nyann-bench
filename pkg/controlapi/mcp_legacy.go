@@ -8,11 +8,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const legacyMCPProtocolVersion = "2025-11-25"
+
+const (
+	legacyMCPEnvelopeAllowance = 4 << 10
+	legacyMCPSessionTimeout    = 5 * time.Minute
+)
 
 // routeLegacyMCP identifies initialize/session-era traffic without changing
 // the existing 2026-07-28 stateless handler. It restores the request body after
@@ -42,6 +48,10 @@ func routeLegacyMCP(r *http.Request) bool {
 }
 
 func (s *Server) legacyMCPHandler() http.Handler {
+	return s.legacyMCPHandlerWithTimeout(legacyMCPSessionTimeout)
+}
+
+func (s *Server) legacyMCPHandlerWithTimeout(sessionTimeout time.Duration) http.Handler {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: mcpServerName, Version: mcpServerVersion},
 		&mcp.ServerOptions{
@@ -62,16 +72,9 @@ func (s *Server) legacyMCPHandler() http.Handler {
 		server.AddTool(&tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			value, err := s.callMCPTool(ctx, name, req.Params.Arguments)
 			if err != nil {
-				return &mcp.CallToolResult{
-					Content:           []mcp.Content{&mcp.TextContent{Text: mustMCPJSON(map[string]any{"error": err.Error()})}},
-					StructuredContent: map[string]any{"error": err.Error()},
-					IsError:           true,
-				}, nil
+				return boundedLegacyToolResult(map[string]any{"error": err.Error()}, true), nil
 			}
-			return &mcp.CallToolResult{
-				Content:           []mcp.Content{&mcp.TextContent{Text: mustMCPJSON(value)}},
-				StructuredContent: value,
-			}, nil
+			return boundedLegacyToolResult(value, false), nil
 		})
 	}
 
@@ -80,6 +83,7 @@ func (s *Server) legacyMCPHandler() http.Handler {
 		&mcp.StreamableHTTPOptions{
 			JSONResponse:        true,
 			MaxRequestBodyBytes: mcpMaximumRequestBytes,
+			SessionTimeout:      sessionTimeout,
 		},
 	)
 	return exactLegacyMCPVersion(handler)
@@ -109,28 +113,45 @@ func exactLegacyMCPVersion(next http.Handler) http.Handler {
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			var initialize struct {
-				Method string `json:"method"`
-				Params struct {
-					ProtocolVersion string `json:"protocolVersion"`
-				} `json:"params"`
-			}
-			if json.Unmarshal(body, &initialize) == nil && initialize.Method == "initialize" && initialize.Params.ProtocolVersion != legacyMCPProtocolVersion {
-				http.Error(w, "Bad Request: unsupported MCP protocol version", http.StatusBadRequest)
-				return
+			var envelope map[string]any
+			if json.Unmarshal(body, &envelope) == nil && envelope["method"] == "initialize" {
+				if params, ok := envelope["params"].(map[string]any); ok && params["protocolVersion"] != legacyMCPProtocolVersion {
+					params["protocolVersion"] = legacyMCPProtocolVersion
+					body, err = json.Marshal(envelope)
+					if err != nil {
+						http.Error(w, "Bad Request", http.StatusBadRequest)
+						return
+					}
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					r.ContentLength = int64(len(body))
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func mustMCPJSON(value any) string {
+func boundedLegacyToolResult(value any, isError bool) *mcp.CallToolResult {
 	encoded, err := json.Marshal(value)
-	if err != nil {
-		return `{"error":"failed to encode MCP tool result"}`
+	if err == nil {
+		result := &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			StructuredContent: value,
+			IsError:           isError,
+		}
+		resultBytes, marshalErr := json.Marshal(result)
+		if marshalErr == nil && len(resultBytes) <= mcpMaximumResultBytes-legacyMCPEnvelopeAllowance {
+			return result
+		}
 	}
-	if len(encoded) > mcpMaximumResultBytes {
-		return fmt.Sprintf(`{"error":"MCP result exceeds the 1 MiB bounded response limit","maximum_bytes":%d}`, mcpMaximumResultBytes)
+	bounded := map[string]any{
+		"error":         "MCP result exceeds the 1 MiB bounded response limit",
+		"maximum_bytes": mcpMaximumResultBytes,
 	}
-	return string(encoded)
+	encoded, _ = json.Marshal(bounded)
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+		StructuredContent: bounded,
+		IsError:           true,
+	}
 }
