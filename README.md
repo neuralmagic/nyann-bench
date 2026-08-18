@@ -336,12 +336,13 @@ they have no GPU requests, Kueue queue labels, or suspended admission state.
 The vLLM or llm-d deployment remains responsible for its GPU-serving workloads
 and any Kueue admission.
 
-### Stateless MCP benchmark tools
+### MCP benchmark tools
 
-Agent clients use `POST /mcp`, protocol `2026-07-28`. Every request repeats its
-protocol metadata and correlation headers; the server creates no session and
-does not implement legacy `initialize`. `tools/list` publishes strict bounded
-schemas for:
+Agent clients use `/mcp` with either protocol `2026-07-28` or `2025-11-25`.
+The newer protocol remains stateless: every request repeats its protocol
+metadata and correlation headers. The official MCP Go SDK provides the
+`2025-11-25` initialize/session lifecycle on the same endpoint. Both revisions
+publish the same strict bounded schemas and call the same domain handlers for:
 
 - `plan_benchmark`, `submit_benchmark`
 - `list_benchmarks`, `get_benchmark`, `cancel_benchmark`

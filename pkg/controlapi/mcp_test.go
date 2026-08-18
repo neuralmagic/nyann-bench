@@ -229,7 +229,7 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 	client := newMCPClient()
 	handler := NewServer(client, "test", mcpTestOptions(root)).Handler()
 	discover := mcpRequest(t, handler, "server/discover", map[string]any{})
-	if discover.Code != http.StatusOK || !strings.Contains(discover.Body.String(), `"supportedVersions":["2026-07-28"]`) || !strings.Contains(discover.Body.String(), `"resultType":"complete"`) || !strings.Contains(discover.Body.String(), `"io.modelcontextprotocol/serverInfo"`) {
+	if discover.Code != http.StatusOK || !strings.Contains(discover.Body.String(), `"supportedVersions":["2026-07-28","2025-11-25"]`) || !strings.Contains(discover.Body.String(), `"resultType":"complete"`) || !strings.Contains(discover.Body.String(), `"io.modelcontextprotocol/serverInfo"`) {
 		t.Fatalf("discovery response = %d %s", discover.Code, discover.Body.String())
 	}
 	listed := mcpRequest(t, handler, "tools/list", map[string]any{})
@@ -268,12 +268,21 @@ func TestMCPProtocolIsStrictStatelessAndBounded(t *testing.T) {
 	if !strings.Contains(unknown.Body.String(), `"isError":true`) || !strings.Contains(unknown.Body.String(), "unknown field") {
 		t.Fatalf("unknown request field accepted: %s", unknown.Body.String())
 	}
-	legacy := mcpRequest(t, handler, "initialize", map[string]any{})
-	if legacy.Code != http.StatusNotFound || !strings.Contains(legacy.Body.String(), "Method not found") {
-		t.Fatalf("legacy fallback accepted: %d %s", legacy.Code, legacy.Body.String())
+	legacySession := initializeLegacyMCP(t, handler)
+	legacyList := legacyMCPRequest(t, handler, legacySession, 2, "tools/list", map[string]any{})
+	if legacyList.Code != http.StatusOK || !strings.Contains(legacyList.Body.String(), `"plan_benchmark"`) {
+		t.Fatalf("legacy tools/list = %d %s", legacyList.Code, legacyList.Body.String())
+	}
+	legacyCall := legacyMCPRequest(t, handler, legacySession, 3, "tools/call", map[string]any{"name": "list_benchmarks", "arguments": map[string]any{"limit": 1}})
+	if legacyCall.Code != http.StatusOK || strings.Contains(legacyCall.Body.String(), `"isError":true`) || !strings.Contains(legacyCall.Body.String(), `"structuredContent"`) {
+		t.Fatalf("legacy tools/call = %d %s", legacyCall.Code, legacyCall.Body.String())
+	}
+	legacyUnsupported := legacyInitializeRequest(t, handler, "2025-06-18")
+	if legacyUnsupported.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported legacy initialize = %d %s", legacyUnsupported.Code, legacyUnsupported.Body.String())
 	}
 	unsupported := mcpRequestVersion(t, handler, "server/discover", map[string]any{}, "2025-11-25", nil)
-	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), `"code":-32022`) || !strings.Contains(unsupported.Body.String(), `"supported":["2026-07-28"]`) {
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), `"code":-32022`) || !strings.Contains(unsupported.Body.String(), `"supported":["2026-07-28","2025-11-25"]`) {
 		t.Fatalf("unsupported version = %d %s", unsupported.Code, unsupported.Body.String())
 	}
 	origin := mcpRequestWithHeaders(t, handler, "tools/list", map[string]any{}, map[string]string{"Origin": "https://attacker.example"})
@@ -688,6 +697,69 @@ func mcpRequestVersion(t *testing.T, handler http.Handler, method string, params
 	for name, value := range extra {
 		req.Header.Set(name, value)
 	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
+}
+
+func initializeLegacyMCP(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	recorder := legacyInitializeRequest(t, handler, legacyMCPProtocolVersion)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("legacy initialize = %d %s", recorder.Code, recorder.Body.String())
+	}
+	session := recorder.Header().Get("Mcp-Session-Id")
+	if session == "" {
+		t.Fatalf("legacy initialize did not return Mcp-Session-Id: %s", recorder.Body.String())
+	}
+	initialized := legacyMCPNotification(t, handler, session, "notifications/initialized", map[string]any{})
+	if initialized.Code != http.StatusAccepted && initialized.Code != http.StatusNoContent {
+		t.Fatalf("legacy initialized notification = %d %s", initialized.Code, initialized.Body.String())
+	}
+	return session
+}
+
+func legacyInitializeRequest(t *testing.T, handler http.Handler, version string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := mustJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": version,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "conformance-test", "version": "1"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
+}
+
+func legacyMCPRequest(t *testing.T, handler http.Handler, session string, id int, method string, params map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body := mustJSON(t, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	return sendLegacyMCP(t, handler, session, body)
+}
+
+func legacyMCPNotification(t *testing.T, handler http.Handler, session, method string, params map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body := mustJSON(t, map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	return sendLegacyMCP(t, handler, session, body)
+}
+
+func sendLegacyMCP(t *testing.T, handler http.Handler, session string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", legacyMCPProtocolVersion)
+	req.Header.Set("Mcp-Session-Id", session)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	return recorder

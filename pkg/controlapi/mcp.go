@@ -163,7 +163,19 @@ type durableRunManifest struct {
 }
 
 func (s *Server) MCPHandler() http.Handler {
-	return http.HandlerFunc(s.handleMCP)
+	legacy := s.legacyMCPHandler()
+	modern := http.HandlerFunc(s.handleMCP)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Header.Get("Mcp-Session-Id") == "" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if routeLegacyMCP(r) {
+			legacy.ServeHTTP(w, r)
+			return
+		}
+		modern.ServeHTTP(w, r)
+	})
 }
 
 type mcpEnvelope struct {
@@ -226,7 +238,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if params.Meta.ProtocolVersion != mcpProtocolVersion {
-		mcpError(w, envelope.ID, http.StatusBadRequest, -32022, "Unsupported protocol version", map[string]any{"supported": []string{mcpProtocolVersion}, "requested": params.Meta.ProtocolVersion})
+		mcpError(w, envelope.ID, http.StatusBadRequest, -32022, "Unsupported protocol version", map[string]any{"supported": []string{mcpProtocolVersion, legacyMCPProtocolVersion}, "requested": params.Meta.ProtocolVersion})
 		return
 	}
 	switch envelope.Method {
@@ -235,7 +247,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			mcpError(w, envelope.ID, http.StatusBadRequest, -32602, "Invalid discovery params", nil)
 			return
 		}
-		mcpResult(w, envelope.ID, map[string]any{"supportedVersions": []string{mcpProtocolVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": "Plan before submitting. Use logical targets and bounded reports; raw JSONL and Prometheus payloads are intentionally unavailable through MCP.", "ttlMs": 300000, "cacheScope": "private"})
+		mcpResult(w, envelope.ID, map[string]any{"supportedVersions": []string{mcpProtocolVersion, legacyMCPProtocolVersion}, "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": "Plan before submitting. Use logical targets and bounded reports; raw JSONL and Prometheus payloads are intentionally unavailable through MCP.", "ttlMs": 300000, "cacheScope": "private"})
 	case "tools/list":
 		if params.Cursor != nil || params.Name != "" || len(params.Arguments) != 0 {
 			mcpError(w, envelope.ID, http.StatusBadRequest, -32602, "Invalid params: this tool list is not paginated", nil)
