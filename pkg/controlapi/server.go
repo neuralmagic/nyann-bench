@@ -299,7 +299,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /readyz", s.ready)
-	mux.Handle("POST /mcp", s.MCPHandler())
+	mux.Handle("/mcp", s.MCPHandler())
 	return s.authenticate(mux)
 }
 
