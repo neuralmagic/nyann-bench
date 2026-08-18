@@ -144,7 +144,7 @@ func (s *conversationPoolScheduler) stop() {
 	s.stopped = true
 }
 
-func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
+func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int), onStageComplete func(index int) bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.stopFunc = cancel
@@ -199,6 +199,9 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 			}
 		}
 		stageCancel()
+		if ctx.Err() == nil && onStageComplete != nil && !onStageComplete(i) {
+			break
+		}
 	}
 
 	g.recordWG.Wait()
@@ -281,11 +284,12 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 	copy(messages, pc.history)
 
 	req := &client.Request{
-		Model:     g.Model,
-		Messages:  messages,
-		Stream:    true,
-		MaxTokens: pc.conv.MaxTokens,
-		CacheSalt: g.cacheSalt(),
+		Model:         g.Model,
+		Messages:      messages,
+		Stream:        true,
+		StreamOptions: g.streamOptions(),
+		MaxTokens:     pc.conv.MaxTokens,
+		CacheSalt:     g.cacheSalt(),
 	}
 
 	g.trackInFlight(1)
@@ -319,13 +323,14 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 
 func (g *Generator) runPooledCompletionTurn(ctx context.Context, c *client.Client, streamID int, pc *pooledConversation) bool {
 	req := &client.CompletionRequest{
-		Model:       g.Model,
-		Prompt:      pc.conv.Prompt,
-		Stream:      true,
-		MaxTokens:   pc.conv.MaxTokens,
-		Stop:        pc.conv.Stop,
-		Temperature: pc.conv.Temperature,
-		CacheSalt:   g.cacheSalt(),
+		Model:         g.Model,
+		Prompt:        pc.conv.Prompt,
+		Stream:        true,
+		StreamOptions: g.streamOptions(),
+		MaxTokens:     pc.conv.MaxTokens,
+		Stop:          pc.conv.Stop,
+		Temperature:   pc.conv.Temperature,
+		CacheSalt:     g.cacheSalt(),
 	}
 
 	g.trackInFlight(1)

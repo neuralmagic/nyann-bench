@@ -101,6 +101,77 @@ scenario(
 )
 ```
 
+Stop a finite stage sweep automatically when the server becomes congested:
+
+```python
+scenario(
+    stages = until_congested(
+        [stage("2m", concurrency=c) for c in range(64, 2049, 64)],
+        waiting_requests_p50=32,
+        ttft_p99="2s",
+        kv_cache_usage=0.95,  # optional; default 95%
+        preemptions=1,        # optional; default 1 per stage
+    ),
+    workload = workload("faker", isl=512, osl=1024),
+)
+```
+
+`waiting_requests_p50` and `ttft_p99` are required because acceptable queue
+depth and latency are deployment-specific. `kv_cache_usage` defaults to `0.95`
+(a fraction, not a percentage), and `preemptions` defaults to `1` per stage.
+All thresholds are inclusive (`observed >= configured`).
+
+Run congestion-aware scenarios with `--prometheus-url` and `--deploy-name`.
+After each measured stage finishes, nyann-bench queries Prometheus and stops
+before starting the next stage when either signal pair is true:
+
+| Signal | Prometheus calculation | Stop condition |
+|--------|------------------------|----------------|
+| Sustained queueing | For each role, sum `vllm:num_requests_waiting` across its pods at each scrape, then take p50 over the steady-state window. TTFT is p99 from `vllm:time_to_first_token_seconds_bucket` over that window. | The largest role queue p50 is at least `waiting_requests_p50` **and** the largest role TTFT p99 is at least `ttft_p99`. Queue and TTFT may come from different PD roles because together they describe end-to-end latency. |
+| KV-cache pressure | For each role, take the maximum `vllm:kv_cache_usage_perc` across its pods and the steady-state window. Count `increase(vllm:num_preemptions_total[stage duration])` over the full stage. | On the **same role**, KV usage is at least `kv_cache_usage` **and** new preemptions are at least `preemptions`. |
+
+The steady-state window discards the first 20% and final 5% of the stage to
+avoid ramp and boundary artifacts. Stages shorter than the resulting five
+seconds use their full duration. The congested stage remains in the results;
+only later stages are skipped.
+
+For disaggregated serving, pass the decoder deployment name (for example,
+`my-model-decode`). Both `my-model-prefill` and `my-model-decode` are checked.
+Other deployment names use the `vllm-aggregate` job as a single role. Missing
+series evaluate as zero, while Prometheus query failures are logged. Neither
+case stops the sweep by itself.
+
+Example threshold profiles:
+
+```python
+# Latency-sensitive online serving: tolerate little sustained queueing.
+latency_sensitive = until_congested(
+    [stage("2m", concurrency=c) for c in range(16, 257, 16)],
+    waiting_requests_p50=8,
+    ttft_p99="750ms",
+    kv_cache_usage=0.90,
+    preemptions=1,
+)
+
+# Throughput-oriented batch serving: tolerate deeper queues and occasional
+# preemption, stopping only under pronounced cache pressure.
+throughput_oriented = until_congested(
+    [stage("5m", concurrency=c) for c in range(128, 4097, 128)],
+    waiting_requests_p50=64,
+    ttft_p99="5s",
+    kv_cache_usage=0.98,
+    preemptions=5,
+)
+```
+
+Run either profile with the Prometheus endpoint and deployment identity:
+
+```bash
+nyann-bench generate --config scenario.star \
+  --prometheus-url http://prometheus:9090 \
+  --deploy-name my-model-decode
+```
+
 ### Multi-turn conversations
 
 Each goroutine stream can run multi-turn conversations, carrying real model responses forward into subsequent turns. This exercises server-side KV cache reuse (prefix caching) and produces realistic conversation-shaped traffic.

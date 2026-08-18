@@ -46,6 +46,17 @@ type ScenarioConfig struct {
 	WorkerID int             `json:"worker_id,omitempty"` // this worker's index (from --worker-id or JOB_COMPLETION_INDEX)
 }
 
+// CongestionCondition describes the two server-side congestion signals. A
+// stage stops the remaining sweep when either the queueing pair (waiting
+// requests p50 and TTFT p99) or cache pair (KV usage and preemptions) is
+// satisfied.
+type CongestionCondition struct {
+	WaitingRequestsP50 float64       `json:"waiting_requests_p50,omitempty"`
+	TTFTP99            time.Duration `json:"ttft_p99,omitempty"`
+	KVCacheUsage       float64       `json:"kv_cache_usage,omitempty"`
+	Preemptions        float64       `json:"preemptions,omitempty"`
+}
+
 // SyncConfig configures distributed barrier synchronization across pods.
 type SyncConfig struct {
 	Workers int      `json:"workers"`           // expected number of pods
@@ -56,21 +67,22 @@ type SyncConfig struct {
 
 // ScenarioStage is a single phase of a benchmark with optional per-stage overrides.
 type ScenarioStage struct {
-	Name                 string        `json:"name,omitempty"`
-	Duration             time.Duration `json:"duration"`
-	Mode                 string        `json:"mode,omitempty"`
-	Concurrency          int           `json:"concurrency,omitempty"`
-	ConversationPoolSize int           `json:"conversation_pool_size,omitempty"`
-	Rate                 float64       `json:"rate,omitempty"`
-	MaxInFlight          int           `json:"max_inflight,omitempty"`
-	Rampup               time.Duration `json:"rampup,omitempty"`
-	Workload             *Workload     `json:"workload,omitempty"`
-	Target               string        `json:"target,omitempty"`
-	Model                string        `json:"model,omitempty"`
-	MaxRequests          int           `json:"max_requests,omitempty"`
-	Warmup               bool          `json:"warmup,omitempty"`
-	Barrier              bool          `json:"barrier,omitempty"`
-	BarrierDrain         bool          `json:"barrier_drain,omitempty"`
+	Name                 string               `json:"name,omitempty"`
+	Duration             time.Duration        `json:"duration"`
+	Mode                 string               `json:"mode,omitempty"`
+	Concurrency          int                  `json:"concurrency,omitempty"`
+	ConversationPoolSize int                  `json:"conversation_pool_size,omitempty"`
+	Rate                 float64              `json:"rate,omitempty"`
+	MaxInFlight          int                  `json:"max_inflight,omitempty"`
+	Rampup               time.Duration        `json:"rampup,omitempty"`
+	Workload             *Workload            `json:"workload,omitempty"`
+	Target               string               `json:"target,omitempty"`
+	Model                string               `json:"model,omitempty"`
+	MaxRequests          int                  `json:"max_requests,omitempty"`
+	Warmup               bool                 `json:"warmup,omitempty"`
+	Barrier              bool                 `json:"barrier,omitempty"`
+	BarrierDrain         bool                 `json:"barrier_drain,omitempty"`
+	StopWhen             *CongestionCondition `json:"stop_when,omitempty"`
 }
 
 // ToScenarioConfig converts a JSON Config into the universal ScenarioConfig IR.

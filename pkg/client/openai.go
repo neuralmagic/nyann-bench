@@ -18,22 +18,24 @@ type Message struct {
 }
 
 type Request struct {
-	Model        string            `json:"model"`
-	Messages     []Message         `json:"messages"`
-	Stream       bool              `json:"stream"`
-	MaxTokens    int               `json:"max_tokens,omitempty"`
-	CacheSalt    string            `json:"cache_salt,omitempty"`
-	ExtraHeaders map[string]string `json:"-"` // Applied as HTTP headers, not serialized
+	Model         string            `json:"model"`
+	Messages      []Message         `json:"messages"`
+	Stream        bool              `json:"stream"`
+	StreamOptions map[string]any    `json:"stream_options,omitempty"`
+	MaxTokens     int               `json:"max_tokens,omitempty"`
+	CacheSalt     string            `json:"cache_salt,omitempty"`
+	ExtraHeaders  map[string]string `json:"-"` // Applied as HTTP headers, not serialized
 }
 
 type CompletionRequest struct {
-	Model       string   `json:"model"`
-	Prompt      string   `json:"prompt"`
-	Stream      bool     `json:"stream"`
-	MaxTokens   int      `json:"max_tokens,omitempty"`
-	Stop        []string `json:"stop,omitempty"`
-	Temperature *float64 `json:"temperature,omitempty"`
-	CacheSalt   string   `json:"cache_salt,omitempty"`
+	Model         string         `json:"model"`
+	Prompt        string         `json:"prompt"`
+	Stream        bool           `json:"stream"`
+	StreamOptions map[string]any `json:"stream_options,omitempty"`
+	MaxTokens     int            `json:"max_tokens,omitempty"`
+	Stop          []string       `json:"stop,omitempty"`
+	Temperature   *float64       `json:"temperature,omitempty"`
+	CacheSalt     string         `json:"cache_salt,omitempty"`
 }
 
 type TokenEvent struct {
