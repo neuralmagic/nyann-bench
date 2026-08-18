@@ -115,7 +115,9 @@ func exactLegacyMCPVersion(next http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			var envelope map[string]any
 			if json.Unmarshal(body, &envelope) == nil && envelope["method"] == "initialize" {
-				if params, ok := envelope["params"].(map[string]any); ok && params["protocolVersion"] != legacyMCPProtocolVersion {
+				params, paramsOK := envelope["params"].(map[string]any)
+				proposed, versionOK := params["protocolVersion"].(string)
+				if paramsOK && versionOK && proposed != legacyMCPProtocolVersion {
 					params["protocolVersion"] = legacyMCPProtocolVersion
 					body, err = json.Marshal(envelope)
 					if err != nil {
