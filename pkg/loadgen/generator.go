@@ -257,6 +257,12 @@ func (g *Generator) RunStages(ctx context.Context, stages []Stage, onStage func(
 func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	c := client.New(g.Target)
 
+	// Prewarm before the duration timeout below starts, so warm-up cost isn't stolen from the measured window.
+	var scheduler *conversationPoolScheduler
+	if g.Mode == ModeConversationPool {
+		scheduler = newConversationPoolScheduler(ctx, g, g.ConversationPoolSize)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, g.Duration)
 	defer cancel()
 	g.stopFunc = cancel
@@ -268,7 +274,7 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	case ModeConcurrent, "":
 		g.runConcurrent(ctx, c)
 	case ModeConversationPool:
-		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
+		g.runConversationPool(ctx, c, scheduler, g.Concurrency, g.Rampup)
 	case ModeConstant:
 		g.runRateBasedConstant(ctx, c, startTime)
 	case ModePoisson:

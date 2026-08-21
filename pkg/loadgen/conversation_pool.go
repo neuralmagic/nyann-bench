@@ -30,16 +30,24 @@ type conversationPoolScheduler struct {
 	convs   map[int]*pooledConversation
 	nextID  int
 	stopped bool
+
+	// backupPool holds conversations built ahead of need to keep NextConversation() off the hot path.
+	backupPool chan dataset.Conversation
+	stopCh     chan struct{}
 }
 
-func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolScheduler {
+// newConversationPoolScheduler builds the pool and blocks until backupPool is
+// prewarmed, so warm-up cost is paid before the caller's measured window starts.
+func newConversationPoolScheduler(ctx context.Context, g *Generator, poolSize int) *conversationPoolScheduler {
 	if poolSize <= 0 {
 		poolSize = g.Concurrency
 	}
 	s := &conversationPoolScheduler{
-		g:        g,
-		poolSize: poolSize,
-		convs:    make(map[int]*pooledConversation, poolSize),
+		g:          g,
+		poolSize:   poolSize,
+		convs:      make(map[int]*pooledConversation, poolSize),
+		backupPool: make(chan dataset.Conversation, poolSize),
+		stopCh:     make(chan struct{}),
 	}
 
 	initial := poolSize
@@ -49,7 +57,49 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 	for i := 0; i < initial; i++ {
 		s.addConversationSlotLocked()
 	}
+
+	s.prewarmBackupPool(ctx, initial)
 	return s
+}
+
+// prewarmBackupPool builds n conversations in parallel and blocks until all
+// are queued in backupPool or ctx is done.
+func (s *conversationPoolScheduler) prewarmBackupPool(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			conv := s.g.Dataset.NextConversation()
+			select {
+			case s.backupPool <- conv:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+// produceBackupAsync builds one replacement conversation off the hot path and queues it in backupPool.
+func (s *conversationPoolScheduler) produceBackupAsync() {
+	go func() {
+		conv := s.g.Dataset.NextConversation()
+		select {
+		case s.backupPool <- conv:
+		case <-s.stopCh:
+		}
+	}()
 }
 
 func (s *conversationPoolScheduler) addConversationSlotLocked() {
@@ -126,6 +176,7 @@ func (s *conversationPoolScheduler) complete(pc *pooledConversation, replace boo
 	if replace {
 		if len(s.convs) < s.poolSize && s.canCreateConversationLocked() {
 			s.addConversationSlotLocked()
+			s.produceBackupAsync()
 		}
 		return
 	}
@@ -141,7 +192,11 @@ func (s *conversationPoolScheduler) canCreateConversationLocked() bool {
 func (s *conversationPoolScheduler) stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
 	s.stopped = true
+	close(s.stopCh)
 }
 
 func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stage, onStage func(index, concurrency int), onBarrier func(index int)) {
@@ -172,10 +227,14 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 		}
 
 		stageCtx, stageCancel := context.WithCancel(ctx)
+
+		// Prewarm before the stage timer below starts, so warm-up cost isn't stolen from the stage's duration.
+		scheduler := newConversationPoolScheduler(stageCtx, g, stage.ConversationPoolSize)
+
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			g.runConversationPool(stageCtx, c, stage.Concurrency, stage.ConversationPoolSize, stage.Rampup)
+			g.runConversationPool(stageCtx, c, scheduler, stage.Concurrency, stage.Rampup)
 		}()
 
 		if stage.MaxRequests > 0 {
@@ -204,16 +263,11 @@ func (g *Generator) runConversationPoolStages(ctx context.Context, stages []Stag
 	g.recordWG.Wait()
 }
 
-func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, concurrency, poolSize int, rampup time.Duration) {
+func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, scheduler *conversationPoolScheduler, concurrency int, rampup time.Duration) {
+	defer scheduler.stop()
 	if concurrency <= 0 {
 		return
 	}
-	if poolSize <= 0 {
-		poolSize = concurrency
-	}
-
-	scheduler := newConversationPoolScheduler(g, poolSize)
-	defer scheduler.stop()
 
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -242,7 +296,12 @@ func (g *Generator) runConversationPool(ctx context.Context, c *client.Client, c
 					return
 				}
 				if !pc.materialized {
-					pc.conv = g.Dataset.NextConversation()
+					select {
+					case conv := <-scheduler.backupPool:
+						pc.conv = conv
+					default:
+						pc.conv = g.Dataset.NextConversation()
+					}
 					pc.materialized = true
 				}
 				if ctx.Err() != nil {
