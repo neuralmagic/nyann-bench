@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,5 +166,136 @@ func TestExplicitMaxRequestsStopsEarly(t *testing.T) {
 
 	if summary.TotalRequests != 5 {
 		t.Fatalf("expected exactly 5 requests, got %d", summary.TotalRequests)
+	}
+}
+
+// tokenizeHandler answers /tokenize with a word count, recording each model.
+func tokenizeHandler(t *testing.T) (http.HandlerFunc, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var models []string
+	h := func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model  string `json:"model"`
+			Prompt string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		models = append(models, body.Model)
+		mu.Unlock()
+		fmt.Fprintf(w, `{"count":%d}`, max(1, len(strings.Fields(body.Prompt))))
+	}
+	return h, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), models...)
+	}
+}
+
+func tokenizeServer(t *testing.T) (string, func() []string) {
+	t.Helper()
+	h, models := tokenizeHandler(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tokenize" {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, models
+}
+
+func TestTokenizerTargetKeepsTokenizationOffTheInferenceTarget(t *testing.T) {
+	var targetTokenizeCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"data":[{"id":"adapter-3"}]}`)
+		case "/tokenize":
+			targetTokenizeCalls.Add(1)
+			http.Error(w, "tokenize must not reach the inference target", http.StatusTeapot)
+		default:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+	}))
+	t.Cleanup(target.Close)
+	tokURL, tokModels := tokenizeServer(t)
+
+	sc := &config.ScenarioConfig{
+		Workload: config.Workload{Type: "synthetic", ISL: 64, OSL: 4, Turns: 2},
+		Stages:   []config.ScenarioStage{{Duration: 300 * time.Millisecond, Mode: "concurrent", Concurrency: 1}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	summary, err := runScenario(ctx, cancel, scenarioOpts{
+		Target:          target.URL + "/v1",
+		Model:           "adapter-3",
+		Scenario:        sc,
+		TokenizerTarget: tokURL + "/v1",
+		TokenizerModel:  "base-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalRequests == 0 {
+		t.Fatal("no requests ran")
+	}
+	if n := targetTokenizeCalls.Load(); n != 0 {
+		t.Fatalf("inference target received %d /tokenize calls", n)
+	}
+	models := tokModels()
+	if len(models) == 0 {
+		t.Fatal("tokenizer target received no /tokenize calls")
+	}
+	for _, m := range models {
+		if m != "base-model" {
+			t.Fatalf("tokenizer call used model %q, want base-model", m)
+		}
+	}
+}
+
+func TestTokenizationDefaultsToTargetAndModel(t *testing.T) {
+	tokenize, tokModels := tokenizeHandler(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"data":[{"id":"adapter-3"}]}`)
+		case "/tokenize":
+			tokenize(w, r)
+		default:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+	}))
+	t.Cleanup(target.Close)
+
+	sc := &config.ScenarioConfig{
+		Workload: config.Workload{Type: "synthetic", ISL: 64, OSL: 4, Turns: 1},
+		Stages:   []config.ScenarioStage{{Duration: 200 * time.Millisecond, Mode: "concurrent", Concurrency: 1}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := runScenario(ctx, cancel, scenarioOpts{
+		Target:   target.URL + "/v1",
+		Model:    "adapter-3",
+		Scenario: sc,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	models := tokModels()
+	if len(models) == 0 {
+		t.Fatal("no /tokenize calls reached the target")
+	}
+	for _, m := range models {
+		if m != "adapter-3" {
+			t.Fatalf("tokenizer call used model %q, want the request model adapter-3", m)
+		}
 	}
 }

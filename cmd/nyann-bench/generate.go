@@ -23,18 +23,20 @@ import (
 
 func generateCmd() *cobra.Command {
 	var (
-		target        string
-		model         string
-		cfgInput      string
-		scenarioIR    string
-		outputDir     string
-		workerID      int
-		workersFlag   string
-		metricsAddr   string
-		prometheusURL string
-		deployName    string
-		streamUsage   bool
-		kubeFlags     kube.Flags
+		target          string
+		model           string
+		tokenizerTarget string
+		tokenizerModel  string
+		cfgInput        string
+		scenarioIR      string
+		outputDir       string
+		workerID        int
+		workersFlag     string
+		metricsAddr     string
+		prometheusURL   string
+		deployName      string
+		streamUsage     bool
+		kubeFlags       kube.Flags
 	)
 
 	cmd := &cobra.Command{
@@ -193,13 +195,15 @@ Workload types:
 			var collected []*analysis.ServerMetrics
 
 			summary, err := runScenario(ctx, cancel, scenarioOpts{
-				Target:      target,
-				Model:       model,
-				Scenario:    sc,
-				OutputDir:   outputDir,
-				WorkerID:    workerID,
-				MetricsAddr: metricsAddr,
-				StreamUsage: streamUsage,
+				Target:          target,
+				Model:           model,
+				Scenario:        sc,
+				OutputDir:       outputDir,
+				WorkerID:        workerID,
+				MetricsAddr:     metricsAddr,
+				StreamUsage:     streamUsage,
+				TokenizerTarget: tokenizerTarget,
+				TokenizerModel:  tokenizerModel,
 				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) bool {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
@@ -287,6 +291,8 @@ Workload types:
 
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
+	cmd.Flags().StringVar(&tokenizerTarget, "tokenizer-target", "", "Base URL for calibration and /tokenize calls (default: --target)")
+	cmd.Flags().StringVar(&tokenizerModel, "tokenizer-model", "", "Model name for calibration and /tokenize calls (default: --model)")
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
 	cmd.Flags().StringVar(&scenarioIR, "scenario-ir", "", "Internal compiled scenario representation")
 	_ = cmd.Flags().MarkHidden("scenario-ir")

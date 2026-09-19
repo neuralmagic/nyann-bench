@@ -97,6 +97,10 @@ type scenarioOpts struct {
 	StreamUsage bool            // Request token usage stats (stream_options include_usage)
 	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
+	// Endpoint for calibration and /tokenize; empty means Target and Model.
+	TokenizerTarget string
+	TokenizerModel  string
+
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
 	// query Prometheus and print live per-stage results.
@@ -136,10 +140,20 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		slog.Info("Subsequent ISL configured", "isl", w.ISL, "subsequent_isl", *w.SubsequentISL)
 	}
 
-	charsPerToken := calibrateTokenRatio(ctx, c, model, w.CharsPerToken)
+	tokenizerModel := opts.TokenizerModel
+	if tokenizerModel == "" {
+		tokenizerModel = model
+	}
+	tc := c
+	if opts.TokenizerTarget != "" {
+		tc = client.New(opts.TokenizerTarget)
+		slog.Info("Tokenizing against a separate endpoint", "target", opts.TokenizerTarget, "model", tokenizerModel)
+	}
+
+	charsPerToken := calibrateTokenRatio(ctx, tc, tokenizerModel, w.CharsPerToken)
 
 	tokenCounter := func(text string) (int, error) {
-		return c.CountTokens(ctx, text, model)
+		return tc.CountTokens(ctx, text, tokenizerModel)
 	}
 
 	ds := opts.Dataset
@@ -338,7 +352,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			runTokenCounter := tokenCounter
 			if runWorkload.CharsPerToken > 0 {
 				runCharsPerToken = runWorkload.CharsPerToken
-			} else if runTarget != target {
+			} else if runTarget != target && opts.TokenizerTarget == "" {
 				runC := client.New(runTarget)
 				runCharsPerToken = calibrateTokenRatio(ctx, runC, runModel, runWorkload.CharsPerToken)
 				runTokenCounter = func(text string) (int, error) {
