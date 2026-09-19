@@ -190,6 +190,28 @@ scenario(
 )
 ```
 
+### Agentic sessions
+
+In `poisson` or `constant` mode each arrival starts a whole conversation, so `rate` is the session arrival rate. Two workload options shape the sessions:
+
+- `think_time` pauses between a response and the conversation's next turn, standing in for tool execution. Draws are lognormal: `think_time` is the median, `think_time_sigma` the spread (0 = constant), `think_time_max` the cap. Not supported in `conversation_pool` mode.
+- `session_header` sends a random per-conversation id in the named header on every turn, for routers that pin a session to a replica. The same id is written to each record as `session_id`.
+
+```python
+scenario(
+    stages = [stage("20m", mode="poisson", rate=0.5)],
+    workload = workload(
+        "synthetic", isl=6000, subsequent_isl=1500, osl=200, turns=20,
+        session_header="x-session-id",
+        think_time="5s", think_time_sigma=1.2, think_time_max="10m",
+    ),
+)
+```
+
+A dispatched session holds its `max_inflight` slot through its think time, and a stage waits for the sessions it started to finish. A pause ends with the run, so a long think time cannot outlive the stage.
+
+`--seed N` fixes session arrival times, think times and session ids, so two runs of the same scenario present the same workload and a router change is the only difference between them. Each stream of draws is keyed independently, so a conversation's pauses and its session id replay regardless of goroutine interleaving. Prompt text is not seeded; its lengths come from the ISL settings. `--seed 0` (the default) leaves the draws unseeded.
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
@@ -274,7 +296,7 @@ All workload types support configurable ISL (input sequence length), OSL (output
 
 Each worker produces:
 
-- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason.
+- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason. `session_id` is present when the workload sets `session_header`.
 - **`timestamps_N.json`** — start/end times for each stage, for Prometheus range queries.
 
 Merging across workers: `cat requests_*.jsonl`.

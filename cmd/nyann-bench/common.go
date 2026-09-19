@@ -97,6 +97,9 @@ type scenarioOpts struct {
 	StreamUsage bool            // Request token usage stats (stream_options include_usage)
 	Dataset     dataset.Dataset // pre-built dataset (skips buildDataset for default workload)
 
+	// Seeds arrivals and think times so runs replay (0 = unseeded).
+	Seed int64
+
 	// OnStageComplete is called after each measured stage finishes with
 	// the stage timestamp and current recorder snapshot. The callback can
 	// query Prometheus and print live per-stage results.
@@ -377,6 +380,9 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			MaxInFlight:          genMaxInFlight,
 			ConversationPoolSize: run.stages[0].ConversationPoolSize,
 			CacheSalt:            runWorkload.CacheSalt,
+			SessionHeader:        runWorkload.SessionHeader,
+			ThinkTime:            runWorkload.ThinkTime,
+			Seed:                 opts.Seed,
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,

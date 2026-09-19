@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -552,5 +553,55 @@ func TestParseJSONWithSweep(t *testing.T) {
 		if sc.Stages[i].Duration != 2*time.Minute {
 			t.Errorf("stage %d: expected 2m, got %v", i, sc.Stages[i].Duration)
 		}
+	}
+}
+
+func TestThinkTimeValidationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"zero median", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","think_time":{"median":"0s"}}}`, "median must be > 0"},
+		{"negative sigma", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","think_time":{"median":"5s","sigma":-1}}}`, "sigma must be >= 0"},
+		{"max below median", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","think_time":{"median":"5s","max":"1s"}}}`, "must be >= median"},
+		{"conversation pool", `{"load":{"mode":"conversation_pool","concurrency":1,"conversation_pool_size":2,"duration":"1s"},"workload":{"type":"faker","think_time":{"median":"5s"}}}`, "not supported in conversation_pool mode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := config.Parse(tc.input)
+			if err == nil {
+				err = sc.Validate()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestThinkTimeRoundTripsFromJSONAndYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"json", `{"load":{"mode":"poisson","rate":1,"duration":"1s"},"workload":{"type":"faker","think_time":{"median":"5s","sigma":1.2,"max":"10m"}}}`},
+		{"yaml", "---\nload:\n  mode: poisson\n  rate: 1\n  duration: 1s\nworkload:\n  type: faker\n  think_time:\n    median: 5s\n    sigma: 1.2\n    max: 10m\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := config.Parse(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sc.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			tt := sc.Workload.ThinkTime
+			if tt == nil {
+				t.Fatal("think_time = nil")
+			}
+			if tt.Median.Duration() != 5*time.Second || tt.Sigma != 1.2 || tt.Max.Duration() != 10*time.Minute {
+				t.Fatalf("think_time = %+v", tt)
+			}
+		})
 	}
 }

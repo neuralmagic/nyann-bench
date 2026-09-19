@@ -14,6 +14,7 @@ type Record struct {
 	RequestID      string    `json:"id"`
 	StreamID       int       `json:"stream"`
 	ConversationID string    `json:"conv_id"`
+	SessionID      string    `json:"session_id,omitempty"` // value of session_header
 	Turn           int       `json:"turn"`
 	StartTime      float64   `json:"t0"`
 	TTFT           float64   `json:"ttft_ms"`

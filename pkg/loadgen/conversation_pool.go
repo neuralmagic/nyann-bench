@@ -14,6 +14,7 @@ import (
 type pooledConversation struct {
 	id           int
 	convID       string
+	sessionID    string
 	conv         dataset.Conversation
 	materialized bool
 	history      []client.Message
@@ -55,9 +56,11 @@ func newConversationPoolScheduler(g *Generator, poolSize int) *conversationPoolS
 func (s *conversationPoolScheduler) addConversationSlotLocked() {
 	id := s.nextID
 	s.nextID++
+	convID := fmt.Sprintf("pool-c%d", id)
 	pc := &pooledConversation{
-		id:     id,
-		convID: fmt.Sprintf("pool-c%d", id),
+		id:        id,
+		convID:    convID,
+		sessionID: s.g.newSessionID(convID),
 	}
 	s.convs[id] = pc
 	s.pushReadyLocked(id)
@@ -290,6 +293,7 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		StreamOptions: g.streamOptions(),
 		MaxTokens:     pc.conv.MaxTokens,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.requestHeaders(pc.convID, pc.sessionID, turnIdx),
 	}
 
 	g.trackInFlight(1)
@@ -304,7 +308,7 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
-		g.recordResult(result, streamID, pc.convID, turnIdx, pc.conv)
+		g.recordResult(result, streamID, pc.convID, pc.sessionID, turnIdx, pc.conv)
 	}()
 
 	if result.Err != nil {
@@ -345,7 +349,7 @@ func (g *Generator) runPooledCompletionTurn(ctx context.Context, c *client.Clien
 	g.recordWG.Add(1)
 	go func() {
 		defer g.recordWG.Done()
-		g.recordResult(result, streamID, pc.convID, 0, pc.conv)
+		g.recordResult(result, streamID, pc.convID, pc.sessionID, 0, pc.conv)
 	}()
 	return true
 }
