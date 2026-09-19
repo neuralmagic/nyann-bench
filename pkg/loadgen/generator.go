@@ -66,6 +66,7 @@ type Generator struct {
 	Dataset              dataset.Dataset
 	Recorder             *recorder.Recorder
 	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
+	RecordHeaders        []string          // Response headers copied into each record
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -580,6 +581,14 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 		EndTime:        recorder.TimeToFloat(result.EndTime),
 		TotalLatencyMs: result.TotalLatency().Seconds() * 1000,
 		OutputTokens:   result.OutputTokens(),
+	}
+	for _, name := range g.RecordHeaders {
+		if v := result.Header.Get(name); v != "" {
+			if rec.Headers == nil {
+				rec.Headers = make(map[string]string, len(g.RecordHeaders))
+			}
+			rec.Headers[name] = v
+		}
 	}
 
 	if result.Err != nil {

@@ -61,3 +61,22 @@ func TestChatStreamSeparatesReasoningFromGeneratedText(t *testing.T) {
 		t.Fatalf("TokenTimes has %d entries, want 3", len(result.TokenTimes))
 	}
 }
+
+func TestChatStreamKeepsHeadersOnErrorResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Upstream-Host", "10.0.0.9:8000")
+		http.Error(w, "overloaded", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	result := New(server.URL+"/v1").ChatStream(context.Background(), &Request{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: "question"}},
+	})
+	if result.Err == nil {
+		t.Fatal("expected an error for a 503 response")
+	}
+	if got := result.Header.Get("X-Upstream-Host"); got != "10.0.0.9:8000" {
+		t.Fatalf("X-Upstream-Host = %q, want it kept on the error path", got)
+	}
+}

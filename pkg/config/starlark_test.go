@@ -1,8 +1,10 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -828,4 +830,84 @@ func containsImpl(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestStarlarkWorkloadRecordHeaders(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", record_headers=["x-upstream-host", "x-gateway"]),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"x-upstream-host", "x-gateway"}
+	if len(sc.Workload.RecordHeaders) != len(want) {
+		t.Fatalf("record_headers = %v, want %v", sc.Workload.RecordHeaders, want)
+	}
+	for i, h := range want {
+		if sc.Workload.RecordHeaders[i] != h {
+			t.Fatalf("record_headers = %v, want %v", sc.Workload.RecordHeaders, want)
+		}
+	}
+
+	path = writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err = config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.RecordHeaders != nil {
+		t.Fatalf("record_headers = %v, want nil by default", sc.Workload.RecordHeaders)
+	}
+}
+
+func TestStarlarkRecordHeaderErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		arg  string
+		want string
+	}{
+		{"not a list", `record_headers="x-upstream-host"`, "record_headers must be a list of strings"},
+		{"non-string element", `record_headers=["x-upstream-host", 7]`, "record_headers[1] must be a string"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeStarFile(t, fmt.Sprintf(`
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", %s),
+)
+`, tc.arg))
+			_, err := config.ParseStarlark(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseRecordHeadersFromJSONAndYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"json", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","record_headers":["x-upstream-host"]}}`},
+		{"yaml", "---\nload:\n  concurrency: 1\n  duration: 1s\nworkload:\n  type: faker\n  record_headers:\n    - x-upstream-host\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := config.Parse(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sc.Workload.RecordHeaders) != 1 || sc.Workload.RecordHeaders[0] != "x-upstream-host" {
+				t.Fatalf("record_headers = %v", sc.Workload.RecordHeaders)
+			}
+		})
+	}
 }

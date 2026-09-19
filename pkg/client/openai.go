@@ -62,6 +62,7 @@ type Result struct {
 	GeneratedText string // Reasoning and visible content in streamed order, used for workload replay
 	FinishReason  string // "stop", "length", etc.
 	Usage         *Usage
+	Header        http.Header
 	Err           error
 }
 
@@ -279,6 +280,7 @@ func (c *Client) ChatStream(ctx context.Context, req *Request) *Result {
 		return result
 	}
 	defer resp.Body.Close()
+	result.Header = resp.Header
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -392,6 +394,7 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 		return result
 	}
 	defer resp.Body.Close()
+	result.Header = resp.Header
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)

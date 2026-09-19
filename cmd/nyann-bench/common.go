@@ -377,6 +377,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 			MaxInFlight:          genMaxInFlight,
 			ConversationPoolSize: run.stages[0].ConversationPoolSize,
 			CacheSalt:            runWorkload.CacheSalt,
+			RecordHeaders:        runWorkload.RecordHeaders,
 			Dataset:              runDS,
 			Recorder:             rec,
 			Metrics:              m,

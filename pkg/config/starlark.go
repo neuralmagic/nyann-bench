@@ -105,6 +105,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
+		recordHeaders  starlark.Value = starlark.None
 	)
 
 	if err := starlark.UnpackArgs("workload", args, kwargs,
@@ -121,8 +122,21 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
+		"record_headers?", &recordHeaders,
 	); err != nil {
 		return nil, err
+	}
+
+	if recordHeaders != starlark.None {
+		list, ok := recordHeaders.(*starlark.List)
+		if !ok {
+			return nil, fmt.Errorf("record_headers must be a list of strings, got %s", recordHeaders.Type())
+		}
+		for i := 0; i < list.Len(); i++ {
+			if _, ok := list.Index(i).(starlark.String); !ok {
+				return nil, fmt.Errorf("record_headers[%d] must be a string, got %s", i, list.Index(i).Type())
+			}
+		}
 	}
 
 	// Validate type
@@ -160,6 +174,7 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token":  starlark.Float(charsPerToken),
 		"cache_salt":       cacheSalt,
 		"name":             name,
+		"record_headers":   recordHeaders,
 	}), nil
 }
 
@@ -482,6 +497,13 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 
 	name, _ := s.Attr("name")
 	w.Name = starlarkString(name)
+
+	recordHeaders, _ := s.Attr("record_headers")
+	if list, ok := recordHeaders.(*starlark.List); ok {
+		for i := 0; i < list.Len(); i++ {
+			w.RecordHeaders = append(w.RecordHeaders, starlarkString(list.Index(i)))
+		}
+	}
 
 	return w, nil
 }

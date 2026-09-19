@@ -70,6 +70,7 @@ type Workload struct {
 	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
 	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
 	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
+	RecordHeaders  []string   `json:"record_headers,omitempty"`   // response headers copied into each record
 }
 
 // CacheSalt configures vLLM prefix cache isolation.
