@@ -25,6 +25,7 @@ func generateCmd() *cobra.Command {
 	var (
 		target        string
 		model         string
+		seed          int64
 		cfgInput      string
 		scenarioIR    string
 		outputDir     string
@@ -200,6 +201,7 @@ Workload types:
 				WorkerID:    workerID,
 				MetricsAddr: metricsAddr,
 				StreamUsage: streamUsage,
+				Seed:        seed,
 				OnStageComplete: func(ts recorder.StageTimestamp, records []recorder.Record) bool {
 					stages := analysis.ComputePerStage(records, []recorder.StageTimestamp{ts})
 					if len(stages) == 0 {
@@ -287,6 +289,7 @@ Workload types:
 
 	cmd.Flags().StringVar(&target, "target", "http://localhost:8000/v1", "Target endpoint base URL")
 	cmd.Flags().StringVar(&model, "model", "", "Model name for requests")
+	cmd.Flags().Int64Var(&seed, "seed", 0, "Seed for session arrivals and think times, so runs replay the same workload (0 = unseeded)")
 	cmd.Flags().StringVar(&cfgInput, "config", "{}", "Workload config (JSON/YAML file, inline JSON/YAML, or .star file)")
 	cmd.Flags().StringVar(&scenarioIR, "scenario-ir", "", "Internal compiled scenario representation")
 	_ = cmd.Flags().MarkHidden("scenario-ir")

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	mathrand "math/rand"
@@ -67,6 +68,7 @@ type Generator struct {
 	Recorder             *recorder.Recorder
 	CacheSalt            *config.CacheSalt // Prefix cache isolation (nil = disabled)
 	ThinkTime            *config.ThinkTime // Pause between turns (nil = none)
+	Seed                 int64             // Seeds arrivals and think times (0 = unseeded)
 	Metrics              *metrics.Metrics  // Optional Prometheus metrics (nil = disabled)
 	StreamUsage          bool              // Request token usage stats from server (stream_options)
 
@@ -284,9 +286,9 @@ func (g *Generator) Run(ctx context.Context) (*recorder.Timestamps, error) {
 	case ModeConversationPool:
 		g.runConversationPool(ctx, c, g.Concurrency, g.ConversationPoolSize, g.Rampup)
 	case ModeConstant:
-		g.runRateBased(ctx, ctx, c, startTime, false)
+		g.runRateBased(ctx, ctx, c, startTime, false, g.rng("arrivals"))
 	case ModePoisson:
-		g.runRateBased(ctx, ctx, c, startTime, true)
+		g.runRateBased(ctx, ctx, c, startTime, true, g.rng("arrivals"))
 	default:
 		return nil, fmt.Errorf("unknown mode: %s", g.Mode)
 	}
@@ -327,6 +329,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 	g.stopFunc = cancel
 
 	c := client.New(g.Target)
+	arrivals := g.rng("arrivals")
 	for i, stage := range stages {
 		if ctx.Err() != nil {
 			break
@@ -341,7 +344,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 			onStage(i, stage.Concurrency)
 		}
 		dispatchCtx, stop := context.WithTimeout(ctx, stage.Duration)
-		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson)
+		g.runRateBased(ctx, dispatchCtx, c, time.Now(), g.Mode == ModePoisson, arrivals)
 		stop()
 	}
 	g.recordWG.Wait()
@@ -349,7 +352,7 @@ func (g *Generator) runRateBasedStages(ctx context.Context, stages []Stage, onSt
 
 // runRateBased dispatches at g.Rate until dispatchCtx ends, then waits for the
 // dispatched conversations, which run under ctx.
-func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool) {
+func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Client, startTime time.Time, poisson bool, arrivals *mathrand.Rand) {
 	var sem chan struct{}
 	if g.MaxInFlight > 0 {
 		sem = make(chan struct{}, g.MaxInFlight)
@@ -374,7 +377,7 @@ func (g *Generator) runRateBased(ctx, dispatchCtx context.Context, c *client.Cli
 		var gap time.Duration
 		if poisson {
 			// Exponential inter-arrival time
-			gap = time.Duration(float64(time.Second) * (-math.Log(1-mathrand.Float64()) / rate))
+			gap = time.Duration(float64(time.Second) * (-math.Log(1-arrivals.Float64()) / rate))
 		} else {
 			gap = time.Duration(float64(time.Second) / rate)
 		}
@@ -590,6 +593,17 @@ func (g *Generator) runCompletion(ctx context.Context, c *client.Client, streamI
 	}()
 }
 
+// rng returns the source for one named stream of draws. When seeded it depends
+// only on Seed and key, never on goroutine interleaving.
+func (g *Generator) rng(key string) *mathrand.Rand {
+	if g.Seed == 0 {
+		return mathrand.New(mathrand.NewSource(mathrand.Int63()))
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return mathrand.New(mathrand.NewSource(g.Seed ^ int64(h.Sum64())))
+}
+
 // thinkTime draws the pause before a conversation's next turn from r.
 func (g *Generator) thinkTime(r *mathrand.Rand) time.Duration {
 	if g.ThinkTime == nil {
@@ -729,7 +743,7 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	var history []client.Message
 	var think *mathrand.Rand
 	if g.ThinkTime != nil {
-		think = mathrand.New(mathrand.NewSource(mathrand.Int63()))
+		think = g.rng("think/" + convID)
 	}
 
 	for turnIdx, prebuilt := range conv.Turns {

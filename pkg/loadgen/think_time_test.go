@@ -3,6 +3,7 @@ package loadgen
 import (
 	"math"
 	mathrand "math/rand"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -71,5 +72,31 @@ func TestThinkTimeUncappedWithZeroMax(t *testing.T) {
 func TestThinkTimeNilIsZero(t *testing.T) {
 	if d := (&Generator{}).thinkTime(nil); d != 0 {
 		t.Fatalf("thinkTime() = %s with no config, want 0", d)
+	}
+}
+
+func TestSeededStreamsReplay(t *testing.T) {
+	draws := func(g *Generator, key string) []float64 {
+		r := g.rng(key)
+		out := make([]float64, 20)
+		for i := range out {
+			out[i] = r.Float64()
+		}
+		return out
+	}
+	seeded := &Generator{Seed: 42}
+	first := draws(seeded, "think/w3-c3")
+	if again := draws(&Generator{Seed: 42}, "think/w3-c3"); !slices.Equal(first, again) {
+		t.Fatal("same seed and key produced different draws")
+	}
+	if other := draws(seeded, "think/w4-c4"); slices.Equal(first, other) {
+		t.Fatal("different keys produced the same draws")
+	}
+	if other := draws(&Generator{Seed: 43}, "think/w3-c3"); slices.Equal(first, other) {
+		t.Fatal("different seeds produced the same draws")
+	}
+	unseeded := &Generator{}
+	if slices.Equal(draws(unseeded, "arrivals"), draws(unseeded, "arrivals")) {
+		t.Fatal("an unseeded generator replayed its draws")
 	}
 }

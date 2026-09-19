@@ -206,6 +206,8 @@ scenario(
 
 A dispatched session holds its `max_inflight` slot through its think time, and a stage waits for the sessions it started to finish. A pause ends with the run, so a long think time cannot outlive the stage.
 
+`--seed N` fixes session arrival times and think times, so two runs of the same scenario present the same workload and a router change is the only difference between them. Each stream of draws is keyed independently, so a conversation's pauses replay regardless of goroutine interleaving. Prompt text is not seeded; its lengths come from the ISL settings. `--seed 0` (the default) leaves the draws unseeded.
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).
