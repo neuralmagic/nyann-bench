@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,5 +165,72 @@ func TestExplicitMaxRequestsStopsEarly(t *testing.T) {
 
 	if summary.TotalRequests != 5 {
 		t.Fatalf("expected exactly 5 requests, got %d", summary.TotalRequests)
+	}
+}
+
+// saltServer records the cache_salt of every chat request.
+func saltServer(t *testing.T) (string, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var salts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"data":[{"id":"test-model"}]}`)
+			return
+		}
+		var body struct {
+			CacheSalt string `json:"cache_salt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		salts = append(salts, body.CacheSalt)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), salts...)
+	}
+}
+
+func TestStagesWithDifferentWorkloadsRunSeparately(t *testing.T) {
+	url, salts := saltServer(t)
+	base := config.Workload{Type: "synthetic", ISL: 64, OSL: 4, Turns: 1}
+	first := base
+	first.CacheSalt = &config.CacheSalt{Mode: "fixed", Value: "stage-one"}
+	second := base
+	second.CacheSalt = &config.CacheSalt{Mode: "fixed", Value: "stage-two"}
+
+	sc := &config.ScenarioConfig{
+		Workload: base,
+		Stages: []config.ScenarioStage{
+			{Duration: 200 * time.Millisecond, Mode: "concurrent", Concurrency: 1, Workload: &first},
+			{Duration: 200 * time.Millisecond, Mode: "concurrent", Concurrency: 1, Workload: &second},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := runScenario(ctx, cancel, scenarioOpts{
+		Target: url + "/v1", Model: "test-model", Scenario: sc, OutputDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]int{}
+	for _, s := range salts() {
+		seen[s]++
+	}
+	if seen["stage-one"] == 0 {
+		t.Fatalf("no requests used the first stage's cache salt: %v", seen)
+	}
+	if seen["stage-two"] == 0 {
+		t.Fatalf("no requests used the second stage's cache salt: %v", seen)
 	}
 }

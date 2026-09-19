@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -285,7 +286,7 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 		canExtend := len(runs) > 0 &&
 			runs[len(runs)-1].target == rs.target &&
 			runs[len(runs)-1].model == rs.model &&
-			workloadEqual(runs[len(runs)-1].workload, rs.workload)
+			reflect.DeepEqual(runs[len(runs)-1].workload, rs.workload)
 
 		if canExtend {
 			runs[len(runs)-1].stages = append(runs[len(runs)-1].stages, rs.loadgen)
@@ -510,17 +511,4 @@ func runScenario(ctx context.Context, cancel context.CancelFunc, opts scenarioOp
 	}
 
 	return summary, nil
-}
-
-// workloadEqual checks if two workload pointers refer to the same workload config.
-func workloadEqual(a, b *config.Workload) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return a.Type == b.Type && a.Name == b.Name &&
-		a.ISL == b.ISL && a.OSL == b.OSL && a.Turns == b.Turns &&
-		a.CorpusPath == b.CorpusPath && a.GSM8KPath == b.GSM8KPath
 }
