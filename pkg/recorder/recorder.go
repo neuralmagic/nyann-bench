@@ -20,6 +20,7 @@ type Record struct {
 	ITLs           []float64 `json:"itls_ms,omitempty"`
 	EndTime        float64   `json:"tend"`
 	PromptTokens   int       `json:"prompt_tokens"`
+	CachedTokens   *int      `json:"cached_tokens,omitempty"` // prefix cache hits; nil when unreported
 	OutputTokens   int       `json:"output_tokens"`
 	TotalLatencyMs float64   `json:"latency_ms"`
 	FinishReason   string    `json:"finish_reason,omitempty"`

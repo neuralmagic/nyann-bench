@@ -607,6 +607,10 @@ func (g *Generator) recordResult(result *client.Result, streamID int, convID str
 	if result.Usage != nil {
 		rec.PromptTokens = result.Usage.PromptTokens
 		rec.OutputTokens = result.Usage.CompletionTokens
+		if d := result.Usage.PromptTokensDetails; d != nil {
+			cached := d.CachedTokens
+			rec.CachedTokens = &cached
+		}
 		slog.Debug("Request token usage",
 			"conv", convID,
 			"turn", turn,

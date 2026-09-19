@@ -274,7 +274,7 @@ All workload types support configurable ISL (input sequence length), OSL (output
 
 Each worker produces:
 
-- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason.
+- **`requests_N.jsonl`** — one line per completed request with TTFT, per-token ITL array, token counts, latency, eval results, and finish reason. `cached_tokens` is present when the server reports prompt tokens served from its prefix cache, which vLLM does under `--enable-prompt-tokens-details` with `--stream-usage`.
 - **`timestamps_N.json`** — start/end times for each stage, for Prometheus range queries.
 
 Merging across workers: `cat requests_*.jsonl`.

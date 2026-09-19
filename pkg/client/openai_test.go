@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,5 +60,85 @@ func TestChatStreamSeparatesReasoningFromGeneratedText(t *testing.T) {
 	}
 	if len(result.TokenTimes) != 3 {
 		t.Fatalf("TokenTimes has %d entries, want 3", len(result.TokenTimes))
+	}
+}
+
+// usageServer requires include_usage, then streams one token and the usage.
+func usageServer(t *testing.T, usage string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			StreamOptions *struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.StreamOptions == nil || !body.StreamOptions.IncludeUsage {
+			http.Error(w, "stream_options.include_usage not set", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"text\":\"hi\",\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":%s}\n\n", usage)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestChatStreamParsesCachedPromptTokens(t *testing.T) {
+	server := usageServer(t, `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":96}}`)
+
+	result := New(server.URL+"/v1").ChatStream(context.Background(), &Request{
+		Model:         "test-model",
+		Messages:      []Message{{Role: "user", Content: "question"}},
+		StreamOptions: map[string]any{"include_usage": true},
+	})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Usage == nil || result.Usage.PromptTokens != 100 {
+		t.Fatalf("Usage = %+v, want prompt_tokens 100", result.Usage)
+	}
+	if result.Usage.PromptTokensDetails == nil || result.Usage.PromptTokensDetails.CachedTokens != 96 {
+		t.Fatalf("PromptTokensDetails = %+v, want cached_tokens 96", result.Usage.PromptTokensDetails)
+	}
+}
+
+func TestChatStreamWithoutPromptTokensDetails(t *testing.T) {
+	server := usageServer(t, `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101}`)
+
+	result := New(server.URL+"/v1").ChatStream(context.Background(), &Request{
+		Model:         "test-model",
+		Messages:      []Message{{Role: "user", Content: "question"}},
+		StreamOptions: map[string]any{"include_usage": true},
+	})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Usage == nil {
+		t.Fatal("Usage = nil, want the usage chunk parsed")
+	}
+	if result.Usage.PromptTokensDetails != nil {
+		t.Fatalf("PromptTokensDetails = %+v, want nil when the server does not report it", result.Usage.PromptTokensDetails)
+	}
+}
+
+func TestCompletionStreamParsesUsage(t *testing.T) {
+	server := usageServer(t, `{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}`)
+
+	result := New(server.URL+"/v1").CompletionStream(context.Background(), &CompletionRequest{
+		Model:         "test-model",
+		Prompt:        "question",
+		StreamOptions: map[string]any{"include_usage": true},
+	})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Usage == nil || result.Usage.PromptTokens != 10 {
+		t.Fatalf("Usage = %+v, want prompt_tokens 10", result.Usage)
 	}
 }
