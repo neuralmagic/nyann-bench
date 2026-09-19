@@ -105,6 +105,9 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
+		thinkTime      starlark.Value = starlark.None
+		thinkTimeSigma starlark.Value = starlark.None
+		thinkTimeMax   starlark.Value = starlark.None
 	)
 
 	if err := starlark.UnpackArgs("workload", args, kwargs,
@@ -121,8 +124,33 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
+		"think_time?", &thinkTime,
+		"think_time_sigma?", &thinkTimeSigma,
+		"think_time_max?", &thinkTimeMax,
 	); err != nil {
 		return nil, err
+	}
+
+	if thinkTime == starlark.None && (thinkTimeSigma != starlark.None || thinkTimeMax != starlark.None) {
+		return nil, fmt.Errorf("think_time_sigma and think_time_max require think_time")
+	}
+	for _, v := range []struct {
+		name string
+		val  starlark.Value
+	}{{"think_time", thinkTime}, {"think_time_max", thinkTimeMax}} {
+		if v.val == starlark.None {
+			continue
+		}
+		if _, err := parseDurationValue(v.val); err != nil {
+			return nil, fmt.Errorf("%s: %w", v.name, err)
+		}
+	}
+	if thinkTimeSigma != starlark.None {
+		switch thinkTimeSigma.(type) {
+		case starlark.Float, starlark.Int:
+		default:
+			return nil, fmt.Errorf("think_time_sigma must be a number, got %s", thinkTimeSigma.Type())
+		}
 	}
 
 	// Validate type
@@ -160,6 +188,9 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token":  starlark.Float(charsPerToken),
 		"cache_salt":       cacheSalt,
 		"name":             name,
+		"think_time":       thinkTime,
+		"think_time_sigma": thinkTimeSigma,
+		"think_time_max":   thinkTimeMax,
 	}), nil
 }
 
@@ -482,6 +513,26 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 
 	name, _ := s.Attr("name")
 	w.Name = starlarkString(name)
+
+	thinkTime, _ := s.Attr("think_time")
+	if thinkTime != starlark.None {
+		median, err := parseDurationValue(thinkTime)
+		if err != nil {
+			return nil, fmt.Errorf("think_time: %w", err)
+		}
+		tt := &ThinkTime{Median: Duration(median)}
+		sigma, _ := s.Attr("think_time_sigma")
+		tt.Sigma = starlarkFloat(sigma)
+		maxVal, _ := s.Attr("think_time_max")
+		if maxVal != starlark.None {
+			m, err := parseDurationValue(maxVal)
+			if err != nil {
+				return nil, fmt.Errorf("think_time_max: %w", err)
+			}
+			tt.Max = Duration(m)
+		}
+		w.ThinkTime = tt
+	}
 
 	return w, nil
 }

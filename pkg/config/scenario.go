@@ -139,6 +139,11 @@ func (c *Config) ToScenarioConfig() *ScenarioConfig {
 
 // Validate checks scenario-level scheduling options after defaults have been applied.
 func (sc *ScenarioConfig) Validate() error {
+	if sc.Workload.ThinkTime != nil {
+		if err := sc.Workload.ThinkTime.validate(); err != nil {
+			return fmt.Errorf("workload: %w", err)
+		}
+	}
 	for i, s := range sc.Stages {
 		if s.Barrier {
 			continue
@@ -150,6 +155,18 @@ func (sc *ScenarioConfig) Validate() error {
 		}
 		if math.IsNaN(s.Rate) || math.IsInf(s.Rate, 0) {
 			return fmt.Errorf("stage %d: rate must be finite", i)
+		}
+		w := &sc.Workload
+		if s.Workload != nil {
+			w = s.Workload
+			if w.ThinkTime != nil {
+				if err := w.ThinkTime.validate(); err != nil {
+					return fmt.Errorf("stage %d: workload: %w", i, err)
+				}
+			}
+		}
+		if s.Mode == "conversation_pool" && w.ThinkTime != nil {
+			return fmt.Errorf("stage %d: think_time is not supported in conversation_pool mode", i)
 		}
 		if s.Mode == "conversation_pool" {
 			if s.ConversationPoolSize == 0 {

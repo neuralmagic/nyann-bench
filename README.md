@@ -190,6 +190,22 @@ scenario(
 )
 ```
 
+### Agentic sessions
+
+In `poisson` or `constant` mode each arrival starts a whole conversation, so `rate` is the session arrival rate. `think_time` pauses between a response and the conversation's next turn, standing in for tool execution. Draws are lognormal: `think_time` is the median, `think_time_sigma` the spread (0 = constant), `think_time_max` the cap. Not supported in `conversation_pool` mode.
+
+```python
+scenario(
+    stages = [stage("20m", mode="poisson", rate=0.5)],
+    workload = workload(
+        "synthetic", isl=6000, subsequent_isl=1500, osl=200, turns=20,
+        think_time="5s", think_time_sigma=1.2, think_time_max="10m",
+    ),
+)
+```
+
+A dispatched session holds its `max_inflight` slot through its think time, and a stage waits for the sessions it started to finish. A pause ends with the run, so a long think time cannot outlive the stage.
+
 ### Synchronized multi-pod start with automatic load division
 
 When running across multiple pods, `--workers N` (where N > 1) enables barrier synchronization and automatically divides load across workers. Concurrency and rate values in config files always express the **total** desired load — each worker gets its fair share via integer division, with remainder distributed to lower-indexed workers (e.g. `concurrency=10, workers=3` → 4, 3, 3).

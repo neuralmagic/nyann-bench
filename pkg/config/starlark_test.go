@@ -1,8 +1,10 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -828,4 +830,86 @@ func containsImpl(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestStarlarkWorkloadThinkTime(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", mode="poisson", rate=1)],
+    workload = workload("faker", think_time="5s", think_time_sigma=1.2, think_time_max="10m"),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt := sc.Workload.ThinkTime
+	if tt == nil {
+		t.Fatal("think_time = nil")
+	}
+	if tt.Median.Duration() != 5*time.Second || tt.Sigma != 1.2 || tt.Max.Duration() != 10*time.Minute {
+		t.Fatalf("think_time = %+v", tt)
+	}
+
+	path = writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err = config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.ThinkTime != nil {
+		t.Fatalf("think_time = %+v, want nil by default", sc.Workload.ThinkTime)
+	}
+}
+
+func TestStarlarkThinkTimeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{"sigma without think_time", `think_time_sigma=1.2`, "require think_time"},
+		{"max without think_time", `think_time_max="10m"`, "require think_time"},
+		{"bad duration", `think_time="soon"`, "think_time:"},
+		{"bad max duration", `think_time="5s", think_time_max="later"`, "think_time_max:"},
+		{"sigma not a number", `think_time="5s", think_time_sigma="wide"`, "think_time_sigma must be a number"},
+		{"median zero", `think_time="0s"`, "median must be > 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeStarFile(t, fmt.Sprintf(`
+scenario(
+    stages = [stage("60s", mode="poisson", rate=1)],
+    workload = workload("faker", %s),
+)
+`, tc.args))
+			sc, err := config.ParseStarlark(path)
+			if err == nil {
+				err = sc.Validate()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStarlarkThinkTimeRejectedInConversationPoolStage(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s", mode="conversation_pool", concurrency=2, conversation_pool_size=4,
+                    workload = workload("faker", think_time="5s"))],
+    workload = workload("faker"),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err == nil {
+		err = sc.Validate()
+	}
+	if err == nil || !strings.Contains(err.Error(), "not supported in conversation_pool mode") {
+		t.Fatalf("error = %v, want a conversation_pool rejection", err)
+	}
 }

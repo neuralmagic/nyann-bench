@@ -70,6 +70,30 @@ type Workload struct {
 	GPQAPath       string     `json:"gpqa_path,omitempty"`        // path to GPQA JSONL file
 	CharsPerToken  float64    `json:"chars_per_token"`            // override auto-calibrated ratio (0 = auto)
 	CacheSalt      *CacheSalt `json:"cache_salt,omitempty"`       // prefix cache isolation config
+	ThinkTime      *ThinkTime `json:"think_time,omitempty"`       // pause between turns
+}
+
+// ThinkTime draws a pause as Median * exp(Sigma * N(0,1)), capped at Max.
+type ThinkTime struct {
+	Median Duration `json:"median"`
+	Sigma  float64  `json:"sigma,omitempty"`
+	Max    Duration `json:"max,omitempty"` // 0 = uncapped
+}
+
+func (t *ThinkTime) validate() error {
+	if t.Median <= 0 {
+		return fmt.Errorf("think_time median must be > 0, got %s", t.Median.Duration())
+	}
+	if t.Sigma < 0 {
+		return fmt.Errorf("think_time sigma must be >= 0, got %v", t.Sigma)
+	}
+	if t.Max < 0 {
+		return fmt.Errorf("think_time max must be >= 0, got %s", t.Max.Duration())
+	}
+	if t.Max > 0 && t.Max < t.Median {
+		return fmt.Errorf("think_time max (%s) must be >= median (%s)", t.Max.Duration(), t.Median.Duration())
+	}
+	return nil
 }
 
 // CacheSalt configures vLLM prefix cache isolation.
