@@ -139,7 +139,15 @@ func (c *Config) ToScenarioConfig() *ScenarioConfig {
 
 // Validate checks scenario-level scheduling options after defaults have been applied.
 func (sc *ScenarioConfig) Validate() error {
+	if err := validateWorkloadSystemPrompt(&sc.Workload); err != nil {
+		return fmt.Errorf("workload: %w", err)
+	}
 	for i, s := range sc.Stages {
+		if s.Workload != nil {
+			if err := validateWorkloadSystemPrompt(s.Workload); err != nil {
+				return fmt.Errorf("stage %d: workload: %w", i, err)
+			}
+		}
 		if s.Barrier {
 			continue
 		}

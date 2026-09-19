@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -82,6 +83,12 @@ func parseStarlark(filename, source string, bounded bool, maxStages int) (*Scena
 		return nil, fmt.Errorf("%s: no scenario() call found", filename)
 	}
 
+	if !bounded {
+		if err := result.resolveSystemPromptFiles(filepath.Dir(filename)); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := result.Validate(); err != nil {
 		return nil, err
 	}
@@ -105,6 +112,8 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		charsPerToken                 = 0.0
 		cacheSalt      starlark.Value = starlark.None
 		name           starlark.Value = starlark.None
+		systemPrompt   starlark.Value = starlark.None
+		promptFile     starlark.Value = starlark.None
 	)
 
 	if err := starlark.UnpackArgs("workload", args, kwargs,
@@ -121,6 +130,8 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 		"chars_per_token?", &charsPerToken,
 		"cache_salt?", &cacheSalt,
 		"name?", &name,
+		"system_prompt?", &systemPrompt,
+		"system_prompt_file?", &promptFile,
 	); err != nil {
 		return nil, err
 	}
@@ -147,19 +158,21 @@ func builtinWorkload(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tupl
 	}
 
 	return starlarkstruct.FromStringDict(starlark.String(starlarkTypeWorkload), starlark.StringDict{
-		"type":             starlark.String(typ),
-		"isl":              starlark.MakeInt(isl),
-		"osl":              starlark.MakeInt(osl),
-		"turns":            starlark.MakeInt(turns),
-		"subsequent_isl":   subsequentISL,
-		"corpus_path":      corpusPath,
-		"gsm8k_path":       gsm8kPath,
-		"gsm8k_train_path": gsm8kTrainPath,
-		"num_fewshot":      starlark.MakeInt(numFewshot),
-		"gpqa_path":        gpqaPath,
-		"chars_per_token":  starlark.Float(charsPerToken),
-		"cache_salt":       cacheSalt,
-		"name":             name,
+		"type":               starlark.String(typ),
+		"isl":                starlark.MakeInt(isl),
+		"osl":                starlark.MakeInt(osl),
+		"turns":              starlark.MakeInt(turns),
+		"subsequent_isl":     subsequentISL,
+		"corpus_path":        corpusPath,
+		"gsm8k_path":         gsm8kPath,
+		"gsm8k_train_path":   gsm8kTrainPath,
+		"num_fewshot":        starlark.MakeInt(numFewshot),
+		"gpqa_path":          gpqaPath,
+		"chars_per_token":    starlark.Float(charsPerToken),
+		"cache_salt":         cacheSalt,
+		"name":               name,
+		"system_prompt":      systemPrompt,
+		"system_prompt_file": promptFile,
 	}), nil
 }
 
@@ -482,6 +495,12 @@ func structToWorkload(s *starlarkstruct.Struct) (*Workload, error) {
 
 	name, _ := s.Attr("name")
 	w.Name = starlarkString(name)
+
+	systemPrompt, _ := s.Attr("system_prompt")
+	w.SystemPrompt = starlarkString(systemPrompt)
+
+	promptFile, _ := s.Attr("system_prompt_file")
+	w.SystemPromptFile = starlarkString(promptFile)
 
 	return w, nil
 }

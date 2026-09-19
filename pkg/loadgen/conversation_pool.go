@@ -278,6 +278,9 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		return true
 	}
 	userMsg := prebuilt[len(prebuilt)-1]
+	if len(pc.history) == 0 && pc.conv.System != "" {
+		pc.history = append(pc.history, client.Message{Role: "system", Content: pc.conv.System})
+	}
 	pc.history = append(pc.history, userMsg)
 
 	messages := make([]client.Message, len(pc.history))

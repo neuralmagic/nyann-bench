@@ -39,6 +39,14 @@ func calibrateTokenRatio(ctx context.Context, c *client.Client, model string, co
 // tokenCounter is optional; when non-nil datasets count each chunk via the
 // remote /tokenize endpoint and proportionally trim toward the target length.
 func buildDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
+	ds, err := buildBaseDataset(w, charsPerToken, tokenCounter)
+	if err != nil || w.SystemPrompt == "" {
+		return ds, err
+	}
+	return &dataset.WithSystemPrompt{Inner: ds, Prompt: w.SystemPrompt}, nil
+}
+
+func buildBaseDataset(w *config.Workload, charsPerToken float64, tokenCounter func(string) (int, error)) (dataset.Dataset, error) {
 	subISL := 0
 	if w.SubsequentISL != nil {
 		subISL = *w.SubsequentISL

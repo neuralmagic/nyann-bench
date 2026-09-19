@@ -259,7 +259,13 @@ Or with a YAML or Starlark config file:
 | `corpus` | Sliding window over real text files (ShareGPT, custom corpora) |
 | `gsm8k` | Grade School Math 8K with few-shot prompting and streaming eval |
 
-All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`.
+All workload types support configurable ISL (input sequence length), OSL (output sequence length), multi-turn conversations, and per-turn ISL overrides via `subsequent_isl`. A fixed `system_prompt` is sent as the leading system message on every request, giving the workload a shared prompt prefix; its tokens are not counted toward ISL.
+
+`system_prompt_file` reads that prefix from a file instead, which keeps a long agent preamble out of the config. The path is relative to the config file's own directory and may not leave it, so a scenario cannot name a file elsewhere on the machine. The two options are mutually exclusive, and only a config file on disk can use the file form: a scenario submitted as Starlark source or as compiled IR has no directory to resolve against and is rejected.
+
+```python
+workload("synthetic", isl=1000, osl=200, turns=8, system_prompt_file="prompts/agent.txt")
+```
 
 ## Load modes
 

@@ -694,6 +694,9 @@ func (g *Generator) runConversation(ctx context.Context, c *client.Client, strea
 	// with synthetic assistant placeholders; we extract only the new user
 	// message from each turn and substitute real responses.
 	var history []client.Message
+	if conv.System != "" {
+		history = append(history, client.Message{Role: "system", Content: conv.System})
+	}
 
 	for turnIdx, prebuilt := range conv.Turns {
 		if ctx.Err() != nil {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1446,4 +1447,94 @@ func readRecords(t *testing.T, path string) []recorder.Record {
 		records = append(records, r)
 	}
 	return records
+}
+
+// captureServer records the messages array of every chat request.
+func captureServer(t *testing.T) (string, func() [][]client.Message) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen [][]client.Message
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []client.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		seen = append(seen, req.Messages)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", `{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":1,"total_tokens":1}}`)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() [][]client.Message {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][]client.Message(nil), seen...)
+	}
+}
+
+func TestGeneratorSystemPromptLeadsEveryTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gen  func(url string, ds dataset.Dataset) *loadgen.Generator
+	}{
+		{"concurrent", func(url string, ds dataset.Dataset) *loadgen.Generator {
+			return &loadgen.Generator{
+				Target: url + "/v1", Model: "test-model", Concurrency: 1,
+				Duration: 300 * time.Millisecond, Dataset: ds,
+			}
+		}},
+		{"conversation_pool", func(url string, ds dataset.Dataset) *loadgen.Generator {
+			return &loadgen.Generator{
+				Target: url + "/v1", Model: "test-model", Mode: loadgen.ModeConversationPool,
+				Concurrency: 1, ConversationPoolSize: 2,
+				Duration: 300 * time.Millisecond, Dataset: ds,
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url, requests := captureServer(t)
+			rec, err := recorder.New(t.TempDir(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rec.Close()
+
+			gen := tc.gen(url, &dataset.WithSystemPrompt{Inner: dataset.NewSynthetic(16, 4, 2, 4.0), Prompt: "shared prefix"})
+			gen.Recorder = rec
+			if _, err := gen.Run(context.Background()); err != nil {
+				t.Fatalf("generator run failed: %v", err)
+			}
+
+			seen := requests()
+			if len(seen) < 2 {
+				t.Fatalf("expected at least two requests, got %d", len(seen))
+			}
+			for i, msgs := range seen {
+				if len(msgs) == 0 || msgs[0].Role != "system" || msgs[0].Content != "shared prefix" {
+					t.Fatalf("request %d: expected a leading system message, got %+v", i, msgs)
+				}
+				for _, m := range msgs[1:] {
+					if m.Role == "system" {
+						t.Fatalf("request %d: system message repeated: %+v", i, msgs)
+					}
+				}
+			}
+			// Turn 1 of a conversation carries system, user, assistant, user.
+			var sawSecondTurn bool
+			for _, msgs := range seen {
+				if len(msgs) == 4 && msgs[2].Role == "assistant" {
+					sawSecondTurn = true
+				}
+			}
+			if !sawSecondTurn {
+				t.Fatal("expected a second-turn request with the system message still first")
+			}
+		})
+	}
 }

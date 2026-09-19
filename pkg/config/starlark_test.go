@@ -829,3 +829,33 @@ func containsImpl(s, substr string) bool {
 	}
 	return false
 }
+
+func TestStarlarkWorkloadSystemPrompt(t *testing.T) {
+	path := writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker", system_prompt="You are adapter-3."),
+)
+`)
+	sc, err := config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SystemPrompt != "You are adapter-3." {
+		t.Errorf("expected system_prompt to round-trip, got %q", sc.Workload.SystemPrompt)
+	}
+
+	path = writeStarFile(t, `
+scenario(
+    stages = [stage("60s")],
+    workload = workload("faker"),
+)
+`)
+	sc, err = config.ParseStarlark(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Workload.SystemPrompt != "" {
+		t.Errorf("expected empty system_prompt by default, got %q", sc.Workload.SystemPrompt)
+	}
+}

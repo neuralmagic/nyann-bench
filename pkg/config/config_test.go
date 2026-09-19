@@ -554,3 +554,23 @@ func TestParseJSONWithSweep(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSystemPromptFromJSONAndYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"json", `{"load":{"concurrency":1,"duration":"1s"},"workload":{"type":"faker","system_prompt":"You are adapter-3."}}`},
+		{"yaml", "---\nload:\n  concurrency: 1\n  duration: 1s\nworkload:\n  type: faker\n  system_prompt: You are adapter-3.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, err := config.Parse(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sc.Workload.SystemPrompt != "You are adapter-3." {
+				t.Fatalf("system_prompt = %q", sc.Workload.SystemPrompt)
+			}
+		})
+	}
+}
