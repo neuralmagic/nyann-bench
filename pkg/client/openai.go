@@ -28,14 +28,15 @@ type Request struct {
 }
 
 type CompletionRequest struct {
-	Model         string         `json:"model"`
-	Prompt        string         `json:"prompt"`
-	Stream        bool           `json:"stream"`
-	StreamOptions map[string]any `json:"stream_options,omitempty"`
-	MaxTokens     int            `json:"max_tokens,omitempty"`
-	Stop          []string       `json:"stop,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	CacheSalt     string         `json:"cache_salt,omitempty"`
+	Model         string            `json:"model"`
+	Prompt        string            `json:"prompt"`
+	Stream        bool              `json:"stream"`
+	StreamOptions map[string]any    `json:"stream_options,omitempty"`
+	MaxTokens     int               `json:"max_tokens,omitempty"`
+	Stop          []string          `json:"stop,omitempty"`
+	Temperature   *float64          `json:"temperature,omitempty"`
+	CacheSalt     string            `json:"cache_salt,omitempty"`
+	ExtraHeaders  map[string]string `json:"-"` // Applied as HTTP headers, not serialized
 }
 
 type TokenEvent struct {
@@ -380,6 +381,9 @@ func (c *Client) CompletionStream(ctx context.Context, req *CompletionRequest) *
 		return result
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range req.ExtraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

@@ -290,6 +290,7 @@ func (g *Generator) runPooledConversationTurn(ctx context.Context, c *client.Cli
 		StreamOptions: g.streamOptions(),
 		MaxTokens:     pc.conv.MaxTokens,
 		CacheSalt:     g.cacheSalt(),
+		ExtraHeaders:  g.requestHeaders(pc.convID, turnIdx),
 	}
 
 	g.trackInFlight(1)
