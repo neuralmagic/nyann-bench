@@ -558,13 +558,14 @@ func TestRunStagesPoolResize(t *testing.T) {
 }
 
 func TestRunStagesUntilStopsBeforeNextStage(t *testing.T) {
-	for _, mode := range []loadgen.Mode{loadgen.ModeConcurrent, loadgen.ModeConversationPool} {
+	for _, mode := range []loadgen.Mode{loadgen.ModeConcurrent, loadgen.ModeConversationPool, loadgen.ModeConstant, loadgen.ModePoisson} {
 		t.Run(string(mode), func(t *testing.T) {
 			addr := startMockServer(t)
 			gen := &loadgen.Generator{
 				Target:   "http://" + addr + "/v1",
 				Model:    "test-model",
 				Mode:     mode,
+				Rate:     100,
 				Dataset:  dataset.NewSynthetic(32, 10, 1, 4.0),
 				Recorder: recorder.NewMemory(),
 			}
@@ -583,6 +584,128 @@ func TestRunStagesUntilStopsBeforeNextStage(t *testing.T) {
 				t.Fatalf("started=%v completed=%v, want only stage 0", started, completed)
 			}
 		})
+	}
+}
+
+func TestRateStagesLimitsDrainAndUniqueIDs(t *testing.T) {
+	for _, mode := range []loadgen.Mode{loadgen.ModeConstant, loadgen.ModePoisson} {
+		t.Run(string(mode), func(t *testing.T) {
+			addr := startMockServer(t)
+			rec := recorder.NewMemory()
+			defer rec.Close()
+			gen := &loadgen.Generator{
+				Target: "http://" + addr + "/v1", Model: "test-model",
+				Mode: mode, Rate: 1000, MaxInFlight: 1,
+				// Each stage's zero rampup must override this generator default.
+				Rampup:  time.Hour,
+				Dataset: dataset.NewSynthetic(32, 10, 2, 4.0), Recorder: rec,
+			}
+			stages := []loadgen.Stage{
+				{Duration: 5 * time.Second, MaxRequests: 3},
+				{Barrier: true, BarrierDrain: true},
+				{Duration: 5 * time.Second, MaxRequests: 4},
+			}
+			var started, completed, barriers []int
+			gen.RunStagesUntil(context.Background(), stages, func(i, _ int) {
+				started = append(started, i)
+			}, func(i int) {
+				barriers = append(barriers, i)
+			}, func(i int) bool {
+				completed = append(completed, i)
+				if gen.InFlight() != 0 {
+					t.Error("rate stage did not drain before completion callback")
+				}
+				return true
+			})
+			if !reflect.DeepEqual(started, []int{0, 2}) || !reflect.DeepEqual(completed, []int{0, 2}) || !reflect.DeepEqual(barriers, []int{1}) {
+				t.Fatalf("started=%v completed=%v barriers=%v", started, completed, barriers)
+			}
+			rec.Close()
+			records := rec.Records()
+			// Like concurrent mode, the arrival limit counts conversations;
+			// every admitted conversation must finish all of its turns.
+			if len(records) != 14 {
+				t.Fatalf("got %d records, want 14 from seven two-turn conversations", len(records))
+			}
+			conversations := make(map[string]int)
+			requests := make(map[string]bool)
+			for _, r := range records {
+				if r.Status != "ok" {
+					t.Errorf("request %s failed: %s", r.RequestID, r.Error)
+				}
+				if requests[r.RequestID] {
+					t.Errorf("duplicate request ID %s", r.RequestID)
+				}
+				requests[r.RequestID] = true
+				conversations[r.ConversationID]++
+			}
+			if len(conversations) != 7 {
+				t.Fatalf("got %d conversations, want 7", len(conversations))
+			}
+			for id, turns := range conversations {
+				if turns != 2 {
+					t.Errorf("conversation %s has %d turns, want 2", id, turns)
+				}
+			}
+		})
+	}
+}
+
+func TestRateStageRampup(t *testing.T) {
+	addr := startMockServer(t)
+	rec := recorder.NewMemory()
+	defer rec.Close()
+	gen := &loadgen.Generator{
+		Target: "http://" + addr + "/v1", Model: "test-model",
+		Mode: loadgen.ModeConstant, Rate: 100,
+		Dataset: dataset.NewSynthetic(32, 10, 1, 4.0), Recorder: rec,
+	}
+	var starts []time.Time
+	gen.RunStages(context.Background(), []loadgen.Stage{
+		{Duration: time.Second, Rampup: 500 * time.Millisecond, MaxRequests: 1},
+		{Duration: time.Second, Rampup: 500 * time.Millisecond, MaxRequests: 1},
+	}, func(_, _ int) { starts = append(starts, time.Now()) }, nil)
+	rec.Close()
+	records := rec.Records()
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want one per stage", len(records))
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].StartTime < records[j].StartTime })
+	for i, r := range records {
+		delay := r.StartTime - recorder.TimeToFloat(starts[i])
+		// Integrated rate gives a first arrival at 100ms; full rate gives 10ms.
+		if delay < 0.075 {
+			t.Errorf("stage %d first arrival after %.3fs, rampup ignored", i, delay)
+		}
+	}
+}
+
+func TestRateStageDuration(t *testing.T) {
+	for _, mode := range []loadgen.Mode{loadgen.ModeConstant, loadgen.ModePoisson} {
+		for _, limit := range []int{0, 10000} {
+			t.Run(fmt.Sprintf("%s/limit=%d", mode, limit), func(t *testing.T) {
+				addr := startMockServer(t)
+				rec := recorder.NewMemory()
+				defer rec.Close()
+				gen := &loadgen.Generator{
+					Target: "http://" + addr + "/v1", Model: "test-model",
+					Mode: mode, Rate: 100,
+					Dataset: dataset.NewSynthetic(32, 10, 1, 4.0), Recorder: rec,
+				}
+				start := time.Now()
+				gen.RunStages(context.Background(), []loadgen.Stage{{
+					Duration: 200 * time.Millisecond, MaxRequests: limit,
+				}}, nil, nil)
+				elapsed := time.Since(start)
+				rec.Close()
+				if len(rec.Records()) == 0 {
+					t.Fatal("expected rate arrivals before the stage deadline")
+				}
+				if elapsed < 180*time.Millisecond || elapsed > 2*time.Second {
+					t.Errorf("stage lasted %v, want approximately 200ms", elapsed)
+				}
+			})
+		}
 	}
 }
 
